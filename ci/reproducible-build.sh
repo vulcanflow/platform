@@ -11,9 +11,14 @@
 #     in Cargo.lock. `--locked` fails rather than silently updating either.
 #   * `--offline` after a single `cargo fetch`: a build that reaches the network
 #     is not reproducible, and it also hides a lockfile that does not match.
-#   * `--remap-path-prefix` for the build directory, the registry source cache
-#     and the toolchain sysroot. Absolute paths leak into binaries through panic
-#     messages and `file!()`, and they differ between a CI runner and a laptop.
+#   * `--remap-path-prefix` for the build directory, the *target* directory, the
+#     registry source cache and the toolchain sysroot. Absolute paths leak into
+#     binaries through panic messages and `file!()`, and they differ between a CI
+#     runner and a laptop. The target directory needs remapping for the same
+#     reason and one more: this script deliberately gives the two builds
+#     different `CARGO_TARGET_DIR`s, so anything embedding `env!("OUT_DIR")` —
+#     every build script that writes generated code — would differ between them
+#     for a reason that is not reproducibility.
 #   * `codegen-units = 1`, `incremental = false`, `lto = "thin"` in the release
 #     profile: parallel codegen partitioning is not deterministic.
 #   * SOURCE_DATE_EPOCH, taken from the commit being built rather than from the
@@ -54,6 +59,7 @@ build_once() {
     cd "$build_dir"
     CARGO_TARGET_DIR="$target_dir" \
     RUSTFLAGS="--remap-path-prefix=${build_dir}=/vulcanflow \
+--remap-path-prefix=${target_dir}=/target \
 --remap-path-prefix=${REGISTRY_SRC}=/cargo-registry \
 --remap-path-prefix=${SYSROOT}=/rust-sysroot" \
       cargo build --locked --offline --release --workspace --bins --target "$TARGET"
