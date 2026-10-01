@@ -59,6 +59,24 @@ allow = [
 # expression, so cargo-deny needs them named here rather than in `allow`.
 private = { ignore = true }
 
+# Scoped allowances, not entries in `allow` above.
+#
+# `CDLA-Permissive-2.0` is a *data* licence (Community Data License Agreement),
+# and the only thing it covers here is Mozilla's CA root store as shipped by the
+# webpki-roots crates. Putting it in the global `allow` list would silently
+# permit any future crate to arrive under a data licence whose terms were
+# reviewed for a trust store, not for code. An exception names the two crates it
+# actually applies to, so adding a third is a visible decision.
+#
+# Reached through sqlx-core 0.9.0 and rustls-platform-verifier 0.7.1
+# (kube-client, reqwest). Flagged to Atlas on VUL-6 for ratification — this is
+# the first licence policy call the workspace has had to make, and the allow
+# list above is not yet recorded in an ADR.
+exceptions = [
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+    { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+]
+
 [bans]
 # "warn" rather than "deny", and the reason is specific rather than a shrug.
 #
