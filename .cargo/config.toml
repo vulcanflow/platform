@@ -1,0 +1,24 @@
+# TDD §21.3 requires the arm64 release build to be reproducible: two runs must
+# produce identical artifacts.
+#
+# The build directory is the usual thing that leaks into a binary, through panic
+# messages and debug paths. `--remap-path-prefix` needs absolute paths, which are
+# not knowable here, so the remapping is applied by ci/reproducible-build.sh.
+# Fixed `codegen-units` and `incremental = false` are in the release profile.
+#
+# The target triple is NOT pinned here on purpose. ADR-0002 §2 installs
+# `aarch64-unknown-linux-gnu` and that is what ships, but forcing `--target` for
+# every command would make an x86 developer checkout cross-compile — including
+# build scripts — for no benefit. CI passes `--target` explicitly on the jobs
+# where the artifact matters.
+
+[term]
+color = "never"
+
+[net]
+# A build that reaches the network is not reproducible. CI runs `cargo fetch`
+# once against the committed Cargo.lock and then builds with `--offline`.
+git-fetch-with-cli = true
+
+[registries.crates-io]
+protocol = "sparse"

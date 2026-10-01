@@ -1,0 +1,2 @@
+# Deliberately minimal: defaults, so formatting is never a review topic.
+# `edition` is taken from each crate's manifest (edition 2024).

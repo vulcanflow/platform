@@ -1,0 +1,11 @@
+# Pinned by ADR-0002 §2. Reproduced verbatim; changes go through a new ADR.
+#
+# `wasm32-unknown-unknown` is deliberately NOT listed here: ADR-0002 §2 fixes the
+# contents of this file and lists only the Aether build target. CI adds the wasm
+# target explicitly (`rustup target add wasm32-unknown-unknown`) for the
+# `graph/native-wasm-parity` job, so this file stays byte-identical to the ADR.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-unknown-linux-gnu"]
+profile = "minimal"

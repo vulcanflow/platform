@@ -1,0 +1,18 @@
+# Determinism (TDD §7.3, §25 `graph/native-wasm-parity`): `HashMap`/`HashSet`
+# iteration order is unspecified, and the default hasher is seeded differently
+# per process and per target. Anything whose order can reach an output, a hash, a
+# serialized document or a comparison must use an ordered container.
+#
+# `clippy::disallowed_types` is denied workspace-wide (see the root manifest's
+# `[workspace.lints.clippy]`). Cargo does not let a member crate add to an
+# inherited `[lints]` table, so a crate that genuinely needs an unordered map —
+# an internal lookup table whose order never reaches an output — relaxes it at
+# its own crate root:
+#
+#     #![allow(clippy::disallowed_types)] // reason: <why order is not observable>
+#
+# That keeps the exception in the file a reviewer is already reading.
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "unspecified iteration order; use BTreeMap where order can be observed" },
+  { path = "std::collections::HashSet", reason = "unspecified iteration order; use BTreeSet where order can be observed" },
+]

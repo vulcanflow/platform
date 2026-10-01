@@ -1,0 +1,4 @@
+/target
+**/*.rs.bk
+# cargo-cyclonedx writes next to each manifest before ci/sbom.sh normalises them
+**/*.cdx.json

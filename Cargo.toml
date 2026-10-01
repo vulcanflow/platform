@@ -1,0 +1,280 @@
+# VulcanFlow Cargo workspace.
+#
+# One workspace, one toolchain, one lockfile — TDD §2.5.2 and ADR-0001
+# ("the single Rust build unit containing all VulcanFlow crates").
+#
+# Every version below is the pin approved in ADR-0002 §3 and amendment A1
+# (ADR-0002 §3.6). Member crates must take dependencies from
+# `[workspace.dependencies]` with `workspace = true` and never restate a
+# version, so the pin exists in exactly one place.
+
+[workspace]
+resolver = "3"
+members = [
+    # Library crates. Safety-relevant logic lives here so it can be
+    # property-tested and fuzzed in isolation (TDD §2.5.2).
+    "crates/vf-core",
+    "crates/vf-graph",
+    "crates/vf-translator",
+    "crates/vf-authz",
+    "crates/vf-db",
+    "crates/vf-store",
+    # Binary crates.
+    "crates/vf-api",
+    "crates/vf-operator",
+    "crates/vf-admission",
+    "crates/vf-ingest",
+    "crates/vf-report",
+    "crates/vf-meter",
+    "crates/vf-abuse",
+    "crates/vf-hook-notify",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98.1"
+version = "0.1.0"
+authors = ["VulcanFlow Engineering"]
+license = "LicenseRef-Proprietary"
+publish = false
+repository = "https://github.com/vulcanflow"
+
+# ---------------------------------------------------------------------------
+# Lints. Applied to every member via `[lints] workspace = true`.
+# ---------------------------------------------------------------------------
+
+[workspace.lints.rust]
+# ADR-0002 §2 also requires the `#![forbid(unsafe_code)]` attribute in every
+# crate root. Both are present on purpose: the attribute survives a crate being
+# vendored or moved out of this workspace.
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+# TDD §2.5.2: no `unwrap`/`expect` on external input paths. Denying them
+# everywhere is cheaper than deciding per call site which path is external.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+# ADR-0002 §3.3: no `f64` and no `rust_decimal` anywhere in the allowance path.
+# `cargo deny` bans the crate; this bans the arithmetic.
+float_arithmetic = "deny"
+# Reservations and settlements are `i64` with explicit overflow handling. This
+# makes a bare `+`/`-`/`*` a compile error, so `checked_*` is the only way to
+# write the allowance path.
+arithmetic_side_effects = "deny"
+# Determinism: ordered containers wherever order can be observed. The banned
+# types and the reasoning are in clippy.toml.
+disallowed_types = "deny"
+
+# Both of the above are deny-by-default and relaxed in source, not in a manifest:
+# Cargo does not allow a member to add to an inherited `[lints]` table, and an
+# `#![allow(clippy::arithmetic_side_effects)]` at a crate root with a stated
+# reason is visible to a reviewer in a way a manifest line is not.
+
+# ---------------------------------------------------------------------------
+# Pinned external dependencies — ADR-0002 §3.
+# ---------------------------------------------------------------------------
+
+[workspace.dependencies]
+
+# §3.1 Runtime, HTTP, API surface
+tokio = { version = "1.53.1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+    "signal",
+    "sync",
+] }
+axum = { version = "0.8.9", default-features = false, features = [
+    "http1",
+    "http2",
+    "json",
+    "tokio",
+    "tower-log",
+    "tracing",
+] }
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+tower-http = { version = "0.7.1", default-features = false, features = [
+    "trace",
+    "request-id",
+    "timeout",
+    "limit",
+    "sensitive-headers",
+] }
+utoipa = { version = "6.0.0", default-features = false, features = [
+    "macros",
+    "axum_extras",
+    "uuid",
+    "jiff_0_2",
+    "preserve_order",
+] }
+utoipa-axum = { version = "0.3.0", default-features = false }
+# NOT yet a dependency of any member crate, deliberately. Its build script
+# downloads the Swagger UI distribution over the network unless the `vendored`
+# feature is enabled, and `vendored` pulls `utoipa-swagger-ui-vendored ^0.2`,
+# which ADR-0002 has not pinned. Wiring it in as-is would put a network fetch
+# inside the build and break §21.3 reproducibility. Raised with Atlas on VUL-6
+# as an A2 candidate.
+utoipa-swagger-ui = { version = "10.0.1", default-features = false, features = ["axum"] }
+askama = { version = "0.16.1", default-features = false, features = [
+    "std",
+    "derive",
+    "config",
+    "urlencode",
+] }
+serde = { version = "1.0.229", default-features = false, features = [
+    "std",
+    "derive",
+] }
+serde_json = { version = "1.0.151", default-features = false, features = [
+    "std",
+    "preserve_order",
+] }
+thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
+anyhow = { version = "1.0.104", default-features = false, features = ["std"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
+    "std",
+    "fmt",
+    "json",
+    "env-filter",
+    "registry",
+] }
+uuid = { version = "1.26.1", default-features = false, features = ["std", "serde"] }
+# `chrono` is excluded by ADR-0002 §3.3; `jiff` supersedes it for new code.
+jiff = { version = "0.2.37", default-features = false, features = ["std", "serde"] }
+reqwest = { version = "0.13.5", default-features = false, features = [
+    # ADR-0002 names this `rustls-tls`; reqwest 0.13 renamed the feature to
+    # `rustls` (and `rustls-no-provider` for the bring-your-own variant).
+    # `rustls` selects the aws-lc-rs provider, which is what A1 requires.
+    "rustls",
+    "http2",
+    "json",
+    "charset",
+] }
+
+# §3.2 Data, Kubernetes, object storage
+sqlx = { version = "0.9.0", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-aws-lc-rs",
+    "postgres",
+    "macros",
+    "migrate",
+    "uuid",
+    "json",
+] }
+kube = { version = "4.2.0", default-features = false, features = [
+    "client",
+    "config",
+    "derive",
+    "runtime",
+    "admission",
+    "jsonpatch",
+    "rustls-tls",
+    # A1: one provider, chosen here rather than left to feature unification.
+    "aws-lc-rs",
+] }
+# `=`-pin per ADR-0002 §3.2: `kube 4.2.0` declares `k8s-openapi ^0.28.0` and a
+# mismatch is the classic kube-rs build break.
+#
+# ASSUMPTION, flagged to Atlas on VUL-6: `v1_34` is a placeholder for the Aether
+# control-plane minor, which is not stated in the TDD. k8s-openapi requires
+# exactly one version feature, so one has to be chosen here. Correct it to the
+# real minor before `vf-operator`/`vf-admission` carry logic.
+k8s-openapi = { version = "=0.28.0", default-features = false, features = ["std", "v1_34"] }
+json-patch = { version = "4.2.0", default-features = false }
+# CORRECTION to ADR-0002 §3.3 ("rustls everywhere"), needs an amendment.
+#
+# On the AWS SDK the feature named `rustls` is the *legacy* client, not the rustls
+# one: `aws-sdk-s3/rustls` and `aws-sdk-s3/legacy-https-client` both expand to
+# `aws-smithy-runtime/tls-rustls`, which selects `aws-smithy-http-client`'s
+# hyper-0.14 stack — and that stack is rustls **0.21** plus **ring**. rustls 0.21
+# predates the pluggable-provider API, so ring is not optional there.
+#
+# Enabling it therefore breaks both of A1's assertions at once: `cargo tree -i
+# ring` is non-empty and `rustls` appears twice (0.21.12 and 0.23.45). Verified by
+# resolving this workspace; `aws-config/rustls` is the same trap (it expands to
+# `client-hyper`).
+#
+# `default-https-client` is the modern path: hyper 1.x, rustls 0.23, aws-lc-rs,
+# which is the provider A1 chose. Raised with Atlas on VUL-6.
+aws-sdk-s3 = { version = "1.151.0", default-features = false, features = [
+    "rt-tokio",
+    "default-https-client",
+    "http-1x",
+    # NOT `sigv4a`. SigV4a is AWS multi-region signing; Ceph RGW and RustFS do not
+    # use it, and it drags `p256`/`ecdsa`/`rfc6979`, which pull `hmac 0.12` and
+    # `sha2 0.10` — a second RustCrypto generation, which is exactly what A1's
+    # duplicate assertion is there to catch.
+] }
+aws-config = { version = "1.12.0", default-features = false, features = [
+    "rt-tokio",
+    "default-https-client",
+] }
+
+# §3.6 (amendment A1) Crypto, encoding, TLS
+hmac = { version = "0.13.0", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
+# A1: OS CSPRNG only. `OsRng`, never a seeded or thread-local generator, on the
+# challenge-token and idempotency-nonce paths.
+rand = { version = "0.10.3", default-features = false, features = ["std", "sys_rng"] }
+# A1: Lago signatures are standard base64 **with padding** — not URL-safe, not
+# no-pad. Call sites use `base64::engine::general_purpose::STANDARD`.
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+hex = { version = "0.4.3", default-features = false, features = ["std"] }
+# A1: direct pin even though rustls also arrives transitively, so that the
+# provider feature is decided here and not by feature unification.
+rustls = { version = "0.23.45", default-features = false, features = [
+    "std",
+    "tls12",
+    "logging",
+    "aws-lc-rs",
+] }
+
+# §3.4 Test-side pins. Pinned here because pinning is a workspace convention;
+# the test *content* belongs to Scribe (property, fuzz) and Ledger
+# (integration). Coding agents do not author tests.
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+arbitrary = { version = "1.4.2", default-features = false, features = ["derive"] }
+insta = { version = "1.48.0", default-features = false }
+# CORRECTION to ADR-0002 §3.4, needs an amendment. The ADR pins
+# `testcontainers 0.28.0` alongside `testcontainers-modules 0.15.0`, and that pair
+# cannot resolve: 0.15.0 is the newest `testcontainers-modules` release and it
+# declares `testcontainers ^0.27.0`. There is no modules release for 0.28 yet, and
+# 0.28 pulls `bollard 0.21` while 0.27 pulls an earlier bollard, so the conflict is
+# not a caret-range artefact. 0.27.3 is the newest version that satisfies both.
+# Raised with Atlas on VUL-6; revert to 0.28.0 when a compatible modules release
+# exists.
+testcontainers = { version = "0.27.3", default-features = false }
+testcontainers-modules = { version = "0.15.0", default-features = false }
+
+# ---------------------------------------------------------------------------
+# Internal crates.
+# ---------------------------------------------------------------------------
+vf-core = { path = "crates/vf-core" }
+vf-graph = { path = "crates/vf-graph" }
+vf-translator = { path = "crates/vf-translator" }
+vf-authz = { path = "crates/vf-authz" }
+vf-db = { path = "crates/vf-db" }
+vf-store = { path = "crates/vf-store" }
+
+# ---------------------------------------------------------------------------
+# Profiles. §21.3 requires reproducible arm64 builds; see .cargo/config.toml
+# for the path remapping that makes the artifact independent of the build
+# directory.
+# ---------------------------------------------------------------------------
+[profile.release]
+debug = false
+strip = "symbols"
+codegen-units = 1
+lto = "thin"
+incremental = false
+# Deliberately NOT `panic = "abort"`. TDD §2.5.2 requires a handler panic to be
+# caught at the service boundary and reported as a platform error, never as a
+# target outcome, and `catch_unwind` needs unwinding to exist.
+panic = "unwind"
