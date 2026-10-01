@@ -1,4 +1,6 @@
 /target
 **/*.rs.bk
-# cargo-cyclonedx writes next to each manifest before ci/sbom.sh normalises them
-**/*.cdx.json
+# cargo-cyclonedx writes a BOM next to every Cargo.toml; ci/sbom.sh collects
+# them into target/sbom, but an interrupted run can leave them behind.
+**/bom.json
+**/bom.xml
