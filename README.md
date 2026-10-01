@@ -77,9 +77,15 @@ cargo build --locked --release -p vf-graph --target wasm32-unknown-unknown
 |---|---|---|
 | `rust-build.yml` | `fmt-clippy` | `cargo fmt`, `check`, `clippy -D warnings`, `cargo doc`, crate boundaries |
 | `rust-build.yml` | `graph-native-and-wasm` | `vf-graph` for both targets — what §25 `graph/native-wasm-parity` runs against |
-| `rust-supply-chain.yml` | `supply-chain` | lockfile currency, `cargo deny`, `cargo audit`, the ADR-0002 A1 assertions, `#![forbid(unsafe_code)]`, CycloneDX SBOM |
+| `rust-supply-chain.yml` | `supply-chain` | lockfile currency, `cargo deny`, `cargo audit`, the ADR-0002 §3.7.9 per-binary TLS/crypto assertions, `#![forbid(unsafe_code)]`, CycloneDX SBOM |
 | `rust-supply-chain.yml` | `reproducible-arm64` | two release builds, byte-identical artifacts |
-| `rust-test.yml` | `unit-and-property`, `integration` | invokes the suites |
+| `rust-test.yml` | `test` | invokes the suites |
+
+Two gates are allowlists rather than searches for known-bad names, and that is
+deliberate: `ci/crate-boundaries.sh` diffs each pure crate's complete transitive
+set against `ci/pure-crate-dependencies.txt`, and `ci/tls-provider-assertions.sh`
+asserts the one permitted path for a second `digest` rather than waiving the
+version. A denylist only catches what someone already thought of.
 
 ## Tests
 

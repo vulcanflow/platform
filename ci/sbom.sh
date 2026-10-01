@@ -12,6 +12,13 @@
 #
 # §21.3 says "an SBOM per image"; images are not built here (VUL-6 is code and CI
 # only, no cluster), so this produces the documents the image build will embed.
+#
+# Default features, NOT `--all-features`. An SBOM is an inventory of what
+# shipped. `--all-features` enables optional dependencies no release build
+# compiles — `rustls/ring` among them — so the document would list crates that
+# are not in the artifact and omit nothing in exchange. A false inventory is
+# worse than no inventory, because an advisory scanner reads it as fact. Same
+# reasoning as `all-features = false` in deny.toml.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -24,7 +31,6 @@ mkdir -p "$OUT_DIR"
 
 cargo cyclonedx \
   --locked \
-  --all-features \
   --target "${AETHER_TARGET}" \
   --format json \
   --spec-version 1.5 \

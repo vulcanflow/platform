@@ -12,6 +12,20 @@
 # Until a suite exists its invocation passes vacuously. §23.2 is explicit that
 # a listed test identifier is not an assertion that it passes, and an empty
 # `cargo test` run is not evidence of anything.
+#
+# One job, not two. An earlier revision split "unit + property" from
+# "integration (testcontainers)", and the split was not real: `cargo test
+# --workspace` already builds and runs the integration targets in `tests/`, so
+# the second job was a strict subset of the first — two identical runs on arm64
+# minutes and a separation that reads as meaningful without being so. Both would
+# have run on the same runner label with the same Docker daemon, so there was
+# nothing for the second job to provide.
+#
+# When to split it again, and how: the moment the integration suites need
+# something this job does not give them — a longer timeout, a service container,
+# a different runner, or a `--features` set — they get their own job selected by
+# target name (`--test '<pattern>'`) against a naming convention Ledger follows,
+# not by re-running the whole workspace with one extra flag.
 name: rust-test
 
 on:
@@ -33,8 +47,8 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  unit-and-property:
-    name: unit + property suites
+  test:
+    name: unit + property + integration suites
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v5
@@ -53,8 +67,18 @@ jobs:
       - name: cargo fetch --locked
         run: cargo fetch --locked
 
+      # Default features, NOT `--all-features`: a test run should exercise the
+      # configuration that ships. No member declares a feature today; when one
+      # does, the feature combination worth testing gets a named step rather
+      # than a blanket flag. Same reasoning as `all-features = false` in
+      # deny.toml.
+      #
+      # `--workspace` covers unit tests, doctests and every target in `tests/`,
+      # which is where Ledger's testcontainers suites live. The only requirement
+      # those place on the runner is a working Docker daemon, which the
+      # GitHub-hosted arm64 image already has. Nothing here touches a cluster.
       - name: cargo test
-        run: cargo test --locked --offline --workspace --all-features
+        run: cargo test --locked --offline --workspace
 
       # Property tests find a counterexample and then write it to a regression
       # file. Losing that file means re-finding the same bug by chance.
@@ -65,29 +89,3 @@ jobs:
           name: proptest-regressions
           path: crates/*/proptest-regressions/**
           if-no-files-found: ignore
-
-  integration:
-    name: integration suites (testcontainers)
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install the pinned toolchain
-        run: rustup show active-toolchain || rustup show
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: cargo-it-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
-
-      - name: cargo fetch --locked
-        run: cargo fetch --locked
-
-      # Ledger's suites bring their own Postgres through testcontainers, so the
-      # only requirement on the runner is a working Docker daemon — which the
-      # GitHub-hosted images already have. Nothing here touches a cluster.
-      - name: cargo test --test '*'
-        run: cargo test --locked --offline --workspace --all-features --tests

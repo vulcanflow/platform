@@ -59,14 +59,21 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
+      # Default features throughout, NOT `--all-features`. `--all-features`
+      # type-checks a configuration nobody builds: it turns on every optional
+      # feature of every crate in the graph, `rustls/ring` included, so a gate
+      # failure can be about a combination that never ships. No workspace member
+      # declares a feature today; when one does and its `cfg(feature)` code needs
+      # checking, that gets an explicit step naming the feature rather than a
+      # blanket flag. Same reasoning as `all-features = false` in deny.toml.
       - name: cargo check
-        run: cargo check --locked --offline --workspace --all-targets --all-features
+        run: cargo check --locked --offline --workspace --all-targets
 
       - name: cargo clippy (warnings denied)
-        run: cargo clippy --locked --offline --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --offline --workspace --all-targets -- -D warnings
 
       - name: cargo doc (warnings denied)
-        run: cargo doc --locked --offline --workspace --no-deps --all-features
+        run: cargo doc --locked --offline --workspace --no-deps
 
       # Load-bearing for VUL-24, VUL-25, VUL-26 and VUL-29, whose acceptance is
       # literally this assertion.
