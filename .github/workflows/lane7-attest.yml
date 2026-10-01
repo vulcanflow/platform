@@ -1,0 +1,60 @@
+name: lane7-attest
+
+# The lane-7 attestation detector (ADR-0005 §6.3 condition 4, §10 R5b).
+#
+# A new file rather than a job in lane-gate.yml. ADR-0005 §4.2 classifies "other
+# workflows" as NEUTRAL, so this file does not drag ci/lane7-attest-test.sh into
+# a GATE diff the way adding a job to lane-gate.yml would.
+#
+# Neither job is wired as a required status check, and that is a choice rather
+# than an omission: the moment a NEUTRAL ci/** script becomes a required check,
+# ADR-0005 §4.4's premise that it gates nothing is void and §4.2's GATE row must
+# be amended in the same change. That is R8, it is entangled with VUL-68, and it
+# is authorised on VUL-75 — not here and not in a pull request. So between this
+# landing and that decision, attest-self-test reports on every pull request
+# without blocking one. That is weaker than gate-self-test and it is recorded as
+# weaker.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    # Daily. R5b closes on a published ledger, so the run has to recur rather
+    # than having happened once.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  attest-self-test:
+    name: attest-self-test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The detector's own verdicts are asserted against 46 enumerated fixtures
+        run: ci/lane7-attest-test.sh ci/lane7-attest.sh
+
+  attest-history:
+    name: attest-history
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read main's first-parent history in every manifested repository
+        env:
+          # Public read only — the four repositories are public under ADR-0005
+          # §8 — but authenticated, because the unauthenticated API rate limit
+          # degrades classes 2, 3 and 8 to UNCHECKED and a degraded ledger is
+          # exit 1 by design.
+          LANE7_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The verdict-contents check. Without it every clean commit in range
+          # reports L7-VERDICT-UNCHECKED and the run exits 1 — correctly, by
+          # fixture 24 — so VUL-50's acceptance statement depends on this secret
+          # existing. Provisioning it is VUL-78, outside both lane 1 and lane 3.
+          LANE7_PAPERCLIP_TOKEN: ${{ secrets.LANE7_PAPERCLIP_TOKEN }}
+          LANE7_PAPERCLIP_URL: ${{ vars.LANE7_PAPERCLIP_URL }}
+          LANE7_PAPERCLIP_COMPANY: ${{ vars.LANE7_PAPERCLIP_COMPANY }}
+        run: ci/lane7-attest.sh run
