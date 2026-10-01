@@ -3,8 +3,11 @@
 # One workspace, one toolchain, one lockfile — TDD §2.5.2 and ADR-0001
 # ("the single Rust build unit containing all VulcanFlow crates").
 #
-# Every version below is the pin approved in ADR-0002 §3 and amendment A1
-# (ADR-0002 §3.6). Member crates must take dependencies from
+# Every version below is the pin approved in ADR-0002 §3 and amendments A1
+# (§3.6) and A2 (§3.7). Where §3.1–§3.2 and §3.7 disagree, §3.7 is the
+# authority: it corrects six feature names that did not exist or meant the
+# opposite of what §3 said, and withdraws two crates. Member crates take
+# dependencies from
 # `[workspace.dependencies]` with `workspace = true` and never restate a
 # version, so the pin exists in exactly one place.
 
@@ -59,7 +62,7 @@ all = { level = "deny", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
-# ADR-0002 §3.3: no `f64` and no `rust_decimal` anywhere in the allowance path.
+# ADR-0002 §3.5: no `f64` and no `rust_decimal` anywhere in the allowance path.
 # `cargo deny` bans the crate; this bans the arithmetic.
 float_arithmetic = "deny"
 # Reservations and settlements are `i64` with explicit overflow handling. This
@@ -114,13 +117,10 @@ utoipa = { version = "6.0.0", default-features = false, features = [
     "preserve_order",
 ] }
 utoipa-axum = { version = "0.3.0", default-features = false }
-# NOT yet a dependency of any member crate, deliberately. Its build script
-# downloads the Swagger UI distribution over the network unless the `vendored`
-# feature is enabled, and `vendored` pulls `utoipa-swagger-ui-vendored ^0.2`,
-# which ADR-0002 has not pinned. Wiring it in as-is would put a network fetch
-# inside the build and break §21.3 reproducibility. Raised with Atlas on VUL-6
-# as an A2 candidate.
-utoipa-swagger-ui = { version = "10.0.1", default-features = false, features = ["axum"] }
+# `utoipa-swagger-ui` is NOT pinned here: §3.7.7 withdraws it from the approved
+# set. Its build script fetches the Swagger UI distribution over the network,
+# which cannot be reproducible (§21.3). The §1081 deliverable is the published
+# OpenAPI 3.1 document, which `utoipa` + `utoipa-axum` produce on their own.
 askama = { version = "0.16.1", default-features = false, features = [
     "std",
     "derive",
@@ -146,12 +146,14 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
     "registry",
 ] }
 uuid = { version = "1.26.1", default-features = false, features = ["std", "serde"] }
-# `chrono` is excluded by ADR-0002 §3.3; `jiff` supersedes it for new code.
+# `chrono` is excluded by ADR-0002 §3.5; `jiff` supersedes it for new code.
 jiff = { version = "0.2.37", default-features = false, features = ["std", "serde"] }
 reqwest = { version = "0.13.5", default-features = false, features = [
-    # ADR-0002 names this `rustls-tls`; reqwest 0.13 renamed the feature to
-    # `rustls` (and `rustls-no-provider` for the bring-your-own variant).
-    # `rustls` selects the aws-lc-rs provider, which is what A1 requires.
+    # §3.1 named this `rustls-tls`; reqwest 0.13 renamed the feature to
+    # `rustls` (and `rustls-no-provider` for the bring-your-own variant), so
+    # the old name does not build. `rustls` expands to `__rustls-aws-lc-rs` +
+    # `rustls-platform-verifier`, which is the A1 provider. Corrected by
+    # §3.7.1; the verifier this selects is the OS trust store, see §3.7.3.
     "rustls",
     "http2",
     "json",
@@ -159,12 +161,45 @@ reqwest = { version = "0.13.5", default-features = false, features = [
 ] }
 
 # §3.2 Data, Kubernetes, object storage
+# §3.7.1 corrects the TLS feature and §3.7.2 removes `migrate`.
+#
+# `tls-rustls` in sqlx 0.9 is an alias chain: `tls-rustls` = `tls-rustls-ring`
+# = `tls-rustls-ring-webpki`, which enables `rustls/ring`. Naming the provider
+# explicitly is what keeps `ring` out of every binary that opens a connection,
+# which is every binary.
+#
+# `migrate` is deliberately absent: it was never in §3.2's approved feature list,
+# and §21.2 runs migrations from exactly one binary (`vf-migrate`, not yet
+# created), which opts in on top of this pin:
+#
+#     sqlx = { workspace = true, features = ["migrate"] }
+#
+# Dropping it does remove `sqlx-macros/migrate` and `sqlx-postgres/migrate`. It
+# does NOT achieve what §3.7.2 expected of it, and the manifest should not claim
+# otherwise: `sqlx 0.9.0`'s own manifest declares
+#
+#     [dependencies.sqlx-core] version = "=0.9.0" features = ["migrate"]
+#
+# unconditionally, and `sqlx-core/migrate = ["sha2", "crc"]`. So `sqlx-core`'s
+# optional `sha2 ^0.10` is on as soon as anything depends on `sqlx`, no feature
+# of ours can reach it, and `sha2 0.10.9` stays in every binary that links
+# `vf-db`. Raised with Atlas on VUL-40 as a §3.7.2/§3.7.9 correction; the only
+# route to a literally single `sha2` is to drop the `sqlx` facade and depend on
+# `sqlx-core` + `sqlx-postgres` directly, which is a `vf-db` design question
+# (VUL-26) rather than a manifest change.
+#
+# `json` is here for the JSONB columns in §6.3.
+#
+# §3.7.3: `tls-rustls-aws-lc-rs` verifies against `webpki-roots` — *public* CA
+# roots only — so it cannot verify the CNPG server certificate issued by
+# Aether's internal CA. `vf-db` supplies `ssl_root_cert` per connection
+# (acceptance criterion on VUL-26). `tls-rustls-ring-native-roots` would use
+# the system store instead and is rejected: it brings `ring`.
 sqlx = { version = "0.9.0", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls-aws-lc-rs",
     "postgres",
     "macros",
-    "migrate",
     "uuid",
     "json",
 ] }
@@ -176,19 +211,29 @@ kube = { version = "4.2.0", default-features = false, features = [
     "admission",
     "jsonpatch",
     "rustls-tls",
-    # A1: one provider, chosen here rather than left to feature unification.
+    # §3.7.1: `kube`'s own default is `["client", "rustls-tls", "ring"]`. With
+    # `default-features = false` and no provider feature, `kube-client` gets
+    # rustls with no provider enabled by itself; with defaults it gets `ring`.
+    # Neither is A1's decision, so the provider is named here rather than left
+    # to feature unification. `config` resolves in-cluster and kubeconfig;
+    # `jsonpatch` re-exports the `json-patch` already pinned in §3.2.
     "aws-lc-rs",
 ] }
 # `=`-pin per ADR-0002 §3.2: `kube 4.2.0` declares `k8s-openapi ^0.28.0` and a
 # mismatch is the classic kube-rs build break.
 #
-# ASSUMPTION, flagged to Atlas on VUL-6: `v1_34` is a placeholder for the Aether
-# control-plane minor, which is not stated in the TDD. k8s-openapi requires
-# exactly one version feature, so one has to be chosen here. Correct it to the
-# real minor before `vf-operator`/`vf-admission` carry logic.
-k8s-openapi = { version = "=0.28.0", default-features = false, features = ["std", "v1_34"] }
+# `v1_32` is decided in §3.7.4, not a placeholder: it is the floor 0.28.0
+# offers, and k8s-openapi's generated types for an older minor stay valid
+# against a newer API server. Compiling against the floor means
+# `vf-operator`/`vf-admission` can only name surface every supported minor
+# serves, so a field the real cluster lacks is a *compile* error rather than a
+# reconcile that silently stops short. Raising the floor is then a deliberate
+# act. (If Aether's control plane is older than 1.32, this pair is wrong
+# outright — that is CEO's to confirm and is filed separately; §24.2 puts the
+# operator after the services and nothing in Phase 1 reconciles a CRD.)
+k8s-openapi = { version = "=0.28.0", default-features = false, features = ["std", "v1_32"] }
 json-patch = { version = "4.2.0", default-features = false }
-# CORRECTION to ADR-0002 §3.3 ("rustls everywhere"), needs an amendment.
+# §3.7.1, correcting §3.5's "rustls everywhere".
 #
 # On the AWS SDK the feature named `rustls` is the *legacy* client, not the rustls
 # one: `aws-sdk-s3/rustls` and `aws-sdk-s3/legacy-https-client` both expand to
@@ -202,15 +247,15 @@ json-patch = { version = "4.2.0", default-features = false }
 # `client-hyper`).
 #
 # `default-https-client` is the modern path: hyper 1.x, rustls 0.23, aws-lc-rs,
-# which is the provider A1 chose. Raised with Atlas on VUL-6.
+# which is the provider A1 chose.
 aws-sdk-s3 = { version = "1.151.0", default-features = false, features = [
     "rt-tokio",
     "default-https-client",
     "http-1x",
-    # NOT `sigv4a`. SigV4a is AWS multi-region signing; Ceph RGW and RustFS do not
-    # use it, and it drags `p256`/`ecdsa`/`rfc6979`, which pull `hmac 0.12` and
-    # `sha2 0.10` — a second RustCrypto generation, which is exactly what A1's
-    # duplicate assertion is there to catch.
+    # NOT `sigv4a` (§3.7.1). SigV4a is AWS multi-region signing; Ceph RGW and
+    # RustFS do not use it, and it drags `p256`/`ecdsa`/`rfc6979`, which pull
+    # `hmac 0.12` and `sha2 0.10` — a second RustCrypto generation, which is
+    # exactly what A1's duplicate assertion is there to catch.
 ] }
 aws-config = { version = "1.12.0", default-features = false, features = [
     "rt-tokio",
@@ -242,14 +287,13 @@ rustls = { version = "0.23.45", default-features = false, features = [
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 arbitrary = { version = "1.4.2", default-features = false, features = ["derive"] }
 insta = { version = "1.48.0", default-features = false }
-# CORRECTION to ADR-0002 §3.4, needs an amendment. The ADR pins
-# `testcontainers 0.28.0` alongside `testcontainers-modules 0.15.0`, and that pair
-# cannot resolve: 0.15.0 is the newest `testcontainers-modules` release and it
-# declares `testcontainers ^0.27.0`. There is no modules release for 0.28 yet, and
-# 0.28 pulls `bollard 0.21` while 0.27 pulls an earlier bollard, so the conflict is
-# not a caret-range artefact. 0.27.3 is the newest version that satisfies both.
-# Raised with Atlas on VUL-6; revert to 0.28.0 when a compatible modules release
-# exists.
+# §3.7.1, correcting §3.4's `testcontainers 0.28.0`. That version cannot resolve
+# alongside `testcontainers-modules 0.15.0`: 0.15.0 is the newest modules release
+# and it declares `testcontainers ^0.27.0`. There is no modules release for 0.28
+# yet, and 0.28 pulls `bollard 0.21` while 0.27 pulls an earlier bollard, so the
+# conflict is not a caret-range artefact. 0.27.3 is the newest version satisfying
+# both. §3.7.1 says revisit — raise both together — when a `testcontainers-modules`
+# release declaring `^0.28` publishes.
 testcontainers = { version = "0.27.3", default-features = false }
 testcontainers-modules = { version = "0.15.0", default-features = false }
 
