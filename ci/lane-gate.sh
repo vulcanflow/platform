@@ -115,14 +115,29 @@ count_markers() {
   # Counts test declarations across the whole tree at a revision. Counting the
   # whole tree, rather than the diff, is what catches a deleted test file and a
   # test quietly moved out of the suite.
-  git grep -hoE "$TEST_MARKER_RE" "$1" -- '*.rs' 2>/dev/null | wc -l | tr -d ' '
+  #
+  # `git grep` exits non-zero when it matches nothing, which is the ordinary case
+  # for a revision with no Rust in it at all. Under `set -e -o pipefail` that
+  # would abort the run with no verdict, so the miss is absorbed here.
+  local n
+  n="$( { git grep -hoE "$TEST_MARKER_RE" "$1" -- '*.rs' 2>/dev/null || true; } \
+        | wc -l | tr -d ' ' )"
+  printf '%s' "${n:-0}"
+}
+
+count_diff_lines() {
+  # $1 = '+' for added lines or '-' for removed; $2 = pattern.
+  local n
+  n="$( { git diff "$BASE_REF...$HEAD_REF" -- '*.rs' 2>/dev/null || true; } \
+        | { grep -E "^\\$1[^$1]" || true; } \
+        | { grep -cE "$2" || true; } )"
+  printf '%s' "${n:-0}"
 }
 
 cmd_erosion() {
   local base_count head_count added_ignores removed_tests
 
-  added_ignores="$(git diff "$BASE_REF...$HEAD_REF" -- '*.rs' \
-    | grep -E '^\+[^+]' | grep -cE '#\[ignore' || true)"
+  added_ignores="$(count_diff_lines '+' '#\[ignore')"
   if [ "${added_ignores:-0}" -gt 0 ]; then
     git diff "$BASE_REF...$HEAD_REF" -- '*.rs' | grep -E '^\+[^+]' | grep -E '#\[ignore' >&2 || true
     fail "This pull request adds $added_ignores #[ignore] attribute(s).
@@ -131,8 +146,7 @@ cmd_erosion() {
   cannot pass, that is a code defect (lane 5) and it routes back to lane 3. See ADR-0005."
   fi
 
-  removed_tests="$(git diff "$BASE_REF...$HEAD_REF" -- '*.rs' \
-    | grep -E '^-[^-]' | grep -cE "$TEST_MARKER_RE" || true)"
+  removed_tests="$(count_diff_lines '-' "$TEST_MARKER_RE")"
 
   base_count="$(count_markers "$BASE_REF")"
   head_count="$(count_markers "$HEAD_REF")"

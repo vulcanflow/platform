@@ -131,7 +131,34 @@ commit add-fuzz
 rm fuzz/a.rs; commit rm-fuzz
 check "removes a fuzz target" erosion pass   # vs baseline count is unchanged
 
-# --- 13. empty diff -----------------------------------------------------
+# --- 13. a tree with no Rust at all ------------------------------------
+# Regression: git grep exits non-zero when it matches nothing, which under
+# `set -e -o pipefail` aborted `erosion` with no verdict. This is the ordinary
+# state of a repository before any code lands, and it must simply pass.
+setup_bare() {
+  rm -rf "$W/r"; mkdir -p "$W/r"; cd "$W/r" || exit 1
+  git init -q -b main .
+  mkdir -p ci
+  cp "$GATE" ci/lane-gate.sh; chmod +x ci/lane-gate.sh
+  printf '# repo\n' > README.md
+  git add -A >/dev/null; git commit -qm base
+  git branch baseline
+}
+setup_bare
+printf '# repo\nmore\n' > README.md
+commit docs-only
+check "no .rs anywhere in the tree" erosion pass
+check "no .rs anywhere in the tree" partition pass
+check "no .rs anywhere in the tree" inline-tests pass
+
+# --- 14. first Rust test added to an empty tree ------------------------
+setup_bare
+mkdir -p crates/vf-core/tests
+printf '#[test]\nfn first(){assert!(true);}\n' > crates/vf-core/tests/first.rs
+commit first-test
+check "first test in a previously bare tree" erosion pass
+
+# --- 15. empty diff -----------------------------------------------------
 setup
 check "empty diff" partition pass
 
