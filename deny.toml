@@ -1,0 +1,128 @@
+# cargo-deny configuration. TDD §21.3 requires licences, advisories, bans and
+# sources to be gated in CI, and the `build/rust-supply-chain` job runs this with
+# `cargo deny check all`, which exits non-zero on any finding.
+# Nothing here is a warning.
+
+[graph]
+# Aether is arm64 and IPv4-only (TDD §5.9). Checking only the target we ship
+# keeps Windows/macOS-only transitive crates out of the advisory and licence
+# verdicts, where they would be noise rather than risk.
+targets = [
+    { triple = "aarch64-unknown-linux-gnu" },
+    # vf-graph is also shipped to the browser (TDD §7.3, §14.1).
+    { triple = "wasm32-unknown-unknown" },
+]
+# Deliberately NOT `all-features = true`.
+#
+# `--all-features` is the wrong question here. It enables every optional feature
+# of every crate in the graph, including the ones we chose against: it turns
+# `rustls/ring` on, which makes the `ring` ban below fire on a crate that is not
+# in any shipping build, and it turns on `serde_with/chrono`, same story. The
+# gate would then be red for a configuration we never compile, and the usual way
+# that gets resolved is by deleting the ban.
+#
+# The question worth asking is "what is in the artifact", so cargo-deny resolves
+# the same default feature set the release build does. Verified on the pinned
+# lockfile: with default features, `cargo tree -e normal -i ring` and
+# `-i chrono` are both empty.
+all-features = false
+
+[advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# No `ignore` entries. An advisory that must be accepted is accepted in an ADR
+# with a stated reason and an expiry, not by a line in this file.
+ignore = []
+yanked = "deny"
+unmaintained = "all"
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "OpenSSL",
+    "Unicode-3.0",
+    "Zlib",
+]
+# Our own crates are proprietary and `publish = false`; they carry no SPDX
+# expression, so cargo-deny needs them named here rather than in `allow`.
+private = { ignore = true }
+
+[bans]
+# "warn" rather than "deny", and the reason is specific rather than a shrug.
+#
+# A1 asks for no duplicate `rustls`, `hmac`, `sha2` or `digest`, and
+# ci/tls-provider-assertions.sh is where those four are checked by name and
+# failed on. Turning this key to "deny" would additionally fail the build on
+# every unrelated duplicate the ecosystem currently carries (`base64 0.22/0.23`,
+# `syn 2/3`, `getrandom 0.3/0.4`, `tower-http 0.6/0.7` via kube-client and
+# reqwest), none of which we can resolve from here and none of which is a
+# correctness or security question. A gate that is red for reasons the team
+# cannot act on stops being read.
+#
+# Known duplicates as of the pinned lockfile are listed in `skip` below, with
+# their cause. Anything not listed shows up as a warning in the cargo-deny
+# output and is a prompt to look.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# ADR-0002 §3.3 and A1. Each of these is a decision, so each is enforced rather
+# than remembered.
+deny = [
+    # `jiff` supersedes `chrono` for new code (ADR-0002 §3.3).
+    { crate = "chrono", reason = "excluded by ADR-0002 §3.3; use jiff" },
+    # Reservations and settlement are i64. A decimal type in the allowance path
+    # reintroduces the rounding question the integer decision removed.
+    { crate = "rust_decimal", reason = "excluded by ADR-0002 §3.3; allowance accounting is i64" },
+    { crate = "bigdecimal", reason = "same reason as rust_decimal" },
+    # rustls everywhere; no OpenSSL (ADR-0002 §3.3).
+    { crate = "openssl", reason = "rustls only; no OpenSSL" },
+    { crate = "openssl-sys", reason = "rustls only; no OpenSSL" },
+    { crate = "native-tls", reason = "rustls only; no OpenSSL" },
+    # A1: exactly one rustls crypto provider, and it is aws-lc-rs. `ring` in the
+    # graph means feature unification selected a second backend, which is a
+    # first-TLS-handshake panic waiting to happen. The `cargo tree -i ring`
+    # assertion in CI is the same check from the other direction.
+    { crate = "ring", reason = "A1: aws-lc-rs is the only rustls provider" },
+]
+
+# Known duplicates, each with the upstream cause, resolved against the pinned
+# lockfile on 2026-10-01. These are recorded rather than hidden: A1's second
+# assertion asks for a single `sha2` and `digest`, and that is **not** satisfiable
+# at sqlx 0.9.0 — `sqlx-core 0.9.0` depends on `sha2 0.10` while `sqlx-postgres`
+# and `sqlx-mysql` depend on `sha2 0.11`, so the split is inside sqlx itself and
+# no pin of ours moves it. Raised with Atlas on VUL-6 as an A2 item.
+#
+# What A1 was protecting is intact and is asserted hard in
+# ci/tls-provider-assertions.sh: one `rustls` (0.23.45), one `hmac` (0.13.0), and
+# no `ring`. Every VulcanFlow crate that hashes — vf-hook-notify, vf-ingest,
+# vf-meter — is on `sha2 0.11`/`digest 0.11`; the 0.10 generation is reachable
+# only from sqlx's internal hashing and from `crc-fast` under the AWS checksum
+# path, neither of which is a signature-verification surface.
+skip = [
+    { crate = "sha2:0.10.9", reason = "sqlx-core 0.9.0; sqlx-postgres uses 0.11. Upstream split inside sqlx — A2 item" },
+    { crate = "digest:0.10.7", reason = "transitively from sha2 0.10.9 and crc-fast 1.10.0 (aws-smithy-checksums)" },
+    { crate = "tower-http:0.6.11", reason = "kube-client 4.2.0 and reqwest 0.13.5; our direct pin is 0.7.1" },
+]
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# No git dependencies. A git dependency is not covered by the advisory database
+# the same way a registry crate is, and `Cargo.lock` pins a commit that can be
+# force-pushed away.
+allow-git = []
