@@ -1,0 +1,58 @@
+name: lane-gate
+
+# Mechanical enforcement of the VulcanFlow delivery lanes (ADR-0005).
+#
+# Every agent in this organisation reaches GitHub through one shared identity, so
+# CODEOWNERS cannot tell a test author from a coding agent and "two required approving
+# reviews" is unsatisfiable. The lanes are therefore enforced by partitioning the diff
+# on paths rather than on people. These four checks are the gate.
+#
+# Job names are the status-check names. Wire all four as required checks on main.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lane-partition:
+    name: lane-partition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch base branch
+        run: git fetch --no-tags origin "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
+      - name: A pull request may not change both production source and tests
+        run: ci/lane-gate.sh partition
+
+  test-erosion:
+    name: test-erosion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch base branch
+        run: git fetch --no-tags origin "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
+      - name: Tests may not be ignored, deleted or thinned out
+        run: ci/lane-gate.sh erosion
+
+  inline-test-modules:
+    name: inline-test-modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Production source may not contain #[cfg(test)] modules
+        run: ci/lane-gate.sh inline-tests
+
+  gate-self-test:
+    name: gate-self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The gate's own verdicts are asserted against fixture diffs
+        run: ci/lane-gate-test.sh ci/lane-gate.sh
