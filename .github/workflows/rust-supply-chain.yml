@@ -8,7 +8,9 @@
 #   1. Cargo.lock is committed and current          (`--locked` everywhere)
 #   2. cargo-deny: advisories, licences, bans, sources
 #   3. cargo-audit: RUSTSEC advisories
-#   4. ADR-0002 §3.6 / A1: no `ring`, no duplicate rustls/hmac/sha2/digest
+#   4. ADR-0002 §3.7.9: per shipped binary, no `ring`, no `chrono`, one
+#      `rustls`/`hmac`/`sha2`, and a second `digest` only by the one path §3.7.9
+#      permits
 #   5. `#![forbid(unsafe_code)]` in every crate root
 #   6. A CycloneDX SBOM is produced and uploaded
 #   7. The arm64 release build is reproducible across two builds
@@ -88,7 +90,7 @@ jobs:
         run: cargo audit --deny warnings
 
       # Assertion 4.
-      - name: ADR-0002 A1 — one TLS provider, one RustCrypto generation
+      - name: ADR-0002 §3.7.9 — one TLS provider, one RustCrypto generation per binary
         run: ci/tls-provider-assertions.sh
 
       # Assertion 5.
