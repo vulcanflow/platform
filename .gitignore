@@ -1,0 +1,8 @@
+# `.claude/` is tracked on purpose — it carries the agent process bootstrap (ADR-0007).
+# This one file inside it is not: the Paperclip harness writes it per workspace, so it is
+# local state, it differs between runs, and committing it would overwrite the next agent's.
+.claude/settings.local.json
+
+# Scope note: the Rust ignores (/target/ and friends) belong with the Cargo workspace when
+# it lands — see the vul-6/cargo-workspace-scaffold branch. This file deliberately covers
+# only the hazard this change introduces.
