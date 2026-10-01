@@ -1,0 +1,88 @@
+# The complete expected transitive dependency set of each pure library crate,
+# one crate name per line under a `[crate]` heading.
+#
+# This file is the mechanism behind ci/crate-boundaries.sh: the gate resolves
+# each crate and diffs the result against the section below, so a dependency
+# nobody anticipated fails the build without being named in the script. See that
+# script's header for why it is an allowlist and why names carry no version.
+#
+# Regenerate with `ci/crate-boundaries.sh --record`, and read the diff before
+# committing it. A new line here is a new crate inside a safety-critical,
+# I/O-free, WebAssembly-targeting library — which is a review conversation, not
+# a formatting change.
+
+[vf-core]
+jiff
+jiff-core
+jiff-static
+portable-atomic
+portable-atomic-util
+proc-macro2
+quote
+serde
+serde_core
+serde_derive
+syn
+thiserror
+thiserror-impl
+unicode-ident
+uuid
+vf-core
+
+[vf-authz]
+jiff
+jiff-core
+jiff-static
+portable-atomic
+portable-atomic-util
+proc-macro2
+quote
+serde
+serde_core
+serde_derive
+syn
+thiserror
+thiserror-impl
+unicode-ident
+uuid
+vf-authz
+vf-core
+
+[vf-graph]
+equivalent
+hashbrown
+indexmap
+itoa
+memchr
+proc-macro2
+quote
+serde
+serde_core
+serde_derive
+serde_json
+syn
+thiserror
+thiserror-impl
+unicode-ident
+vf-graph
+zmij
+
+[vf-translator]
+equivalent
+hashbrown
+indexmap
+itoa
+memchr
+proc-macro2
+quote
+serde
+serde_core
+serde_derive
+serde_json
+syn
+thiserror
+thiserror-impl
+unicode-ident
+vf-graph
+vf-translator
+zmij
