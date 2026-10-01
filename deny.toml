@@ -55,6 +55,16 @@ allow = [
     "MIT",
     "MIT-0",
     "MPL-2.0",
+    # NOT a contradiction of the `openssl` ban in `[bans]` below, and it is
+    # load-bearing: removing this line turns the build red.
+    #
+    # `OpenSSL` here is an SPDX *licence identifier*, not the OpenSSL library.
+    # It is required by `aws-lc-sys`, whose licence expression is
+    # `ISC AND (Apache-2.0 OR ISC) AND OpenSSL` — AWS-LC forked BoringSSL, which
+    # forked OpenSSL, so parts of it still carry the original licence text.
+    # `aws-lc-sys` is the A1 rustls provider (ADR-0002 §3.6) and is therefore in
+    # every binary that opens a TLS connection. The *crate* `openssl` stays
+    # banned.
     "OpenSSL",
     "Unicode-3.0",
     "Zlib",
@@ -72,10 +82,8 @@ private = { ignore = true }
 # reviewed for a trust store, not for code. An exception names the two crates it
 # actually applies to, so adding a third is a visible decision.
 #
-# Reached through sqlx-core 0.9.0 and rustls-platform-verifier 0.7.1
-# (kube-client, reqwest). Flagged to Atlas on VUL-6 for ratification — this is
-# the first licence policy call the workspace has had to make, and the allow
-# list above is not yet recorded in an ADR.
+# Reached through sqlx-core 0.9.0 — the `webpki-roots` trust store ADR-0002
+# §3.7.3 describes — and rustls-platform-verifier 0.7.1 (kube-client, reqwest).
 exceptions = [
     { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
     { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
@@ -100,16 +108,17 @@ multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 
-# ADR-0002 §3.3 and A1. Each of these is a decision, so each is enforced rather
-# than remembered.
+# ADR-0002 §3.5 ("Explicitly excluded") and A1. Each of these is a decision, so
+# each is enforced rather than remembered.
 deny = [
-    # `jiff` supersedes `chrono` for new code (ADR-0002 §3.3).
-    { crate = "chrono", reason = "excluded by ADR-0002 §3.3; use jiff" },
+    # `jiff` supersedes `chrono` for new code (ADR-0002 §3.5).
+    { crate = "chrono", reason = "excluded by ADR-0002 §3.5; use jiff" },
     # Reservations and settlement are i64. A decimal type in the allowance path
     # reintroduces the rounding question the integer decision removed.
-    { crate = "rust_decimal", reason = "excluded by ADR-0002 §3.3; allowance accounting is i64" },
+    { crate = "rust_decimal", reason = "excluded by ADR-0002 §3.5; allowance accounting is i64" },
     { crate = "bigdecimal", reason = "same reason as rust_decimal" },
-    # rustls everywhere; no OpenSSL (ADR-0002 §3.3).
+    # rustls everywhere; no OpenSSL (ADR-0002 §3.5). The `OpenSSL` SPDX
+    # identifier in `[licenses] allow` above is a different thing — see there.
     { crate = "openssl", reason = "rustls only; no OpenSSL" },
     { crate = "openssl-sys", reason = "rustls only; no OpenSSL" },
     { crate = "native-tls", reason = "rustls only; no OpenSSL" },
@@ -121,22 +130,49 @@ deny = [
 ]
 
 # Known duplicates, each with the upstream cause, resolved against the pinned
-# lockfile on 2026-10-01. These are recorded rather than hidden: A1's second
-# assertion asks for a single `sha2` and `digest`, and that is **not** satisfiable
-# at sqlx 0.9.0 — `sqlx-core 0.9.0` depends on `sha2 0.10` while `sqlx-postgres`
-# and `sqlx-mysql` depend on `sha2 0.11`, so the split is inside sqlx itself and
-# no pin of ours moves it. Raised with Atlas on VUL-6 as an A2 item.
+# lockfile on 2026-10-01. Short and specific on purpose: anything NOT listed here
+# shows up as a cargo-deny warning, which is a prompt to look.
 #
-# What A1 was protecting is intact and is asserted hard in
-# ci/tls-provider-assertions.sh: one `rustls` (0.23.45), one `hmac` (0.13.0), and
-# no `ring`. Every VulcanFlow crate that hashes — vf-hook-notify, vf-ingest,
-# vf-meter — is on `sha2 0.11`/`digest 0.11`; the 0.10 generation is reachable
-# only from sqlx's internal hashing and from `crc-fast` under the AWS checksum
-# path, neither of which is a signature-verification surface.
+# `sha2`/`digest` are listed here AND asserted in
+# ci/tls-provider-assertions.sh, because the two tools answer different
+# questions. cargo-deny resolves one graph for the whole workspace and counts
+# proc-macro dependencies; ADR-0002 §3.7.9 restates A1's duplicate assertion per
+# shipped binary with `--edges normal,no-proc-macro`, which is the question about
+# the artifact. A skip here does not relax anything there.
+#
+# The reason recorded below is NOT the one ADR-0002 §3.7.2 predicted, and the
+# difference matters. §3.7.2 expected `sha2 0.10` to leave the shipping graph
+# once `sqlx/migrate` was dropped from the workspace pin. It does not:
+# `sqlx 0.9.0`'s own manifest declares
+#
+#     [dependencies.sqlx-core] version = "=0.9.0" features = ["migrate"]
+#
+# unconditionally, and `sqlx-core/migrate = ["sha2", "crc"]`. So `sqlx-core`'s
+# optional `sha2 ^0.10` is enabled by depending on `sqlx` at all, no feature of
+# ours reaches it, and `sha2 0.10.9`/`digest 0.10.7` are in every binary that
+# links `vf-db`. Dropping `migrate` is still right — it was never in §3.2's
+# approved list and it does remove `sqlx-macros/migrate` and
+# `sqlx-postgres/migrate` — it just does not buy the single `sha2`.
+#
+# Raised with Atlas on VUL-40 as a §3.7.2/§3.7.9 correction. The only route to a
+# literally single `sha2` at these pins is to drop the `sqlx` facade and depend
+# on `sqlx-core` + `sqlx-postgres` directly, which is a `vf-db` design question
+# (VUL-26), not a manifest tweak.
+#
+# What A1 was protecting is intact either way and is asserted hard per binary:
+# one `rustls` (0.23.45), one `hmac` (0.13.0), no `ring`, no `chrono`. Every
+# VulcanFlow crate that hashes is on `sha2 0.11`/`digest 0.11`; the 0.10
+# generation is reachable only from sqlx-core's internal hashing and from
+# `crc-fast` under the AWS checksum path, neither of which is a
+# signature-verification surface.
+#
+# `base64 0.22/0.23` is an accepted duplicate (ADR-0002 §3.7.8) and is
+# deliberately NOT skipped: it is outside A1's four crates, so a warning is the
+# right volume for it.
 skip = [
-    { crate = "sha2:0.10.9", reason = "sqlx-core 0.9.0; sqlx-postgres uses 0.11. Upstream split inside sqlx — A2 item" },
-    { crate = "digest:0.10.7", reason = "transitively from sha2 0.10.9 and crc-fast 1.10.0 (aws-smithy-checksums)" },
-    { crate = "tower-http:0.6.11", reason = "kube-client 4.2.0 and reqwest 0.13.5; our direct pin is 0.7.1" },
+    { crate = "sha2:0.10.9", reason = "sqlx-core 0.9.0's optional sha2 ^0.10, enabled unconditionally by sqlx 0.9.0's own `features = [\"migrate\"]` on sqlx-core. Not reachable from any feature we select; sqlx-postgres uses 0.11. ADR-0002 §3.7.2 correction raised on VUL-40" },
+    { crate = "digest:0.10.7", reason = "two causes: sha2 0.10.9 (above), and crc-fast 1.10.0 <- aws-smithy-checksums 0.65.0, which the S3 checksum path needs. ADR-0002 §3.7.9 permits the second digest by the crc-fast path; the sqlx-core path is part of the same correction" },
+    { crate = "tower-http:0.6.11", reason = "accepted duplicate, ADR-0002 §3.7.8: kube-client 4.2.0 and reqwest 0.13.5 pull 0.6, our direct pin is 0.7.1. No shared state, no security surface" },
 ]
 skip-tree = []
 
