@@ -48,7 +48,10 @@ jobs:
         run: rustup show active-toolchain || rustup show
 
       - name: Read the pinned tool versions
-        run: cat ci/tool-versions.env >> "$GITHUB_ENV"
+        # `$GITHUB_ENV` takes KEY=VALUE lines only and errors on anything else,
+        # so the comments that explain each pin are filtered out here rather
+        # than removed from the file where they are worth reading.
+        run: grep -E '^[A-Z][A-Z0-9_]*=' ci/tool-versions.env >> "$GITHUB_ENV"
 
       - uses: actions/cache@v4
         with:
