@@ -1,0 +1,27 @@
+[package]
+name = "vf-ingest"
+description = "Findings artifact ingest: fresh observations per scan, idempotent replay, enrichment, explicit false-positive matching."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+hex = { workspace = true }
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
+vf-core = { workspace = true }
+vf-db = { workspace = true }
+vf-store = { workspace = true }

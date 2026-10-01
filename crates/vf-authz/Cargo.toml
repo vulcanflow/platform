@@ -1,0 +1,27 @@
+[package]
+name = "vf-authz"
+description = "Authorization Track A/B: challenge construction and verification, attestation, scope signals, basis records."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+jiff = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+vf-core = { workspace = true }
+
+# Pinned by ADR-0002 §3.4 so the test authors inherit the approved
+# versions. The tests themselves are written by Scribe (property, fuzz)
+# and Ledger (integration); coding agents do not author them.
+[dev-dependencies]
+arbitrary = { workspace = true }
+insta = { workspace = true }
+proptest = { workspace = true }

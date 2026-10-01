@@ -1,0 +1,26 @@
+[package]
+name = "vf-hook-notify"
+description = "secureCodeBox scan-completion hook: notifies the control plane that artifacts are ready."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+vf-core = { workspace = true }

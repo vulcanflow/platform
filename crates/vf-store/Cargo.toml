@@ -1,0 +1,18 @@
+[package]
+name = "vf-store"
+description = "The single S3 client constructor and object-store wrapper. Non-AWS configuration is mandatory, not optional."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

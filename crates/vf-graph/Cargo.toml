@@ -1,0 +1,32 @@
+[package]
+name = "vf-graph"
+description = "The shared flow-graph validator. Compiled natively and to WebAssembly, with identical behaviour in both."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+# `cdylib` for the `wasm32-unknown-unknown` build consumed by the SPA (TDD §7.3,
+# §14.1); `rlib` for the native build consumed by `vf-translator` and `vf-api`.
+# Both come from the same source, which is what makes parity checkable rather
+# than hoped for.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# Pinned by ADR-0002 §3.4 so the test authors inherit the approved
+# versions. The tests themselves are written by Scribe (property, fuzz)
+# and Ledger (integration); coding agents do not author them.
+[dev-dependencies]
+arbitrary = { workspace = true }
+insta = { workspace = true }
+proptest = { workspace = true }
