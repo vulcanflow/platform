@@ -1,0 +1,141 @@
+# §25 `build/rust-supply-chain` — the Phase 0 exit gate for the workspace.
+#
+# The test identifier is Ledger's (VUL-22) and Crucible runs it (VUL-37). This
+# workflow is the CI invocation that gives it something to run against. Every
+# step below fails the build on a finding; none of them warn.
+#
+# Asserted here:
+#   1. Cargo.lock is committed and current          (`--locked` everywhere)
+#   2. cargo-deny: advisories, licences, bans, sources
+#   3. cargo-audit: RUSTSEC advisories
+#   4. ADR-0002 §3.6 / A1: no `ring`, no duplicate rustls/hmac/sha2/digest
+#   5. `#![forbid(unsafe_code)]` in every crate root
+#   6. A CycloneDX SBOM is produced and uploaded
+#   7. The arm64 release build is reproducible across two builds
+name: rust-supply-chain
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # A clean advisory result is perishable: it is a statement about the
+    # advisory database on the day it ran, not about the lockfile. Re-running
+    # daily is what turns a new RUSTSEC entry into a signal instead of a
+    # surprise at the next release.
+    - cron: "17 5 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  supply-chain:
+    name: build/rust-supply-chain
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup show
+
+      - name: Read the pinned tool versions
+        run: cat ci/tool-versions.env >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cargo/bin
+          key: cargo-sc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'ci/tool-versions.env') }}
+
+      # Assertion 1. `--locked` fails if Cargo.lock is missing, stale, or would
+      # need updating to satisfy the manifests. It is the lockfile-is-committed
+      # check and the no-silent-version-drift check in one flag.
+      - name: Cargo.lock is committed and current
+        run: |
+          test -f Cargo.lock || { echo "FAIL: Cargo.lock is not committed" >&2; exit 1; }
+          cargo fetch --locked
+          git diff --exit-code -- Cargo.lock
+
+      - name: Install the pinned supply-chain tools
+        run: |
+          cargo install --locked --version "${CARGO_DENY_VERSION}" cargo-deny
+          cargo install --locked --version "${CARGO_AUDIT_VERSION}" cargo-audit
+          cargo install --locked --version "${CARGO_CYCLONEDX_VERSION}" cargo-cyclonedx
+
+      # Assertion 2.
+      - name: cargo deny (advisories, licences, bans, sources)
+        run: cargo deny check all
+
+      # Assertion 3. cargo-deny already reads the same database, but cargo-audit
+      # is what §21.3 names and it reads Cargo.lock directly, so a bug in the
+      # feature resolution above cannot hide an advisory from both.
+      - name: cargo audit
+        run: cargo audit --deny warnings
+
+      # Assertion 4.
+      - name: ADR-0002 A1 — one TLS provider, one RustCrypto generation
+        run: ci/tls-provider-assertions.sh
+
+      # Assertion 5.
+      - name: "#![forbid(unsafe_code)] in every crate root"
+        run: ci/forbid-unsafe.sh
+
+      # Assertion 6.
+      - name: Generate the CycloneDX SBOM
+        run: ci/sbom.sh target/sbom
+
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: target/sbom/*.cdx.json
+          if-no-files-found: error
+
+  # Separate job: two full release builds are the expensive part of the gate and
+  # there is no reason to make the advisory result wait behind them.
+  reproducible-arm64:
+    name: build/rust-supply-chain — reproducible arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # ci/reproducible-build.sh derives SOURCE_DATE_EPOCH from the commit
+          # date, which needs real history rather than a synthetic shallow one.
+          fetch-depth: 0
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup show
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-repro-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo fetch --locked
+        run: cargo fetch --locked
+
+      # Assertion 7.
+      - name: Two builds, identical artifacts
+        run: ci/reproducible-build.sh target/reproducibility
+
+      - name: Upload the digest manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-reproducibility-digests
+          path: target/reproducibility/digests-*.txt
+          if-no-files-found: error

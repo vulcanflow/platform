@@ -1,0 +1,126 @@
+# Build and lint gates for the VulcanFlow Cargo workspace.
+#
+# Runner architecture: Aether is arm64 (ADR-0002 §2), so the jobs whose output is
+# an artifact run on an arm64 runner. `ubuntu-24.04-arm` is a GitHub-hosted
+# label. `runs-on` cannot read the `env` context, so the label is written out at
+# each job. If this organisation's plan does not include GitHub-hosted arm64
+# runners for private repositories, replace `ubuntu-24.04-arm` everywhere with a
+# self-hosted arm64 label rather than silently building x86 and shipping it.
+name: rust-build
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  # A warning that does not fail the build is a warning nobody reads.
+  RUSTFLAGS: "-D warnings"
+  RUSTDOCFLAGS: "-D warnings"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Formatting and lints. Cheap, so they run first and fail fast.
+  # ---------------------------------------------------------------------------
+  fmt-clippy:
+    name: fmt + clippy + check
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      # `rustup show` installs exactly what rust-toolchain.toml pins, with no
+      # third-party action in the supply chain of the supply-chain gate.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup show
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      # `--locked` is the assertion that Cargo.lock is committed and current:
+      # it fails rather than updating the lockfile.
+      - name: cargo fetch --locked
+        run: cargo fetch --locked
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo check
+        run: cargo check --locked --offline --workspace --all-targets --all-features
+
+      - name: cargo clippy (warnings denied)
+        run: cargo clippy --locked --offline --workspace --all-targets --all-features -- -D warnings
+
+      - name: cargo doc (warnings denied)
+        run: cargo doc --locked --offline --workspace --no-deps --all-features
+
+      # Load-bearing for VUL-24, VUL-25, VUL-26 and VUL-29, whose acceptance is
+      # literally this assertion.
+      - name: Crate boundaries — no I/O in the pure library crates
+        run: ci/crate-boundaries.sh
+
+  # ---------------------------------------------------------------------------
+  # vf-graph builds for both targets from one source. This is the build half of
+  # §25 `graph/native-wasm-parity`; the parity test itself is Scribe's (VUL-7)
+  # and Crucible runs it (VUL-37).
+  # ---------------------------------------------------------------------------
+  graph-native-and-wasm:
+    name: vf-graph native + wasm
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup show
+
+      - name: Add the WebAssembly target
+        # Deliberately not in rust-toolchain.toml: ADR-0002 §2 fixes that file's
+        # contents and lists only the Aether target, so the file stays
+        # byte-identical to the ADR and the browser target is added here.
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo fetch --locked
+        run: cargo fetch --locked
+
+      - name: Build vf-graph for the native target
+        run: cargo build --locked --offline --release -p vf-graph
+
+      # If anything I/O-bearing ever enters vf-graph's default feature set this
+      # step is what fails, because wasm32-unknown-unknown has no host interface:
+      # no clock, no sockets, no filesystem, no OS randomness.
+      - name: Build vf-graph for wasm32-unknown-unknown
+        run: cargo build --locked --offline --release -p vf-graph --target wasm32-unknown-unknown
+
+      - name: Clippy both targets
+        run: |
+          cargo clippy --locked --offline -p vf-graph --all-targets -- -D warnings
+          cargo clippy --locked --offline -p vf-graph --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Upload the wasm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vf-graph-wasm
+          path: target/wasm32-unknown-unknown/release/*.wasm
+          if-no-files-found: error

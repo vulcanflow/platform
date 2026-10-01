@@ -1,0 +1,93 @@
+# CI invocation of the test suites.
+#
+# Scope note, because the three-role discipline matters more than the
+# convenience of one agent: this workflow *invokes* suites. It does not contain
+# tests, and no coding agent adds one. Scribe authors the property and fuzz
+# tests, Ledger the integration suites, and Crucible is the one who reads a red
+# result and reports it. A failing test here is a defect in the code — nobody
+# weakens, skips or `#[ignore]`s a test to make this workflow green.
+#
+# The §25 identifiers this workflow is the runner for, as they land:
+#   authz/*, usage/*, graph/*, tenancy/*, execution/*, build/rust-supply-chain
+# Until a suite exists its invocation passes vacuously. §23.2 is explicit that
+# a listed test identifier is not an assertion that it passes, and an empty
+# `cargo test` run is not evidence of anything.
+name: rust-test
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  unit-and-property:
+    name: unit + property suites
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup show
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo fetch --locked
+        run: cargo fetch --locked
+
+      - name: cargo test
+        run: cargo test --locked --offline --workspace --all-features
+
+      # Property tests find a counterexample and then write it to a regression
+      # file. Losing that file means re-finding the same bug by chance.
+      - name: Upload proptest regressions
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proptest-regressions
+          path: crates/*/proptest-regressions/**
+          if-no-files-found: ignore
+
+  integration:
+    name: integration suites (testcontainers)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup show
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-it-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo fetch --locked
+        run: cargo fetch --locked
+
+      # Ledger's suites bring their own Postgres through testcontainers, so the
+      # only requirement on the runner is a working Docker daemon — which the
+      # GitHub-hosted images already have. Nothing here touches a cluster.
+      - name: cargo test --test '*'
+        run: cargo test --locked --offline --workspace --all-features --tests
