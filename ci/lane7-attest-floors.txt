@@ -1,0 +1,22 @@
+# ci/lane7-attest-floors.txt — the ADR-0005 §6.5 floor manifest.
+#
+# Field 2 is the newest commit NOT asserted on: the range is
+# `git rev-list --first-parent <floor>..refs/heads/main`, exclusive of the floor.
+# Moving a floor, or adding a repository, is an amendment to ADR-0005 §6.5 and
+# not an edit to this file. ci/lane7-attest.sh resolves this path against itself
+# and offers no override, because a floor chosen at run time is not part of the
+# record.
+#
+# docs's floor is b31ddfec specifically so that b40201b is the first commit
+# asserted on: §6.4's defect is then derived by the detector rather than written
+# into it. There is no known-exceptions list, by design.
+#
+# A malformed row, a third field or a duplicate repository is exit 2 — the
+# manifest is the detector's own configuration, and a broken one means the run
+# did not happen.
+#
+# <owner>/<repo>            <40-hex floor sha>
+vulcanflow/docs             b31ddfeca0ad88cb481929f7eacd64d7e8194ac0
+vulcanflow/platform         41506ad3bea5282473207a725b00625c5f65e0aa
+vulcanflow/infra            304b300e01e0c9ad8210977d80986afe65517daa
+vulcanflow/vf-api           45d7ded9d32d0fff8e60a17c97c725c475748497
