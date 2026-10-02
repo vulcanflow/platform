@@ -220,6 +220,10 @@ lookup_pr_head() {
 }
 
 # lookup_check_runs <repo> <sha> -> zero or more `<name> <conclusion>` lines
+#
+# Spec §6.1 fixes the fixture shape as two space-separated fields, and live mode
+# emits the same. A name may itself contain whitespace, so the consumer splits on
+# the LAST field rather than the second — see check_gate_confirmed.
 lookup_check_runs() {
   local repo="$1" sha="$2" json
   have_gh_token || { note "no LANE7_GITHUB_TOKEN: the check-run lookup for $(short "$sha") did not run"; return 1; }
@@ -563,7 +567,7 @@ classify_commit() {
 # false — only that nothing confirmed it, which is what the detector can honestly
 # say. Hence UNCONFIRMED rather than UNTRUE.
 check_gate_confirmed() {
-  local repo="$1" sha="$2" runs='' unconfirmed='' name conclusion
+  local repo="$1" sha="$2" runs='' unconfirmed='' line name conclusion
   if ! runs="$(lookup_check_runs "$repo" "$K_HEAD")"; then
     finding L7-GATE-UNCHECKED "$repo" "$sha" \
       'the check-run lookup could not run, so the attested PASS was not confirmed'
@@ -572,8 +576,24 @@ check_gate_confirmed() {
   if [ -z "$(trim "$runs")" ]; then
     unconfirmed='the commit has no check runs at all'
   else
-    while read -r name conclusion _; do
-      if [ -z "$name" ]; then continue; fi
+    while IFS= read -r line; do
+      line="$(trim "$line")"
+      if [ -z "$line" ]; then continue; fi
+      # The conclusion is the LAST whitespace-delimited field and the name is
+      # everything before it. Not `read -r name conclusion _`: a check-run name
+      # may itself contain whitespace — GitHub permits it and third-party apps
+      # use it — and field-2 parsing would read the second word of such a name
+      # as the conclusion, find it is not `success`, and report
+      # L7-GATE-UNCONFIRMED against a commit whose gate genuinely passed. A
+      # detector that fires on the behaviour it exists to bless gets switched
+      # off. For spec §6.1's two-field `<name> <conclusion>` fixture shape the
+      # two readings are identical, so no fixture row moves; a single-field line
+      # still yields an empty conclusion and therefore `pending`.
+      if [[ "$line" =~ ^(.*[[:space:]])([^[:space:]]+)$ ]]; then
+        name="$(trim "${BASH_REMATCH[1]}")"; conclusion="${BASH_REMATCH[2]}"
+      else
+        name="$line"; conclusion=''
+      fi
       case "$(lower "${conclusion:-pending}")" in
         success) ;;
         *) unconfirmed="required check '$name' is '${conclusion:-pending}'"; break ;;
