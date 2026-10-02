@@ -41,9 +41,19 @@ green() { printf '\033[32m%s\033[0m' "$1"; }
 amber() { printf '\033[33m%s\033[0m' "$1"; }
 
 command -v gh >/dev/null 2>&1 || { printf 'audit: `gh` is not on PATH\n' >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { printf 'audit: `jq` is not on PATH\n' >&2; exit 2; }
 
 repos_json="$(gh api "/orgs/$ORG/repos?per_page=100" --paginate 2>&1)" || {
   printf 'audit: cannot list repositories for %s:\n%s\n' "$ORG" "$repos_json" >&2; exit 2; }
+
+# Parsed up front, and its exit status checked, because the alternative is the worst
+# failure this script has: if jq fails inside the loop's here-string the loop reads one
+# empty line, skips it, and the audit prints "0 gap(s)" having examined nothing.
+# `--paginate` concatenates one JSON array per page, so slurp and flatten one level.
+repos_tsv="$(printf '%s' "$repos_json" \
+  | jq -s -r 'flatten(1) | .[] | [.name, (.private|tostring), (.default_branch // "main")] | @tsv')" || {
+  printf 'audit: the repository list for %s did not parse — refusing to report a verdict\n' "$ORG" >&2
+  exit 2; }
 
 plan="$(gh api "/orgs/$ORG" --jq '.plan.name' 2>/dev/null || printf unknown)"
 
@@ -53,7 +63,8 @@ printf 'Repository protection audit — org %s, plan %s, %s\n' \
   "$ORG" "$plan" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 printf '%s\n' '----------------------------------------------------------------------------'
 
-# `jq -r` over the list keeps one line per repository: name, visibility, default branch.
+# One line per repository: name, visibility, default branch. An organisation with no
+# repositories is zero iterations and a clean exit, not an error.
 while IFS=$'\t' read -r name private branch; do
   [ -n "$name" ] || continue
   branch="${branch:-main}"
@@ -104,16 +115,38 @@ while IFS=$'\t' read -r name private branch; do
   fi
 
   # ---- holds code: protection is not optional ---------------------------------------
+  #
+  # Classic branch protection is not the only mechanism: a repository can be governed by a
+  # *ruleset* instead, which leaves no record at /branches/{branch}/protection. This audit
+  # does not evaluate rulesets — a ruleset's rules are not the §8.2 fields and treating them
+  # as equivalent is how a weak ruleset gets read as protection. It does ask whether any
+  # apply, so the finding says "evaluate this by hand" instead of asserting something false
+  # about a branch that may in fact be governed.
   if [ "$protection" != present ]; then
+    rules_n=0
+    rules="$(gh api "/repos/$ORG/$name/rules/branches/$branch" 2>/dev/null || true)"
+    rules_n="$(printf '%s' "$rules" | jq -r 'if type == "array" then length else 0 end' 2>/dev/null || printf 0)"
     printf '  %s %-16s %-7s HOLDS CODE and protection is %s\n' "$(red 'GAP')" "$label" "$vis" "$protection"
-    printf '                                 main is directly writable and force-pushable.\n'
+    if [ "${rules_n:-0}" -gt 0 ]; then
+      printf '                                 %s ruleset rule(s) apply to %s — this audit does not\n' "$rules_n" "$branch"
+      printf '                                 evaluate rulesets against ADR-0005 §8.2, so check by hand\n'
+      printf '                                 before acting: the branch may already be governed.\n'
+    else
+      printf '                                 no branch protection and no ruleset: %s is directly\n' "$branch"
+      printf '                                 writable, force-pushable and admin-bypassable.\n'
+    fi
     gaps=$((gaps + 1)); continue
   fi
 
   admins="$(printf '%s' "$prot" | jq -r '.enforce_admins.enabled // false')"
   force="$(printf '%s'  "$prot" | jq -r '.allow_force_pushes.enabled // false')"
   dels="$(printf '%s'   "$prot" | jq -r '.allow_deletions.enabled // false')"
-  contexts="$(printf '%s' "$prot" | jq -r '[.required_status_checks.contexts // []] | flatten | length')"
+  # GitHub reports required checks in two places: the legacy `contexts` array and the newer
+  # `checks` array of {context, app_id}. A branch configured through the newer form has an
+  # empty `contexts`, so counting only that reads a protected repository as having none.
+  contexts="$(printf '%s' "$prot" | jq -r '
+    [ (.required_status_checks.contexts // [])[],
+      ((.required_status_checks.checks // [])[] | .context) ] | unique | length')"
 
   defects=()
   [ "$admins" = true ]  || defects+=("enforce_admins is false — an admin can bypass the gate")
@@ -121,11 +154,17 @@ while IFS=$'\t' read -r name private branch; do
   [ "$dels"   = false ] || defects+=("allow_deletions is true — main can be deleted")
 
   # R2: a repository with a pull-request workflow must have its checks required, not
-  # merely reporting. A repository with no workflow has nothing to require.
+  # merely reporting. A repository with no workflow has nothing to require — but only a
+  # 404 means "no workflow". A 403, a 5xx or a rate-limit answer means we do not know,
+  # and "we do not know" is a finding, not an `ok`.
   wf_rc=0
   wf="$(gh api "/repos/$ORG/$name/contents/.github/workflows" 2>&1)" || wf_rc=$?
-  if [ $wf_rc -eq 0 ] && [ "$contexts" -eq 0 ]; then
-    defects+=("has .github/workflows but 0 required status checks — the checks report, they do not block (ADR-0005 R2)")
+  if [ $wf_rc -eq 0 ]; then
+    [ "$contexts" -eq 0 ] && defects+=("has .github/workflows but 0 required status checks — the checks report, they do not block (ADR-0005 R2)")
+  elif printf '%s' "$wf" | grep -qi 'Not Found'; then
+    : # no workflow directory, so there is nothing to require
+  else
+    defects+=("cannot read .github/workflows ($(printf '%s' "$wf" | head -1)) — so whether its checks are required is unknown, and unknown is not ok")
   fi
 
   if [ ${#defects[@]} -gt 0 ]; then

@@ -76,6 +76,21 @@ prot_good() {
 }
 has_workflows() { printf '[{"name":"lane-gate.yml","type":"file"}]' > "$FIXDIR/repos_vulcanflow_${1}_contents_.github_workflows"; }
 no_workflows()  { printf 'RC=1\n{"message":"Not Found","status":"404"}' > "$FIXDIR/repos_vulcanflow_${1}_contents_.github_workflows"; }
+unreadable_workflows() { printf 'RC=1\n{"message":"API rate limit exceeded","status":"403"}' > "$FIXDIR/repos_vulcanflow_${1}_contents_.github_workflows"; }
+
+# prot_checks <repo> <context count> — required checks in the newer `checks` form, with
+# `contexts` empty, which is how GitHub reports a branch configured through that API.
+prot_checks() {
+  local ck="[]"
+  if [ "${2:-0}" -gt 0 ]; then
+    ck="$(seq 1 "$2" | sed 's/.*/{"context":"check&","app_id":null}/' | paste -sd, -)"; ck="[$ck]"
+  fi
+  printf '{"required_status_checks":{"strict":true,"contexts":[],"checks":%s},"enforce_admins":{"enabled":true},"allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":false}}' \
+    "$ck" > "$FIXDIR/repos_vulcanflow_${1}_branches_main_protection"
+}
+
+rules_none()    { printf '[]' > "$FIXDIR/repos_vulcanflow_${1}_rules_branches_main"; }
+rules_present() { printf '[{"type":"deletion"},{"type":"non_fast_forward"}]' > "$FIXDIR/repos_vulcanflow_${1}_rules_branches_main"; }
 
 # check <name> <expected exit> <expected substring in output>
 check() {
@@ -103,14 +118,14 @@ check "protected repo with required checks passes" 0 "0 gap"
 # --- 2. the event the deferral is waiting for: first push into a private repo -
 reset
 repos "[$(repo_entry vf-authz true)]"
-coded_repo vf-authz; prot_refused vf-authz
+coded_repo vf-authz; prot_refused vf-authz; rules_none vf-authz
 check "code pushed into unprotectable private repo" 1 "GAP"
-check "   and it names the writable main" 1 "directly writable and force-pushable"
+check "   and it names the writable main" 1 "writable, force-pushable and admin-bypassable"
 
 # --- 3. a repo with code and no protection at all ---------------------------
 reset
 repos "[$(repo_entry infra false)]"
-coded_repo infra; prot_absent infra
+coded_repo infra; prot_absent infra; rules_none infra
 check "code in a public repo with no protection" 1 "GAP"
 
 # --- 4. protection present but an admin can bypass it ----------------------
@@ -159,6 +174,43 @@ reset
 repos "[$(repo_entry vf-web true)]"
 printf 'RC=1\n{"message":"Bad credentials","status":"401"}' > "$FIXDIR/repos_vulcanflow_vf-web_commits_per_page_1"
 check "unreadable commits counts as a gap" 1 "cannot read commits"
+
+# --- 12. required checks in the newer `checks` form, `contexts` empty ---
+# Counting only `contexts` read a correctly protected branch as having none, and
+# reported a false R2 gap against it.
+reset
+repos "[$(repo_entry platform false)]"
+coded_repo platform; prot_checks platform 4; has_workflows platform
+check "required checks via .checks, not .contexts" 0 "4 required check"
+
+# --- 13. the workflows directory cannot be read: unknown is not ok -----
+# Only a 404 means "no workflow". A 403 or a rate-limit answer means we do not know
+# whether its checks are required, and the first draft silently called that ok.
+reset
+repos "[$(repo_entry infra false)]"
+coded_repo infra; prot_good infra true false false 0; unreadable_workflows infra
+check "unreadable workflows dir is a gap, not ok" 1 "unknown is not ok"
+
+# --- 14. the repository list does not parse: exit 2, not a clean audit --
+# The worst failure available to this script: jq fails, the loop reads one empty line
+# and skips it, and the audit prints "0 gap(s)" having examined nothing.
+reset
+printf 'this is not json' > "$FIXDIR/orgs_vulcanflow_repos_per_page_100"
+check "unparseable repo list exits 2" 2 "did not parse"
+
+# --- 15. an organisation with no repositories ------------------------
+reset
+repos "[]"
+check "empty org is zero iterations, not an error" 0 "0 ok, 0 watched"
+
+# --- 16. protection absent but a ruleset governs the branch ----------
+# Still a gap — this audit does not evaluate rulesets against §8.2 — but it must not
+# assert that main is writable when something may well be governing it.
+reset
+repos "[$(repo_entry platform false)]"
+coded_repo platform; prot_absent platform; rules_present platform
+check "ruleset present: gap, but no false claim" 1 "does not"
+check "   and it says check by hand" 1 "check by hand"
 
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
