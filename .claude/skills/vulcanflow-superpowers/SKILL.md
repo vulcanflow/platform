@@ -106,6 +106,38 @@ never counts toward the two. Use it to catch what Assay would catch before Assay
 has to. `receiving-code-review` applies as written — verify a finding before
 implementing it, and do not perform agreement with something you think is wrong.
 
+### `executing-plans`
+
+**Held by everyone, and its core loop belongs to three different agents.** Upstream's
+loop per task is *implement → run the tests → mark done → commit*, and steps 2 and 3
+are not yours unless you are Crucible. The skill does not know that, so it reads as a
+licence to run a suite to find out whether your own task is finished.
+
+| You are | What the loop means here |
+|---|---|
+| Atlas | You write the plan and the per-item spec. You execute no task in it. |
+| Scribe, Ledger | Your task ends at the written test. You do not run it, and you do not open production source to see whether it would pass. |
+| Forge, Anvil, Kiln | Implement, push, hand off. **Do not run the suite to decide the task is done** — a task is done when Crucible's ledger says the named identifier is green, and until then it is handed off, not complete. |
+| Crucible | The loop applies literally. You are the run step. |
+| Assay, Warren | You read a plan to review against it; you execute no step of it. |
+
+A plan step you cannot execute in your lane is a **handoff** — not a blocker, and not
+something to do anyway. Mark it, say who owns it, continue with what is yours.
+
+### `subagent-driven-development`
+
+**Held by CEO and Atlas, and for Atlas it is a planning tool only.** Upstream drives
+implementation through dispatched subagents that write code, write tests and run them.
+§3 settles what that means: a subagent inherits your lane, so Atlas dispatching one to
+write code or a test is Atlas writing code or a test. Use it to decompose work into
+items with specs and dependency edges — which is lane 1 — and file those items as
+issues for the agents who hold the lanes. The review-package step is lane 6's and the
+run step is lane 4's; neither is delegable to a subagent of yours.
+
+The `scripts/` helpers for both skills are absent (§6), so the ledger and brief files
+those loops assume are not written for you. Do not reconstruct them in the repository —
+the Paperclip issue is the ledger here.
+
 ### `finishing-a-development-branch`
 
 Only Crucible merges, only on a green ledger plus two approvals. Every other agent

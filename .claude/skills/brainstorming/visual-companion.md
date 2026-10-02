@@ -297,3 +297,22 @@ If the session used `--project-dir`, mockup files persist in `.superpowers/brain
 
 - Frame template (CSS reference): `scripts/frame-template.html`
 - Helper script (client-side): `scripts/helper.js`
+
+## Paperclip note — the server this file launches is not shipped
+
+Everything above is upstream verbatim at `8ca22dba9a94f28898bbce59f2537ff4d87c747d`
+(https://github.com/obra/superpowers/tree/8ca22dba9a94f28898bbce59f2537ff4d87c747d/skills/brainstorming).
+`scripts/helper.js`, `scripts/server.cjs`, `scripts/start-server.sh` and `scripts/stop-server.sh`
+are **absent** from this copy — Paperclip does not install externally sourced executables into an
+agent runtime. `SKILL.md` carries the same note; this file repeats it because this is the file that
+hands you the `bash scripts/start-server.sh …` command, and a reader who arrives here directly from
+a link has not seen `SKILL.md`'s footer.
+
+**So the visual companion is not available here.** Do not offer it to the board and do not run the
+launch command — it fails on a missing file. Use `brainstorming`'s own fallback: the conversation
+itself, with options written out as text, and anything genuinely visual produced as a committed
+artefact in the repository or as a Markdown document on the issue, which is reviewable, diffable and
+does not need a server. `frame-template.html` is present and is a CSS reference only.
+
+Reinstating the companion means shipping four executables into the agent runtime, which is a
+decision for CEO and an ADR-0007 amendment, not something to arrange around at the point of use.

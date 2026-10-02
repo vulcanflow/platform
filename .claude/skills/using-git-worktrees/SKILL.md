@@ -165,3 +165,29 @@ Ready to implement <feature-name>
 | "The worktree directory is surely ignored already" | Run `git check-ignore`. An unignored worktree directory commits the whole tree into the repo. |
 | "Any directory name works" | Explicit instructions beat an existing project-local directory, which beats the `.worktrees/` default. |
 | "The workspace is fresh — baseline tests can wait" | A dirty baseline makes every later failure ambiguous. Run the tests now; proceeding past failures is your human partner's call. |
+
+## vulcanFlow note — the ignore check is weaker than it reads
+
+Everything above is upstream verbatim at `8ca22dba9a94f28898bbce59f2537ff4d87c747d`. This note is
+vulcanFlow's and is appended rather than patched in, so the vendored copy stays a true copy of the
+pin (ADR-0007).
+
+**Safety Verification's command does not test the directory you are about to use:**
+
+```bash
+git check-ignore -q .worktrees 2>/dev/null || git check-ignore -q worktrees 2>/dev/null
+```
+
+It passes when **either** name is ignored. If `.worktrees` is ignored and step 2 selected
+`worktrees/` — because the project already had one — the check succeeds and the directory you then
+create the worktree in is tracked, which is the exact outcome the step's own "Why critical" names.
+Test the selected location instead:
+
+```bash
+git check-ignore -q "$LOCATION" || { echo "refusing: $LOCATION is not ignored"; exit 1; }
+```
+
+**In this repository the defect is unreachable**: `.gitignore` carries both `.worktrees/` and
+`worktrees/`. The note stays because the skill travels to repositories that do not, and because a
+safety check that reports success without having checked is the failure mode ADR-0005 §6.2
+corollary 4 is about.
