@@ -212,5 +212,28 @@ coded_repo platform; prot_absent platform; rules_present platform
 check "ruleset present: gap, but no false claim" 1 "does not"
 check "   and it says check by hand" 1 "check by hand"
 
+# --- 17. one parse of the repository list, not two ------------------------
+# Structural, not behavioural, and deliberately so. The audit validates the repository list
+# once at the top into `repos_tsv`. A second raw parse feeding the loop's here-string is not
+# a behaviour difference today — `${branch:-main}` happens to cover the same ground as the
+# `// "main"` fallback, and fixture 14 exits before the loop is ever reached — so no fixture
+# organisation can tell the two apart. What it is, is a second source of truth for the same
+# bytes, and the validation at the top applies to only one of them. The next edit to either
+# is where they diverge and the validated rows stop being the ones audited. Assert the shape
+# instead, because the behaviour cannot be asserted.
+assert_src() {
+  local name="$1" expect="$2" pattern="$3" n
+  n="$(grep -c -- "$pattern" "$AUDIT" || true)"
+  if [ "$n" = "$expect" ]; then
+    printf 'ok    %-52s count=%s\n' "$name" "$n"; pass_count=$((pass_count+1))
+  else
+    printf 'NOT OK %-51s expected %s occurrence(s) of /%s/, found %s\n' \
+      "$name" "$expect" "$pattern" "$n"
+    fail_count=$((fail_count+1))
+  fi
+}
+assert_src "the repository list is parsed exactly once" 1 '\[\.name,'
+assert_src "the loop consumes the validated rows" 1 'done <<< "\$repos_tsv"'
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]

@@ -176,7 +176,7 @@ while IFS=$'\t' read -r name private branch; do
       "$(green 'ok')" "$label" "$vis" "$contexts"
     ok=$((ok + 1))
   fi
-done <<< "$(printf '%s' "$repos_json" | jq -r '.[] | [.name, (.private|tostring), .default_branch] | @tsv')"
+done <<< "$repos_tsv"
 
 printf '%s\n' '----------------------------------------------------------------------------'
 printf '%s ok, %s watched (empty, unprotectable), %s gap(s)\n' "$ok" "$watching" "$gaps"
