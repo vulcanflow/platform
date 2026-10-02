@@ -33,6 +33,9 @@ classify_path() {
   case "$1" in
     # --- GATE: the enforcement mechanism itself ---
     ci/lane-gate.sh|ci/lane-gate-test.sh|.github/workflows/lane-gate.yml) echo GATE ;;
+    # The repository-protection audit is the gate on the branch protection that makes these
+    # checks binding, so weakening it may not be bundled with the change it would let through.
+    ci/repo-protection-audit.sh|ci/repo-protection-audit-test.sh) echo GATE ;;
 
     # --- TEST: owned by the test authors (Scribe, Ledger) ---
     tests/*|crates/*/tests/*|fuzz/*|conformance/*) echo TEST ;;

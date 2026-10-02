@@ -56,3 +56,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: The gate's own verdicts are asserted against fixture diffs
         run: ci/lane-gate-test.sh ci/lane-gate.sh
+
+  # ci/repo-protection-audit.sh itself cannot run here — it reads the whole organisation and
+  # the per-repository GITHUB_TOKEN cannot. Its harness can: it serves fixture responses from
+  # a stub `gh`, so this job asserts the audit's verdicts without any network at all. The
+  # audit proper runs on a schedule from the Paperclip routine "Org repo protection audit".
+  audit-self-test:
+    name: audit-self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The protection audit's verdicts are asserted against fixture orgs
+        run: ci/repo-protection-audit-test.sh ci/repo-protection-audit.sh
