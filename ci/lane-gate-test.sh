@@ -162,5 +162,25 @@ check "first test in a previously bare tree" erosion pass
 setup
 check "empty diff" partition pass
 
+# --- 16. the repo-protection audit is gate, not neutral ----------------
+# The audit is what keeps the branch protection that makes these checks binding, so it
+# carries the same bundling rule as the gate itself: alone, yes; with code, no.
+setup
+printf '#!/usr/bin/env bash\n# audit\n' > ci/repo-protection-audit.sh
+commit audit-only
+check "audit script change alone" partition pass
+
+setup
+printf '#!/usr/bin/env bash\n# audit\n' > ci/repo-protection-audit.sh
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit audit-plus-code
+check "audit script change + prod" partition fail
+
+setup
+printf '#!/usr/bin/env bash\n# audit test\n' > ci/repo-protection-audit-test.sh
+printf '#[test]\nfn subs(){assert_eq!(vf_core::sub(3,1),2);}\n' > crates/vf-core/tests/sub.rs
+commit audit-test-plus-tests
+check "audit harness change + tests" partition fail
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
