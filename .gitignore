@@ -1,0 +1,22 @@
+# `.claude/` is tracked on purpose — it carries the agent process bootstrap (ADR-0007).
+# This one file inside it is not: the Paperclip harness writes it per workspace, so it is
+# local state, it differs between runs, and committing it would overwrite the next agent's.
+.claude/settings.local.json
+
+# Scratch trees the vendored skills write into the repository root. `brainstorming`,
+# `executing-plans` and `subagent-driven-development` all write under `.superpowers/`
+# (`brainstorm/`, `sdd/`); upstream's own brainstorming note says to ignore it. These are
+# session artefacts of a run, not state any other agent should inherit.
+.superpowers/
+
+# Worktree parents. `using-git-worktrees` requires the directory it is about to create a
+# worktree in to be ignored, and its check passes if *either* name is ignored while the one
+# it then uses may not be — see the vulcanFlow note in that skill. Ignoring both names makes
+# that defect unreachable here, which is cheaper than carrying a patched copy.
+.worktrees/
+worktrees/
+
+# Scope note: the Rust ignores (/target/ and friends) belong with the Cargo workspace when
+# it lands — see the vul-6/cargo-workspace-scaffold branch. This file deliberately covers
+# only the hazards this change introduces — which, because this change vendors the skills,
+# includes the directories those skills create.
