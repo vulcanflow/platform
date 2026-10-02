@@ -65,6 +65,11 @@ jobs:
     name: audit-self-test
     runs-on: ubuntu-latest
     steps:
+      # The harness serves a stub `gh` and never reaches the network, so it needs the tree
+      # and nothing else. actions/checkout leaves a token in .git/config for the life of
+      # the job by default; nothing in this job wants one.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: The protection audit's verdicts are asserted against fixture orgs
         run: ci/repo-protection-audit-test.sh ci/repo-protection-audit.sh
