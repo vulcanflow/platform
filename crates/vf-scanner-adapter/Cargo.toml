@@ -1,0 +1,22 @@
+[package]
+name = "vf-scanner-adapter"
+description = "Runs inside scanner images: materializes inputs, builds argv, classifies outcomes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "vf-scanner-adapter"
+path = "src/main.rs"
+[features]
+# Enables the parts of the suite that need `just dev-up` services (§A6.2).
+integration = []
+
+[dependencies]
+vf-core = { workspace = true }
+vf-translator = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

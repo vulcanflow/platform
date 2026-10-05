@@ -1,0 +1,19 @@
+# Pinned per architecture §A5. One toolchain for every crate in the workspace
+# (§2.5.2). Nightly is used only by cargo-fuzz and is pinned separately in
+# fuzz/rust-toolchain.toml, which is in the test lane and not created here.
+#
+# Targets: both Linux GNU architectures are listed explicitly rather than
+# relying on the host target coming for free. The project is architecture
+# agnostic — arm64 and amd64 are equal first-class deployment targets — so an
+# aarch64 developer and an x86_64 developer must get the identical target set
+# from the same checkout, and neither may be the one who discovers that the
+# other architecture no longer builds. See the deviation note in README.md.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+targets = [
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "wasm32-unknown-unknown",
+]
+profile = "minimal"

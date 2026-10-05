@@ -1,0 +1,239 @@
+[workspace]
+resolver = "3"
+# Crate inventory is exactly architecture §A1.3. There is no vf-store, and there
+# are no crates beyond this list; tests/ and fuzz/ are test-lane directories and
+# are not workspace members.
+members = [
+    "crates/vf-core",
+    "crates/vf-db",
+    "crates/vf-graph",
+    "crates/vf-translator",
+    "crates/vf-authz",
+    "crates/vf-meter",
+    "crates/vf-remediation",
+    "crates/vf-api",
+    "crates/vf-operator",
+    "crates/vf-admission",
+    "crates/vf-ingest",
+    "crates/vf-hook-notify",
+    "crates/vf-scanner-adapter",
+    "crates/vf-report",
+    "crates/vf-abuse",
+    "crates/vf-testkit",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99.0"
+publish = false
+repository = "https://github.com/vulcanflow/platform"
+
+# ---------------------------------------------------------------------------
+# Pinned crate set — architecture §A5.
+#
+# Every entry is an exact `=` pin. The §A5 table pins a minor series; the patch
+# recorded here is the newest published patch of that series on 2026-10-05, so
+# the first Cargo.lock starts current. A bump or an addition is a reviewed change
+# to the §A5 table first, then to this block.
+#
+# Feature sets are the ones §A5 names. Where §A5 is silent, default features are
+# used, except that reqwest takes `no default features` as §A5 requires.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+
+# --- internal crates (§A1.3 / §A1.4) --------------------------------------
+vf-core = { path = "crates/vf-core" }
+vf-db = { path = "crates/vf-db" }
+vf-graph = { path = "crates/vf-graph" }
+vf-translator = { path = "crates/vf-translator" }
+vf-authz = { path = "crates/vf-authz" }
+vf-meter = { path = "crates/vf-meter" }
+vf-remediation = { path = "crates/vf-remediation" }
+vf-testkit = { path = "crates/vf-testkit" }
+
+# --- async ----------------------------------------------------------------
+tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "signal"] }
+tokio-util = "=0.7.19"
+futures = "=0.3.34"
+
+# --- http -----------------------------------------------------------------
+axum = "=0.8.9"
+axum-extra = "=0.12.6"
+tower = "=0.5.3"
+tower-http = { version = "=0.7.1", features = ["trace", "cors", "limit", "timeout"] }
+
+# --- openapi --------------------------------------------------------------
+utoipa = { version = "=6.0.0", features = ["axum_extras"] }
+utoipa-axum = "=0.3.0"
+
+# --- postgres -------------------------------------------------------------
+# DEVIATION (recorded on VFL-9): §A5 names the feature `tls-rustls`; sqlx 0.9
+# splits that into provider-specific features and bare `tls-rustls` selects
+# aws-lc-rs, which needs cmake at build time. `tls-rustls-ring` is the same
+# crate and the same rustls stack with the `ring` provider, which is what the
+# §A5 TLS row ("No OpenSSL; RustCrypto") intends. `macros` is added because
+# §A5's own rationale for sqlx is "compile-time checked queries; offline mode",
+# which the query macros provide.
+sqlx = { version = "=0.9.0", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "migrate",
+    "macros",
+] }
+pgvector = "=0.4.2"
+
+# --- object storage -------------------------------------------------------
+# DEVIATION (recorded on VFL-9): §A5 asks for the `aws` feature. In
+# object_store 0.14 `aws` expands to `aws-base + reqwest + reqwest/rustls +
+# aws-lc-rs`, and both of those last two pull `aws-lc-rs` in unconditionally —
+# adding `ring` alongside does not remove it, it just puts two providers in the
+# tree. Because cargo unifies features, that one edge switched the *whole*
+# workspace's rustls onto aws-lc-rs, which is the cmake-and-C-heavy provider
+# §A5's TLS row ("No OpenSSL; RustCrypto") exists to avoid.
+#
+# This is object_store's own documented ring-only recipe: the S3 implementation
+# and the reqwest connector without the `aws` umbrella, plus `ring` for SigV4
+# signing. object_store's example writes the TLS backend as
+# `reqwest/rustls-no-provider`, but a dependency entry may not name another
+# crate's features, so reqwest's TLS choice stays where it already is — the
+# `reqwest` pin below — and `vf-db` depends on reqwest directly so that
+# building `vf-db` alone still selects one. `native-tls`, the other way to
+# drop aws-lc-rs, is not an option: it pulls OpenSSL, which deny.toml bans.
+#
+# The provider is installed once at startup
+# (`rustls::crypto::ring::default_provider().install_default()`); that is task
+# F3's job, in the §A6.1 ArtifactStore adapter.
+#
+# `fs` is object_store's default feature, kept for the local-filesystem test
+# double named in `vf-core::ports`.
+object_store = { version = "=0.14.2", default-features = false, features = [
+    "fs",
+    "aws-base",
+    "reqwest",
+    "ring",
+] }
+
+# --- wake bus / rate limits ----------------------------------------------
+redis = { version = "=1.7.1", features = ["tokio-comp", "connection-manager"] }
+governor = "=0.10.4"
+
+# --- kubernetes (feature-gated; see vf-operator / vf-admission) -----------
+# `ring` and `client` are added to §A5's list because disabling default features
+# drops kube's own defaults (`client`, `rustls-tls`, `ring`) and the rustls
+# provider has to be named explicitly.
+# `v1_36` is the newest v1_xx offered by k8s-openapi 0.28.0 (v1_32..v1_36), which
+# is what §A5 asks for; it is re-pinned when Aether's API server version is known.
+kube = { version = "=4.2.0", default-features = false, features = [
+    "runtime",
+    "derive",
+    "rustls-tls",
+    "admission",
+    "client",
+    "ring",
+] }
+kube-runtime = { version = "=4.2.0", default-features = false }
+k8s-openapi = { version = "=0.28.0", features = ["v1_36"] }
+
+# --- oidc / jwt -----------------------------------------------------------
+jsonwebtoken = "=11.1.0"
+openidconnect = "=4.0.1"
+
+# --- tls / crypto ---------------------------------------------------------
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+hmac = "=0.13.0"
+sha2 = "=0.11.0"
+rand = "=0.10.3"
+secrecy = "=0.10.3"
+hex = "=0.4.3"
+base64 = "=0.23.1"
+
+# --- serialization --------------------------------------------------------
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+schemars = { version = "=1.2.2", features = ["derive"] }
+jsonschema = "=0.58.5"
+serde_yaml_ng = "=0.10.0"
+
+# --- domains --------------------------------------------------------------
+idna = "=1.1.0"
+url = { version = "=2.5.8", features = ["serde"] }
+psl = "=2.1.239"
+
+# --- dns and http probes --------------------------------------------------
+hickory-resolver = "=0.26.3"
+# DEVIATION (recorded on VFL-9): reqwest 0.13 has no `rustls-tls` feature — the
+# §A5 name is the 0.12 spelling. 0.13 offers `rustls` (which forces the
+# aws-lc-rs provider, needing cmake) and `rustls-no-provider` (rustls with the
+# provider chosen by the binary). The latter is used so the provider stays
+# `ring`, consistent with sqlx, object_store and kube above.
+reqwest = { version = "=0.13.5", default-features = false, features = [
+    "rustls-no-provider",
+    "json",
+] }
+
+# --- time and scheduling --------------------------------------------------
+chrono = { version = "=0.4.45", features = ["serde"] }
+chrono-tz = "=0.10.4"
+croner = "=4.0.1"
+
+# --- templating (M4) ------------------------------------------------------
+askama = "=0.16.1"
+ammonia = "=4.2.1"
+
+# --- observability --------------------------------------------------------
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
+opentelemetry = "=0.33.0"
+tracing-opentelemetry = "=0.34.0"
+prometheus-client = "=0.25.1"
+
+# --- errors and ids -------------------------------------------------------
+thiserror = "=2.0.21"
+uuid = { version = "=1.27.0", features = ["v7", "serde"] }
+ipnet = "=2.12.2"
+
+# --- webassembly ----------------------------------------------------------
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-test = "=0.3.79"
+
+# --- testing (test lane; declared here so the pins are reviewed once) -----
+proptest = "=1.11.0"
+rstest = "=0.27.0"
+insta = "=1.49.0"
+# DEVIATION (recorded on VFL-9): §A5 pins testcontainers 0.28 and
+# testcontainers-modules 0.15. Those two cannot both be used: 0.15.0 is the
+# newest published testcontainers-modules and it requires testcontainers ^0.27,
+# because 0.28 was released after it and the modules crate has not caught up.
+# §A5's intent is "testcontainers plus the postgres module", so testcontainers
+# drops one minor to =0.27.3 and the modules pin is kept. Revisit when
+# testcontainers-modules 0.16 lands.
+testcontainers = "=0.27.3"
+testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }
+wiremock = "=0.6.5"
+tower-test = "=0.4.0"
+
+# --- email (M4) -----------------------------------------------------------
+lettre = "=0.11.23"
+
+# --- clickhouse (M3+; no task in this document uses it) -------------------
+clickhouse = "=0.15.2"
+
+# ---------------------------------------------------------------------------
+# Build profiles
+# ---------------------------------------------------------------------------
+[profile.release]
+# Deterministic, auditable release artefacts; arm64 image builds consume these.
+debug = false
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+panic = "unwind" # §A5: panics are caught at the service boundary, not aborted
+
+[profile.release.package.vf-graph]
+# §A5 size budget for the browser build is 300 KiB gzipped.
+opt-level = "z"

@@ -1,0 +1,58 @@
+# Informational only. No task depends on this workflow: the authoritative gate
+# is `just gate` on a developer machine, and nothing is pushed on the strength
+# of a green run here.
+#
+# It exists for one reason — the project is architecture agnostic, so the build
+# is run on amd64 and arm64 runners in parallel and a difference between them
+# is made visible the day it appears rather than at release time.
+name: rust-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: check (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the channel, the components and the targets,
+      # so there is nothing to configure here.
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          rustup target list --installed
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+
+      - name: Install just, cargo-deny, cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-deny@0.20.2,cargo-audit@0.22.2
+
+      - name: just check
+        run: just check
+
+      - name: just test-unit
+        run: just test-unit

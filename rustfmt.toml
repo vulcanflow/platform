@@ -1,0 +1,15 @@
+# Only options stable rustfmt honours, because rust-toolchain.toml pins a stable
+# channel. A nightly-only option here would be silently ignored, so `cargo fmt
+# --check` would pass locally and the formatting would still drift.
+edition = "2024"
+style_edition = "2024"
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true
+
+# Deliberately absent: wrap_comments, comment_width and format_code_in_doc_comments.
+# All three are nightly-only. On the pinned stable channel rustfmt prints a warning
+# for each of them on every file it touches and then ignores them, so they buy no
+# formatting and cost a wall of noise in `just check`. Comment width is a review
+# convention here, not a tool-enforced rule.

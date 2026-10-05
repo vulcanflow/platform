@@ -1,0 +1,50 @@
+[package]
+name = "vf-api"
+description = "Control-plane REST and SSE surface, OpenAPI 3.1, auth, dispatcher and outbox worker."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+autobins = false
+
+[lib]
+name = "vf_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vf-api"
+path = "src/main.rs"
+
+# Dumps the generated document so the OpenAPI 3.1 output can be diffed in CI
+# and so §27-17 has reproducible evidence. §A5: "the scaffold verifies 3.1
+# output". Not a deployed binary.
+[[bin]]
+name = "vf-openapi"
+path = "src/bin/openapi.rs"
+[features]
+# Enables the parts of the suite that need `just dev-up` services (§A6.2).
+integration = []
+
+[dependencies]
+vf-core = { workspace = true }
+vf-db = { workspace = true }
+vf-graph = { workspace = true }
+vf-translator = { workspace = true }
+vf-authz = { workspace = true }
+vf-meter = { workspace = true }
+vf-remediation = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

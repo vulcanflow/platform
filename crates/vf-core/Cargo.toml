@@ -1,0 +1,22 @@
+[package]
+name = "vf-core"
+description = "I/O-free domain core: identities, scope, state machines, policy, problems, ports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# Enables the parts of the suite that need `just dev-up` services (§A6.2).
+integration = []
+
+[dependencies]
+serde = { workspace = true }
+idna = { workspace = true }
+url = { workspace = true }
+psl = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+

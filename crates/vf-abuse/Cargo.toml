@@ -1,0 +1,17 @@
+[package]
+name = "vf-abuse"
+description = "Phase 4 abuse handling. Present so the §A1.3 inventory is complete; no task yet."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "vf-abuse"
+path = "src/main.rs"
+[features]
+# Enables the parts of the suite that need `just dev-up` services (§A6.2).
+integration = []
+
+[dependencies]

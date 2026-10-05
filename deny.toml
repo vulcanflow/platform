@@ -1,0 +1,222 @@
+# cargo-deny configuration — architecture §A5 (supply chain) and §A1.4 (crate
+# dependency graph). §21.3 of the TDD is the requirement.
+#
+# Run by `just check`, which every coding task must pass before review.
+
+[graph]
+# The graph rules below have to hold for every target the workspace builds, not
+# just the host, or vf-graph's wasm32 build could smuggle in an I/O crate.
+all-features = false
+targets = [
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "wasm32-unknown-unknown",
+]
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories — deny, per §A5
+# ---------------------------------------------------------------------------
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+version = 2
+yanked = "deny"
+# No ignored advisories. An advisory that cannot be fixed by a bump is a
+# reviewed exception added here with the issue that tracks it.
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licences — allow-list, per §A5
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+# The workspace's own crates are `publish = false` and carry no licence field;
+# they are not third-party code and are not license-checked.
+private = { ignore = true }
+
+# MPL-2.0 is allowed for listed crates only, per §A5. Each entry is a
+# deliberate, reviewed exception rather than a blanket allow, because MPL-2.0
+# file-level copyleft has to be understood per crate before it is accepted.
+[[licenses.exceptions]]
+name = "webpki-roots"
+allow = ["MPL-2.0", "CDLA-Permissive-2.0"]
+
+# ammonia (§A5, HTML sanitising for M4 reports) pulls the Servo CSS parser,
+# which is MPL-2.0, as is its float formatter. Both are used unmodified as
+# libraries; MPL-2.0's copyleft is per-file and is not triggered by linking.
+[[licenses.exceptions]]
+name = "cssparser"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "dtoa-short"
+allow = ["MPL-2.0"]
+
+# The Mozilla CA root bundle as data, reached through rustls-platform-verifier
+# from both kube and reqwest. CDLA-Permissive-2.0 is a data licence with no
+# conditions on downstream use.
+[[licenses.exceptions]]
+name = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
+
+# xxhash, a non-cryptographic hash, reached through redis. BSL-1.0 is the Boost
+# licence: permissive, OSI approved, no attribution requirement on binaries.
+# It is not on the §A5 allow-list, so it is a per-crate exception here rather
+# than a silent widening of the list.
+[[licenses.exceptions]]
+name = "xxhash-rust"
+allow = ["BSL-1.0"]
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+# ---------------------------------------------------------------------------
+# Sources — crates.io only, per §A5
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+# ---------------------------------------------------------------------------
+# Bans
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The sixteen internal crates are `{ path = ... }` with no version — they are
+# `publish = false` and all move together — which cargo-deny otherwise reports
+# as sixteen wildcard dependencies. The rule is meant to catch a `"*"` on a
+# third-party crate, and it still does.
+allow-wildcard-paths = true
+external-default-features = "allow"
+
+[bans.workspace-dependencies]
+# `[workspace.dependencies]` is the single place a version is chosen (§A5), so a
+# crate manifest that names its own version has escaped the review boundary.
+duplicates = "deny"
+include-path-dependencies = true
+# F1 declares the whole §A5 table up front so the pins are reviewed once, here,
+# rather than arriving a few at a time with the tasks that consume them. Most of
+# them therefore have no consumer yet — the test-lane crates, and the M3/M4 rows
+# like `lettre` and `clickhouse` that no task in the architecture document uses.
+# Denying unused entries would make F1 fail for doing exactly what it was asked
+# to do. Revisit once the table has consumers; an unused pin after that is rot.
+unused = "allow"
+
+# --- no OpenSSL anywhere (§A5: "No OpenSSL; RustCrypto for HMAC and tokens") --
+[[bans.deny]]
+name = "openssl-sys"
+wrappers = []
+
+[[bans.deny]]
+name = "openssl"
+wrappers = []
+
+[[bans.deny]]
+name = "native-tls"
+wrappers = []
+
+# --- §A1.4 crate dependency graph ------------------------------------------
+#
+# Each rule is a ban on an internal crate plus the exhaustive list of crates
+# allowed to depend on it. Expressing it this way, rather than as a list of
+# forbidden edges, makes the default "no" — a new dependency on an internal
+# crate fails `just check` until it is added here, which is the review the §A1.4
+# rules are meant to force.
+#
+# `vf-testkit` is deliberately absent: it is a dev-dependency of everything by
+# design, so there is no edge to constrain.
+#
+# Two rules of §A1.4 are not expressible this way and are enforced elsewhere:
+# "vf-core and vf-graph depend on no I/O crate" is checked by `just graph-rules`
+# (cargo tree) and by test pack T9's cargo-metadata assertions, because the
+# legitimate direct dependents of tokio, sqlx, reqwest and kube are third-party
+# crates whose set changes on every bump.
+
+# vf-graph must not depend on vf-core (§A1.4), and nor may vf-abuse.
+[[bans.deny]]
+name = "vf-core"
+wrappers = [
+    "vf-db",
+    "vf-translator",
+    "vf-authz",
+    "vf-meter",
+    "vf-remediation",
+    "vf-api",
+    "vf-operator",
+    "vf-admission",
+    "vf-ingest",
+    "vf-hook-notify",
+    "vf-scanner-adapter",
+    "vf-report",
+    "vf-testkit",
+]
+
+# Keeps the wasm32 bundle minimal: only the three crates that actually consume
+# graph types may depend on vf-graph, and vf-core is not one of them.
+[[bans.deny]]
+name = "vf-graph"
+wrappers = ["vf-translator", "vf-remediation", "vf-api"]
+
+[[bans.deny]]
+name = "vf-db"
+wrappers = [
+    "vf-authz",
+    "vf-meter",
+    "vf-remediation",
+    "vf-api",
+    "vf-operator",
+    "vf-admission",
+    "vf-ingest",
+    "vf-report",
+    "vf-testkit",
+]
+
+[[bans.deny]]
+name = "vf-translator"
+wrappers = ["vf-api", "vf-operator", "vf-scanner-adapter"]
+
+[[bans.deny]]
+name = "vf-authz"
+wrappers = ["vf-api", "vf-operator", "vf-admission"]
+
+[[bans.deny]]
+name = "vf-meter"
+wrappers = ["vf-api", "vf-operator", "vf-ingest"]
+
+[[bans.deny]]
+name = "vf-remediation"
+wrappers = ["vf-api", "vf-ingest"]
+
+# --- no binary crate depends on another binary crate (§A1.4) ---------------
+#
+# NOT expressible as a ban. `[[bans.deny]] name = "vf-api", wrappers = []`
+# does not mean "nothing may depend on vf-api" — it bans vf-api from the graph
+# outright, and the empty wrappers list exempts nobody, so cargo-deny reports
+# all eight binaries as banned crates. The rule is about edges into a root
+# crate, and bans can only talk about the crate itself.
+#
+# It is therefore enforced in `just graph-rules` alongside the other two §A1.4
+# rules that bans cannot express, from cargo metadata.
+#
+# The §18.6 rule recorded ahead of time — the future AI crate may not depend on
+# vf-api — is the same shape and is covered by the same check.
