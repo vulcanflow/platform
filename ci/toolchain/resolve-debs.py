@@ -244,11 +244,14 @@ def main() -> int:
             continue
         fields = index.get(name)
         if fields is None:
+            # A virtual name is satisfied by its provider, whether that is
+            # already resolved or still to come; only a name nothing provides
+            # is missing.
             real = provides.get(name)
-            if real and real not in resolved:
+            if real is None:
+                missing.append(name)
+            elif real not in resolved:
                 queue.append(real)
-                continue
-            missing.append(name)
             continue
         resolved[name] = fields
         for field in ("Pre-Depends", "Depends"):
