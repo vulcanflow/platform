@@ -64,10 +64,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     /// A skeleton body that the F2 implementation commits replace.
     ///
-    /// Present so the public API can be committed, reviewed and written
-    /// against before the bodies exist (the "API skeleton first" rule of this
-    /// task). The payload is the item that is missing, so a test that trips one
-    /// names it in the failure rather than reporting a bare "not implemented".
+    /// Present so the public API could be committed, reviewed and written
+    /// against before the bodies existed (the "API skeleton first" rule of
+    /// task F2). No body returns it since slice F2b; the variant stays because
+    /// removing a public variant breaks any pack that names it, and the next
+    /// skeleton-first change to this crate needs it again. The payload is the
+    /// item that is missing, so a test that trips one names it in the failure
+    /// rather than reporting a bare "not implemented".
     #[error("{0} is not implemented yet")]
     NotImplemented(&'static str),
 
@@ -103,6 +106,13 @@ pub enum Error {
     /// own error type, so the backend can change without changing this enum.
     #[error("test backend: {0}")]
     Backend(String),
+
+    /// A slug [`TestDb::create_tenant_schema`] cannot turn into a schema
+    /// name: empty, longer than 56 bytes, or not lower-case ASCII letters,
+    /// digits and `_`. A mistake in the test, so it is its own variant rather
+    /// than the error Postgres would give for the resulting identifier.
+    #[error("tenant slug `{0}` cannot name a schema: use 1 to 56 of [a-z0-9_]")]
+    TenantSlug(String),
 
     /// Postgres said no.
     #[error("postgres: {0}")]
