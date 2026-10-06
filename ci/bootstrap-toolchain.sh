@@ -38,14 +38,21 @@
 # and is shared by every task on the same workspace. Override with
 # VF_TOOLCHAIN_DIR. It is deliberately outside the work tree: it is 400 MiB of
 # third-party binaries and must never be a candidate for commit.
+#
+# Because the prefix is shared, the C toolchain is kept per lock: the sysroot
+# and the shims that point into it live under c-toolchain/<lock digest>/. A
+# tree, once published, is never deleted by this script and its sysroot is
+# never written again; only its shims are regenerated, each by a rename. A
+# branch that changes the lock builds a new tree beside the old one, so it
+# cannot pull a compiler out from under a run that is still building against
+# the old lock. Trees for superseded locks are left in place; remove one by
+# hand once nothing is using it.
 
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prefix="${VF_TOOLCHAIN_DIR:-$(cd "$repo_root/.." && pwd)/.vf-toolchain}"
 
-sysroot="$prefix/sysroot"
-shim_dir="$prefix/bin"
 cache_dir="$prefix/cache"
 cargo_home="$prefix/cargo"
 rustup_home="$prefix/rustup"
@@ -78,6 +85,20 @@ esac
 
 lock="$repo_root/ci/toolchain/debs-$deb_arch.lock"
 
+if [[ ! -f "$lock" ]]; then
+  echo "bootstrap-toolchain: no lock for $deb_arch at $lock" >&2
+  echo "  regenerate it with ci/toolchain/resolve-debs.py --arch $deb_arch" >&2
+  exit 1
+fi
+
+# The tree is named by the lock's digest, so editing the lock selects a new
+# tree instead of silently keeping the old one or rebuilding the old one in
+# place. `--env-only` needs the digest too: it has to name this lock's shims.
+lock_digest="$(sha256sum "$lock" | cut -d' ' -f1)"
+tree="$prefix/c-toolchain/$lock_digest"
+sysroot="$tree/sysroot"
+shim_dir="$tree/bin"
+
 print_env() {
   printf 'export VF_TOOLCHAIN_DIR=%q\n' "$prefix"
   printf 'export CARGO_HOME=%q\n' "$cargo_home"
@@ -95,13 +116,16 @@ print_env() {
   # `cargo: command not found` even after a successful bootstrap.
   #
   # Dropping BASH_ENV is safe here, and that is worth recording because it looks
-  # like it is discarding harness setup. Beyond the PATH line, that file only
-  # turns the four GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL} variables from
-  # set-but-empty into unset, which the loop below does itself.
+  # like it is discarding harness setup. That file does two things. Its PATH
+  # line re-asserts the harness's own entries, including the launcher directory
+  # that supplies `git` and `gh`, but those are already on the PATH this env
+  # inherits and prepends to, so nothing is lost. Beyond that it only turns the
+  # four GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL} variables from set-but-empty into
+  # unset, which the loop below does itself.
   printf 'unset BASH_ENV\n'
 
-  # The runners export several GIT_* variables with empty values. An empty
-  # GIT_* variable is never meaningful to git, and two of them break tooling:
+  # The runners export several GIT_* variables with empty values. These five
+  # are cleared when empty:
   #
   #   GIT_CONFIG_COUNT= makes gix — the git implementation inside cargo-audit,
   #   not the git CLI, which tolerates it — refuse to load any configuration at
@@ -115,48 +139,140 @@ print_env() {
   #   children, clear them here so a commit from a recipe keeps resolving its
   #   identity from git configuration.
   #
-  # Matched by shape rather than by name, because this is a property of the
-  # environment and the exact set has already grown once.
+  # Named, not every empty GIT_*: an empty value is not always inert. The
+  # runners also export GIT_ASKPASS empty, and git reads a set-but-empty
+  # GIT_ASKPASS as "use no askpass helper" and skips core.askpass and
+  # SSH_ASKPASS. Unsetting it would re-enable those fallbacks, so it is left
+  # exactly as the harness set it. `${!var-}` reads the value without parsing
+  # `env` output, so a variable is only ever unset when it really is empty.
   cat <<'GITENV'
-for __vf_git_var in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=$/\1/p'); do
-  unset "$__vf_git_var"
+for __vf_git_var in GIT_CONFIG_COUNT GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL; do
+  [[ -n "${!__vf_git_var-}" ]] || unset "$__vf_git_var"
 done
 unset __vf_git_var
 GITENV
 }
 
 if [[ "${1:-}" == "--env-only" ]]; then
+  # Fail rather than print a PATH to a compiler that is not there: a branch
+  # whose lock differs from the one last bootstrapped has no tree yet, and
+  # handing it the old lock's compiler instead would be a silent mismatch.
+  if [[ ! -d "$tree" ]]; then
+    echo "bootstrap-toolchain: no toolchain for this lock ($lock_digest) under $prefix" >&2
+    echo "  run ci/bootstrap-toolchain.sh without --env-only to build it" >&2
+    exit 1
+  fi
   print_env
   exit 0
 fi
 
-if [[ ! -f "$lock" ]]; then
-  echo "bootstrap-toolchain: no lock for $deb_arch at $lock" >&2
-  echo "  regenerate it with ci/toolchain/resolve-debs.py --arch $deb_arch" >&2
-  exit 1
-fi
-
-mkdir -p "$prefix"
+mkdir -p "$prefix/c-toolchain" "$cache_dir"
 
 # The workspace is shared between concurrent task runs, so two of them can
 # reach this script at once. Serialise on a lock file rather than letting both
-# extract into the same sysroot; the second one finds the stamp and no-ops.
+# extract at once; the second one finds the published tree and no-ops. This
+# lock only orders bootstraps against each other — a run that is compiling
+# holds nothing — which is why a published tree must never change.
 exec 9>"$prefix/.bootstrap.lock"
 flock 9
 
 log() { echo "bootstrap-toolchain: $*" >&2; }
 
-# The stamp carries the lock's digest, so editing the lock invalidates the
-# extracted tree instead of silently keeping the old one.
-lock_digest="$(sha256sum "$lock" | cut -d' ' -f1)"
-stamp="$sysroot/.bootstrapped-$lock_digest"
+# Write one shim with a rename, never in place: bash reads a script as it runs
+# it, so a concurrent `cc` must see either the old file or the new one and
+# never a half-written one. Content comes from stdin.
+write_shim() {
+  cat > "$1.tmp.$$"
+  chmod +x "$1.tmp.$$"
+  mv -f "$1.tmp.$$" "$1"
+}
 
-if [[ -f "$stamp" ]]; then
-  log "sysroot already current for $lock_digest"
+# The same for a symlink. `ln -sf` unlinks and then creates, which leaves a
+# moment where the name does not exist.
+link_shim() {
+  ln -sfn "$1" "$2.tmp.$$"
+  mv -Tf "$2.tmp.$$" "$2"
+}
+
+# gcc relocates itself from argv[0] — $sysroot/usr/bin/../lib/gcc finds cc1 and
+# collect2 — but its header and library search paths need --sysroot, and
+# collect2 needs -B to find our `ld` rather than a system one that is not
+# there. LD_LIBRARY_PATH is for gcc's *own* dependencies (libmpfr, libisl,
+# libmpc), which also live only in the sysroot.
+#
+# The two -Wl flags are what keep a built binary running after this prefix
+# moves or goes away. --sysroot applies to the linker too, so without them ld
+# is entitled to bake $sysroot/lib/ld-linux-*.so.1 in as the ELF interpreter,
+# and the binary would then depend on the toolchain directory at *runtime*.
+# Both paths are deliberately the image's, not the sysroot's: the loader and
+# the shared glibc are the image's copies, and the lock pins libc6 to the
+# image's version precisely so that is the same glibc.
+#
+# Usage: write_shims <dir> <root>. The shims always name the published
+# $sysroot, even when they are written into the staging directory before it is
+# published; <root> is the tree to look in for which binutils exist, which is
+# the staging one in that case.
+write_shims() {
+  local dir="$1" root="$2" alias tool real
+  mkdir -p "$dir"
+
+  write_shim "$dir/cc" <<SHIM
+#!/usr/bin/env bash
+# Generated by ci/bootstrap-toolchain.sh — do not edit.
+export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple:$sysroot/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "$sysroot/usr/bin/$gnu_triple-gcc-14" \\
+  --sysroot="$sysroot" \\
+  -B"$sysroot/usr/bin" \\
+  -B"$sysroot/usr/lib/gcc/$gnu_triple/14" \\
+  -B"$sysroot/usr/libexec/gcc/$gnu_triple/14" \\
+  -B"$sysroot/usr/lib/$gnu_triple" \\
+  -Wl,-rpath-link,/lib/$gnu_triple \\
+  -Wl,--dynamic-linker=$loader \\
+  "\$@"
+SHIM
+
+  # Rust's default linker for a *-linux-gnu target is `cc`, and the `cc` crate
+  # honours $CC; both names resolve to the same shim. gcc/$triple-gcc exist
+  # because some build scripts look for them by name.
+  for alias in gcc "$gnu_triple-gcc" "$gnu_triple-cc"; do
+    link_shim cc "$dir/$alias"
+  done
+
+  # The binutils programs the `cc` crate and cargo reach for directly. These
+  # need no sysroot flags, only their own shared libraries (libctf, libsframe,
+  # libjansson, libzstd), so a plain exec with LD_LIBRARY_PATH is enough.
+  for tool in ar ranlib nm strip objcopy objdump readelf ld ld.bfd as addr2line size strings; do
+    if [[ -x "$root/usr/bin/$gnu_triple-$tool" ]]; then
+      real="$sysroot/usr/bin/$gnu_triple-$tool"
+    elif [[ -x "$root/usr/bin/$tool" ]]; then
+      real="$sysroot/usr/bin/$tool"
+    else
+      continue
+    fi
+    write_shim "$dir/$tool" <<SHIM
+#!/usr/bin/env bash
+# Generated by ci/bootstrap-toolchain.sh — do not edit.
+export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "$real" "\$@"
+SHIM
+    link_shim "$tool" "$dir/$gnu_triple-$tool"
+  done
+}
+
+if [[ -d "$tree" ]]; then
+  log "toolchain already present for lock $lock_digest"
+  # Regenerated on every run, each file by rename, so a prefix that has been
+  # moved or copied gets shims that point at where it now is.
+  write_shims "$shim_dir" "$sysroot"
 else
-  log "unpacking $(grep -cv '^[[:space:]]*$' "$lock") packages into $sysroot"
-  rm -rf "$sysroot"
-  mkdir -p "$sysroot" "$cache_dir"
+  # Build the whole tree — sysroot, merged-/usr links and shims — in a staging
+  # directory and publish it with one rename. Nothing ever names the staging
+  # path, so a run killed half way leaves only a directory the next bootstrap
+  # discards; and nothing can see the published tree before it is complete.
+  stage="$prefix/c-toolchain/.staging-$lock_digest"
+  rm -rf "$stage"
+  mkdir -p "$stage/sysroot"
+  log "unpacking $(grep -cv '^[[:space:]]*$' "$lock") packages for lock $lock_digest"
 
   while read -r name version digest url; do
     [[ -n "${name:-}" ]] || continue
@@ -172,7 +288,7 @@ else
       echo "  got      $got" >&2
       exit 1
     fi
-    dpkg-deb -x "$deb" "$sysroot"
+    dpkg-deb -x "$deb" "$stage/sysroot"
   done < "$lock"
 
   # Debian is merged-/usr: the packages put everything under /usr and the base
@@ -180,72 +296,18 @@ else
   # only, so a bare extraction has no such symlink, and the absolute paths in
   # libc6-dev's `libc.so` linker script — /lib/<triple>/libc.so.6 and
   # /lib/ld-linux-*.so.1 — then resolve to nothing inside --sysroot. Recreate
-  # the base layout's links so the sysroot looks like a real root.
-  for merged in lib bin sbin; do
-    [[ -d "$sysroot/usr/$merged" ]] || continue
-    ln -sfn "usr/$merged" "$sysroot/$merged"
+  # the base layout's links so the sysroot looks like a real root. lib64 is
+  # amd64's: its loader is /lib64/ld-linux-x86-64.so.2. The links are relative,
+  # so they survive the rename below.
+  for merged in lib lib64 bin sbin; do
+    [[ -d "$stage/sysroot/usr/$merged" ]] || continue
+    ln -sfn "usr/$merged" "$stage/sysroot/$merged"
   done
 
-  touch "$stamp"
-  log "sysroot ready"
+  write_shims "$stage/bin" "$stage/sysroot"
+  mv -T "$stage" "$tree"
+  log "toolchain ready for lock $lock_digest"
 fi
-
-# The shims are rewritten every run: they are a few hundred bytes, and a stale
-# shim pointing at a moved prefix is far more confusing than regenerating.
-mkdir -p "$shim_dir"
-
-# gcc relocates itself from argv[0] — $sysroot/usr/bin/../lib/gcc finds cc1 and
-# collect2 — but its header and library search paths need --sysroot, and
-# collect2 needs -B to find our `ld` rather than a system one that is not
-# there. LD_LIBRARY_PATH is for gcc's *own* dependencies (libmpfr, libisl,
-# libmpc), which also live only in the sysroot.
-#
-# The two -Wl flags are what keep a built binary running after this prefix
-# moves or goes away. --sysroot applies to the linker too, so without them ld
-# is entitled to bake $sysroot/lib/ld-linux-*.so.1 in as the ELF interpreter,
-# and the binary would then depend on the toolchain directory at *runtime*.
-# Both paths are deliberately the image's, not the sysroot's: the loader and
-# the shared glibc are the image's copies, and the lock pins libc6 to the
-# image's version precisely so that is the same glibc.
-cat > "$shim_dir/cc" <<SHIM
-#!/usr/bin/env bash
-# Generated by ci/bootstrap-toolchain.sh — do not edit.
-export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple:$sysroot/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-exec "$sysroot/usr/bin/$gnu_triple-gcc-14" \\
-  --sysroot="$sysroot" \\
-  -B"$sysroot/usr/bin" \\
-  -B"$sysroot/usr/lib/gcc/$gnu_triple/14" \\
-  -B"$sysroot/usr/libexec/gcc/$gnu_triple/14" \\
-  -B"$sysroot/usr/lib/$gnu_triple" \\
-  -Wl,-rpath-link,/lib/$gnu_triple \\
-  -Wl,--dynamic-linker=$loader \\
-  "\$@"
-SHIM
-chmod +x "$shim_dir/cc"
-
-# Rust's default linker for a *-linux-gnu target is `cc`, and the `cc` crate
-# honours $CC; both names resolve to the same shim. gcc/$triple-gcc exist
-# because some build scripts look for them by name.
-for alias in gcc "$gnu_triple-gcc" "$gnu_triple-cc"; do
-  ln -sf cc "$shim_dir/$alias"
-done
-
-# The binutils programs the `cc` crate and cargo reach for directly. These need
-# no sysroot flags, only their own shared libraries (libctf, libsframe,
-# libjansson, libzstd), so a plain exec with LD_LIBRARY_PATH is enough.
-for tool in ar ranlib nm strip objcopy objdump readelf ld ld.bfd as addr2line size strings; do
-  real="$sysroot/usr/bin/$gnu_triple-$tool"
-  [[ -x "$real" ]] || real="$sysroot/usr/bin/$tool"
-  [[ -x "$real" ]] || continue
-  cat > "$shim_dir/$tool" <<SHIM
-#!/usr/bin/env bash
-# Generated by ci/bootstrap-toolchain.sh — do not edit.
-export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-exec "$real" "\$@"
-SHIM
-  chmod +x "$shim_dir/$tool"
-  ln -sf "$tool" "$shim_dir/$gnu_triple-$tool"
-done
 
 # Rust. rustup reads rust-toolchain.toml, so the channel, components and target
 # set come from the committed pin (§A5) and are not restated here.

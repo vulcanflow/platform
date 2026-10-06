@@ -11,7 +11,7 @@ gcc major, a new architecture), not on every bootstrap. The bootstrap only ever
 reads the committed lock, so a normal run touches no package index and resolves
 no dependency: it downloads exactly what was reviewed.
 
-Two choices are worth recording:
+Three choices are worth recording:
 
   * Only packaging machinery is excluded (SKIP). Every shared library stays in
     the closure, because the extracted tree has to be a self-contained sysroot
@@ -22,33 +22,50 @@ Two choices are worth recording:
     the alternatives are things like `debconf | debconf-2.0`; both land in SKIP
     and nothing in the real closure depends on picking the second branch.
 
+  * When a package appears more than once — within one index, or in more than
+    one of SOURCES — the highest version wins, by dpkg's own ordering. Plain
+    string order gets this wrong, and did: main lists linux-libc-dev at both
+    6.12.94-1 and 6.12.107-1, and string order kept 6.12.94-1 because "9" >
+    "1". "Last index wins" is no better; it silently downgrades the day a
+    later source carries an older build. On an exact tie the later source
+    wins, so a package published in both main and -security is fetched from
+    -security.
+
 Usage:
   ci/toolchain/resolve-debs.py --arch arm64 > ci/toolchain/debs-arm64.lock
 
 Review the diff before committing it: this is the supply chain for every build
 on every runner, and the digests are the only thing standing between a
-bootstrap and an unreviewed binary.
+bootstrap and an unreviewed binary. Check libc6 and libc6-dev in particular:
+they must still equal the runner image's glibc (`dpkg-query -W libc6`), and a
+glibc update in -security moves them ahead of an image that has not had it.
 """
 
 from __future__ import annotations
 
 import argparse
 import gzip
+import lzma
 import re
 import sys
-import tempfile
+import urllib.error
 import urllib.request
 from collections import OrderedDict
 
 SUITE = "trixie"
 
+DIGITS = "0123456789"
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
 # Where each suite's index lives. trixie-updates and trixie-security are
-# included because a glibc point update lands there first; both are allowed to
-# be absent, which is the normal state shortly after a release.
+# included because a point update — glibc, the kernel headers — lands there
+# first. Every one is required: a stable suite publishes all three from release
+# day, and an index that is quietly skipped is a security update that quietly
+# never reaches the lock.
 SOURCES = [
-    ("https://deb.debian.org/debian/", f"dists/{SUITE}/main/binary-{{arch}}/Packages.gz", True),
-    ("https://deb.debian.org/debian/", f"dists/{SUITE}-updates/main/binary-{{arch}}/Packages.gz", False),
-    ("https://deb.debian.org/debian-security/", f"dists/{SUITE}-security/main/binary-{{arch}}/Packages.gz", False),
+    ("https://deb.debian.org/debian/", f"dists/{SUITE}/main/binary-{{arch}}/Packages"),
+    ("https://deb.debian.org/debian/", f"dists/{SUITE}-updates/main/binary-{{arch}}/Packages"),
+    ("https://deb.debian.org/debian-security/", f"dists/{SUITE}-security/main/binary-{{arch}}/Packages"),
 ]
 
 # The toolchain we actually want. Everything else in the lock is here because
@@ -64,24 +81,29 @@ SKIP = {
 }
 
 
-def fetch_index(base: str, path: str, required: bool) -> str | None:
-    url = base + path
-    try:
-        with urllib.request.urlopen(url, timeout=180) as resp:
-            raw = resp.read()
-    except Exception as exc:
-        if required:
+def fetch_index(base: str, path: str) -> str:
+    # .xz first. -updates and -security publish *only* Packages.xz, so a reader
+    # that asked for .gz got a 404 from both, took it for an empty suite, and
+    # never read -security at all. .gz stays as the fallback for a mirror that
+    # carries only that. Anything other than a 404 is a fault, not a format.
+    for suffix, decompress in ((".xz", lzma.decompress), (".gz", gzip.decompress)):
+        url = base + path + suffix
+        try:
+            with urllib.request.urlopen(url, timeout=180) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                continue
             raise SystemExit(f"resolve-debs: cannot fetch {url}: {exc}")
-        print(f"# optional index unavailable: {url} ({exc})", file=sys.stderr)
-        return None
-    try:
-        return gzip.decompress(raw).decode("utf-8", "replace")
-    except OSError:
-        # The archive serves an HTML 404 for a suite that has no index yet.
-        if required:
-            raise SystemExit(f"resolve-debs: {url} is not a gzip index")
-        print(f"# optional index absent (not gzip): {url}", file=sys.stderr)
-        return None
+        except Exception as exc:
+            raise SystemExit(f"resolve-debs: cannot fetch {url}: {exc}")
+        try:
+            blob = decompress(raw).decode("utf-8", "replace")
+        except (OSError, lzma.LZMAError) as exc:
+            raise SystemExit(f"resolve-debs: {url} is not a valid {suffix} index: {exc}")
+        print(f"# read {url}", file=sys.stderr)
+        return blob
+    raise SystemExit(f"resolve-debs: no index at {base + path}.xz or .gz")
 
 
 def parse(blob: str, base: str) -> dict[str, dict]:
@@ -105,13 +127,78 @@ def parse(blob: str, base: str) -> dict[str, dict]:
         if not name:
             continue
         fields["_base"] = base
-        prev = pkgs.get(name)
-        # Lexicographic, not dpkg version order. Good enough here: the indexes
-        # are disjoint per package in practice, and the lock is reviewed by
-        # hand before it is committed.
-        if prev is None or fields.get("Version", "") > prev.get("Version", ""):
-            pkgs[name] = fields
+        offer(pkgs, name, fields)
     return pkgs
+
+
+def _order(c: str) -> int:
+    # dpkg's lib/dpkg/version.c `order()`: within a non-digit run, `~` sorts
+    # before everything, even the end of the string; letters sort before
+    # other characters.
+    if c == "~":
+        return -1
+    if c in DIGITS:
+        return 0
+    if c in LETTERS:
+        return ord(c)
+    return ord(c) + 256
+
+
+def _verrevcmp(a: str, b: str) -> int:
+    # dpkg's `verrevcmp()`: alternate non-digit runs, compared by _order, with
+    # digit runs, compared as numbers. "" stands for the end of the string,
+    # which _order sees as 0.
+    i = j = 0
+    while i < len(a) or j < len(b):
+        while (i < len(a) and a[i] not in DIGITS) or (j < len(b) and b[j] not in DIGITS):
+            ac = _order(a[i]) if i < len(a) else 0
+            bc = _order(b[j]) if j < len(b) else 0
+            if ac != bc:
+                return ac - bc
+            i += 1
+            j += 1
+        while i < len(a) and a[i] == "0":
+            i += 1
+        while j < len(b) and b[j] == "0":
+            j += 1
+        first_diff = 0
+        while i < len(a) and a[i] in DIGITS and j < len(b) and b[j] in DIGITS:
+            if not first_diff:
+                first_diff = ord(a[i]) - ord(b[j])
+            i += 1
+            j += 1
+        if i < len(a) and a[i] in DIGITS:
+            return 1
+        if j < len(b) and b[j] in DIGITS:
+            return -1
+        if first_diff:
+            return first_diff
+    return 0
+
+
+def compare_versions(a: str, b: str) -> int:
+    """Order two Debian versions as `dpkg --compare-versions` does."""
+    def split(v: str) -> tuple[int, str, str]:
+        epoch, colon, rest = v.partition(":")
+        if not colon:
+            epoch, rest = "0", v
+        upstream, hyphen, revision = rest.rpartition("-")
+        if not hyphen:
+            upstream, revision = rest, ""
+        return int(epoch), upstream, revision
+
+    ea, ua, ra = split(a)
+    eb, ub, rb = split(b)
+    if ea != eb:
+        return ea - eb
+    return _verrevcmp(ua, ub) or _verrevcmp(ra, rb)
+
+
+def offer(index: dict[str, dict], name: str, fields: dict) -> None:
+    """Keep `fields` for `name` unless `index` already holds a newer version."""
+    prev = index.get(name)
+    if prev is None or compare_versions(fields.get("Version", ""), prev.get("Version", "")) >= 0:
+        index[name] = fields
 
 
 def dep_names(field: str) -> list[str]:
@@ -134,10 +221,10 @@ def main() -> int:
     args = ap.parse_args()
 
     index: dict[str, dict] = {}
-    for base, path, required in SOURCES:
-        blob = fetch_index(base, path.format(arch=args.arch), required)
-        if blob:
-            index.update(parse(blob, base))
+    for base, path in SOURCES:
+        blob = fetch_index(base, path.format(arch=args.arch))
+        for name, fields in parse(blob, base).items():
+            offer(index, name, fields)
     print(f"# indexed {len(index)} packages for {args.arch}", file=sys.stderr)
 
     # Virtual packages, so a dependency on e.g. `libc-dev` finds libc6-dev.
