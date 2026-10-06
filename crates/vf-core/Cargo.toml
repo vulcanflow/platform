@@ -16,6 +16,7 @@ serde = { workspace = true }
 idna = { workspace = true }
 url = { workspace = true }
 psl = { workspace = true }
+ipnet = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }

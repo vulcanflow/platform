@@ -15,3 +15,4 @@
 //! which crates may depend on this one.
 
 pub mod ports;
+pub mod scope;

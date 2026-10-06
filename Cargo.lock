@@ -4754,6 +4754,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "idna",
+ "ipnet",
  "psl",
  "serde",
  "thiserror",
