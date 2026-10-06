@@ -14,5 +14,9 @@
 //! workspace test pack T9. `deny.toml` enforces the rest of §A1.4, including
 //! which crates may depend on this one.
 
+pub mod events;
+pub mod ids;
 pub mod ports;
+pub mod problem;
 pub mod scope;
+pub mod state;

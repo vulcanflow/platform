@@ -81,11 +81,50 @@ pub trait TokenVerifier: Send + Sync + 'static {}
 
 /// Wall-clock time. Real and local: the system clock. Test: deterministic.
 /// Implemented in `vf-core` (task C1).
-pub trait Clock: Send + Sync + 'static {}
+///
+/// Every timestamp the platform persists or publishes comes from here, so a
+/// test can drive the temporal rules — the 90-day control validity and 14-day
+/// grace of §5.2, the seven-day challenge expiry, the 15-minute SSE replay
+/// window and the outbox lease of §A3.3 — without sleeping. No `vf-core`
+/// function reads the clock itself; the caller passes the instant in.
+///
+/// `vf-core` ships no implementation of this trait: the system clock is I/O,
+/// and the deterministic test clock belongs to `vf-testkit`. This crate owns
+/// only the contract.
+pub trait Clock: Send + Sync + 'static {
+    /// The current instant, in UTC.
+    ///
+    /// UTC always. §A4 stores `timestamptz` throughout and §16 renders a
+    /// tenant's local time at the presentation layer, so no local offset
+    /// crosses this boundary.
+    ///
+    /// Implementations are not required to be strictly monotonic: durable
+    /// ordering is the `seq` column of §A3.3, never a timestamp comparison.
+    fn now(&self) -> chrono::DateTime<chrono::Utc>;
+}
 
 /// Identifier generation (UUID v7). Real and local: the system CSPRNG. Test:
 /// deterministic. Implemented in `vf-core` (task C1).
-pub trait IdGen: Send + Sync + 'static {}
+///
+/// The only sanctioned source of a new identity (§A3.1). The newtypes in
+/// [`crate::ids`] deliberately have no `Default` and no random `new()`, so code
+/// that mints an identity must hold one of these — which is what lets a test
+/// fix the identifiers a run produces.
+///
+/// v7 specifically, because §A3.1 relies on identities being time-ordered: a v7
+/// primary key keeps the §A4 indexes append-mostly, and it makes the keyset
+/// pagination of §A3.8 (`(observed_at desc, id desc)`) order consistently with
+/// insertion.
+pub trait IdGen: Send + Sync + 'static {
+    /// A fresh UUID v7.
+    ///
+    /// Callers wrap the value in the newtype for the identity being minted, for
+    /// example `TargetId::from_uuid(id_gen.new_uuid())`. The port is untyped on
+    /// purpose: one method per newtype would be thirty-odd methods that all do
+    /// the same thing, and the §6.2 type safety is already carried by the
+    /// newtype at the call site.
+    fn new_uuid(&self) -> uuid::Uuid;
+}
 
 /// Outbound mail. M4; real: an SMTP provider, local: Mailpit. No task yet.
 pub trait Mailer: Send + Sync + 'static {}
