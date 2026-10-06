@@ -133,6 +133,32 @@ fn extract_toml_string_array(toml_text: &str, key: &str) -> Option<Vec<String>> 
     Some(body.split(',').filter_map(extract_quoted).collect())
 }
 
+/// As [`extract_toml_string_array`], but scoped to the table whose header is
+/// `table_header` (e.g. `"[licenses]"`): only the uncommented lines from that
+/// header up to (but not including) the next line starting with `[` — the
+/// next table header, including a `[[...]]` array-of-tables header — are
+/// searched. A same-named key in a different table (e.g. `[bans].allow`), a
+/// commented-out example line, or a later `[[table]].key` the file happens to
+/// repeat the key's name in cannot satisfy or defeat the scan.
+fn extract_toml_string_array_in_table(toml_text: &str, table_header: &str, key: &str) -> Option<Vec<String>> {
+    let lines: Vec<&str> = toml_text.lines().collect();
+    let header_idx = lines.iter().position(|l| l.trim() == table_header)?;
+    let table_end = lines[header_idx + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map(|offset| header_idx + 1 + offset)
+        .unwrap_or(lines.len());
+    let table_text: String = lines[header_idx + 1..table_end]
+        .iter()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .fold(String::new(), |mut acc, l| {
+            acc.push_str(l);
+            acc.push('\n');
+            acc
+        });
+    extract_toml_string_array(&table_text, key)
+}
+
 // ---------------------------------------------------------------------------
 // §A1.4 crate dependency graph
 // ---------------------------------------------------------------------------
@@ -387,6 +413,49 @@ fn actual_crate_kind(crate_dir: &Path) -> &'static str {
     }
 }
 
+/// Classifies a workspace member's kind from `cargo metadata`'s own `targets`
+/// array, the declared kind cargo itself will build: `lib` for a package
+/// carrying a `lib`-kind target, `bin` for a `bin`-kind target, `lib + bin`
+/// for both. Independent of [`actual_crate_kind`], which infers the same fact
+/// from the `src/` layout on disk — a directory can carry a stray
+/// `src/main.rs` or `src/bin/*.rs` that is excluded from the build (e.g. by
+/// `autobins = false` or an explicit `[[bin]]` override in the crate's
+/// `Cargo.toml`), which the filesystem check alone would not catch.
+fn declared_crate_kind(metadata: &Value, name: &str) -> &'static str {
+    let workspace_members: HashSet<&str> = metadata["workspace_members"]
+        .as_array()
+        .expect("workspace_members array")
+        .iter()
+        .map(|v| v.as_str().expect("workspace member id"))
+        .collect();
+    let packages = metadata["packages"].as_array().expect("packages array");
+    let package = packages
+        .iter()
+        .find(|p| {
+            p["name"].as_str() == Some(name)
+                && workspace_members.contains(p["id"].as_str().expect("package id"))
+        })
+        .unwrap_or_else(|| panic!("no workspace member named `{name}` in cargo metadata output"));
+    let targets = package["targets"].as_array().expect("targets array");
+    let target_has_kind = |wanted: &str| {
+        targets.iter().any(|t| {
+            t["kind"]
+                .as_array()
+                .expect("target kind array")
+                .iter()
+                .any(|k| k.as_str() == Some(wanted))
+        })
+    };
+    match (target_has_kind("lib"), target_has_kind("bin")) {
+        (true, true) => "lib + bin",
+        (true, false) => "lib",
+        (false, true) => "bin",
+        (false, false) => panic!(
+            "`{name}` has cargo metadata targets but none of declared kind `lib` or `bin`"
+        ),
+    }
+}
+
 #[test]
 fn crate_inventory_matches_a1_3() {
     let mut actual: Vec<String> = crate_dirs()
@@ -404,12 +473,19 @@ fn crate_inventory_matches_a1_3() {
          more and no fewer"
     );
 
+    let metadata = cargo_metadata();
     for (name, kind) in A1_3_INVENTORY {
         let crate_dir = platform_root().join("crates").join(name);
         let actual_kind = actual_crate_kind(&crate_dir);
         assert_eq!(
             actual_kind, *kind,
             "§A1.3: `{name}` is listed as `{kind}`, but its src/ layout is `{actual_kind}`"
+        );
+        let declared_kind = declared_crate_kind(metadata, name);
+        assert_eq!(
+            declared_kind, *kind,
+            "§A1.3: `{name}` is listed as `{kind}`, but cargo metadata declares \
+             its targets as `{declared_kind}`"
         );
     }
 }
@@ -740,12 +816,13 @@ fn rust_toolchain_targets_match_a5() {
 
 #[test]
 fn deny_toml_global_licence_allowlist_matches_a5() {
-    // The first `allow = [...]` in the file, in file order, is the global
-    // [licenses] list; the per-crate [[licenses.exceptions]] blocks (checked
-    // below) come later in the committed file and are not this one.
+    // Scoped to the `[licenses]` table itself (up to the first `[[...]]`
+    // exceptions header or any later top-level table), so a same-named
+    // `[bans].allow`, a commented-out example, or a per-crate
+    // `[[licenses.exceptions]].allow` cannot satisfy or defeat this check.
     let deny_toml = read_platform_file("deny.toml");
-    let mut allow_list = extract_toml_string_array(&deny_toml, "allow")
-        .unwrap_or_else(|| panic!("no `allow = [...]` array in deny.toml"));
+    let mut allow_list = extract_toml_string_array_in_table(&deny_toml, "[licenses]", "allow")
+        .unwrap_or_else(|| panic!("no `allow = [...]` array in deny.toml's [licenses] table"));
     allow_list.sort();
 
     let mut expected: Vec<String> = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0"]
