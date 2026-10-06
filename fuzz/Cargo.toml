@@ -1,0 +1,38 @@
+# Standalone cargo-fuzz workspace for T2 (VFL-41): the `canonical_host` and
+# `scope_match` fuzz targets over C2's `vf-core::scope` module (architecture
+# §A3.1). Not a member of the root `platform` workspace — mirrors the same
+# escape hatch `tests/Cargo.toml` uses, since the root `Cargo.toml` `[workspace]
+# members` list is a production-lane file and `fuzz/` is a test-lane directory
+# per the lane table.
+#
+# Run with (C2's §A3.1 "Local verification" line):
+#   cargo +nightly fuzz run canonical_host -- -max_total_time=600
+#   cargo +nightly fuzz run scope_match -- -max_total_time=600
+
+[package]
+name = "vf-core-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.vf-core]
+path = "../crates/vf-core"
+
+[[bin]]
+name = "canonical_host"
+path = "fuzz_targets/canonical_host.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scope_match"
+path = "fuzz_targets/scope_match.rs"
+test = false
+doc = false
+bench = false
