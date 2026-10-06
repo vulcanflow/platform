@@ -6,7 +6,13 @@
 [graph]
 # The graph rules below have to hold for every target the workspace builds, not
 # just the host, or vf-graph's wasm32 build could smuggle in an I/O crate.
-all-features = false
+#
+# `all-features` is on so the optional `kube` feature of vf-operator and
+# vf-admission — and with it the whole kube subtree — is inside the licence,
+# advisory and ban checks. This is the single place the setting is chosen:
+# `just deny` runs a bare `cargo deny check` so the config cannot be silently
+# overridden from the command line.
+all-features = true
 targets = [
     "aarch64-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
@@ -112,10 +118,17 @@ allow = ["CDLA-Permissive-2.0"]
 name = "xxhash-rust"
 allow = ["BSL-1.0"]
 
-[[licenses.clarify]]
-name = "ring"
-expression = "MIT AND ISC AND OpenSSL"
-license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+# There is deliberately no licence clarification for `ring`. cargo-deny's own
+# documentation uses `ring` as its clarify example, with the expression
+# `MIT AND ISC AND OpenSSL`; copying it here would admit `OpenSSL` — a licence
+# that is neither in the allow list above nor ratified as a per-crate exception
+# — through a third route into the licence set, on the one crate the whole §A5
+# TLS-provider rule is built around. It is also unnecessary: `ring 0.17.14`
+# declares `license = "Apache-2.0 AND ISC"` in its own manifest, and both halves
+# are in the six, so the declared expression is satisfied as it stands. If a
+# future `ring` ever needs a clarification, it enters the same way everything
+# else does: as a per-crate exception naming the crate and its edge, ratified by
+# the architect.
 
 # ---------------------------------------------------------------------------
 # Sources — crates.io only, per §A5
@@ -163,6 +176,22 @@ wrappers = []
 
 [[bans.deny]]
 name = "native-tls"
+wrappers = []
+
+# --- no aws-lc-rs (§A5: `ring` is the single rustls provider) ---------------
+#
+# §A5 revision 4 makes the absence of aws-lc-rs a hard rule, held today by the
+# feature sets chosen in `[workspace.dependencies]` (sqlx `tls-rustls-ring`,
+# reqwest `rustls-no-provider`, kube `ring`, object_store without `aws`). A
+# feature set is one line to change, so the rule also fails closed here, the
+# same way OpenSSL does. Test pack T9 asserts the same property from cargo
+# metadata; this makes `just check` catch it first.
+[[bans.deny]]
+name = "aws-lc-rs"
+wrappers = []
+
+[[bans.deny]]
+name = "aws-lc-sys"
 wrappers = []
 
 # --- §A1.4 crate dependency graph ------------------------------------------
