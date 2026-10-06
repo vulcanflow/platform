@@ -30,6 +30,12 @@ bootstrap:
 
 # Full local gate: formatting, lints, supply chain. Matches the definition of
 # done for every coding task.
+#
+# `deny` and `audit` are two deliberate advisory passes, not a duplicate (§A5,
+# ruling on VFL-98): `deny` applies the whole reviewed `deny.toml` policy to the
+# graph resolved with `all-features` and filtered to the three §A5 targets,
+# while `audit` denies every informational class across the whole `Cargo.lock`,
+# unfiltered by target or feature. Dropping either loses coverage.
 check: fmt-check clippy deny audit
 
 fmt:
