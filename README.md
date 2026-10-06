@@ -219,6 +219,13 @@ self-explanatory — the four TLS-bearing rows, and `testcontainers` — the rea
 it reads the way it does is recorded in a comment next to the pin, because the
 one-line edits that would undo it are not obviously wrong on sight.
 
+Every `uses:` in `.github/workflows/**` carries a full 40-character commit SHA,
+with the tag it resolved to as a trailing comment. A tag is mutable, so a
+re-point would silently change what CI executes. Resolve a new one with
+`git ls-remote <repo> 'refs/tags/<tag>^{}'`, falling back to `refs/tags/<tag>`
+when that is empty because the tag is lightweight, and keep the comment in step
+with the SHA.
+
 ## Deferred
 
 These are deployment concerns and do not block local work: multi-architecture
