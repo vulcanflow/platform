@@ -1,0 +1,4 @@
+# Mirror of the `[advisories] ignore` list in deny.toml; the two must stay equal.
+# See deny.toml for the reasoning and the tracking issue of each entry.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]  # VFL-173 ruling; retire per VFL-176

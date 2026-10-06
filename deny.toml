@@ -45,9 +45,18 @@ yanked = "deny"
 # default so transitive unsound advisories error here too, matching `audit`.
 unmaintained = "all"
 unsound = "all"
-# No ignored advisories. An advisory that cannot be fixed by a bump is a
-# reviewed exception added here with the issue that tracks it.
-ignore = []
+# Reviewed exceptions only. An advisory that cannot be fixed by a bump enters
+# here by an architecture ruling, with the issue that tracks its retirement,
+# and nothing else does. `.cargo/audit.toml` mirrors this list for the
+# `cargo audit` pass; the two must stay equal.
+ignore = [
+    # RUSTSEC-2023-0071 (Marvin timing side channel) on `rsa`, reached only via
+    # jsonwebtoken `rust_crypto`. Affects RSA private-key operations timed over a
+    # network; no network-facing crate here signs or decrypts with RSA (A1 verifies
+    # only; the dev issuer is EdDSA). Reviewed exception, Cortana 2026-10-06, VFL-173.
+    # Retire per VFL-176 when `rsa` ships a patched version.
+    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin side channel: no RSA private-key operation in any network-facing crate; dev issuer is EdDSA; tracking VFL-176" },
+]
 
 # ---------------------------------------------------------------------------
 # Licences — allow-list, per §A5
