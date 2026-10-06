@@ -68,13 +68,14 @@ utoipa = { version = "=6.0.0", features = ["axum_extras"] }
 utoipa-axum = "=0.3.0"
 
 # --- postgres -------------------------------------------------------------
-# DEVIATION (recorded on VFL-9): §A5 names the feature `tls-rustls`; sqlx 0.9
-# splits that into provider-specific features and bare `tls-rustls` selects
-# aws-lc-rs, which needs cmake at build time. `tls-rustls-ring` is the same
-# crate and the same rustls stack with the `ring` provider, which is what the
-# §A5 TLS row ("No OpenSSL; RustCrypto") intends. `macros` is added because
-# §A5's own rationale for sqlx is "compile-time checked queries; offline mode",
-# which the query macros provide.
+# §A5 revision 4 ratifies this row as `tls-rustls-ring` + `macros`. In sqlx
+# 0.9.0 `tls-rustls = ["tls-rustls-ring"]`, so the bare feature does not select
+# aws-lc-rs either; the provider-specific name is spelled out so the provider is
+# visible at the pin rather than one indirection down, consistent with
+# object_store, kube and reqwest below. Either spelling gives the same crate and
+# the same rustls stack with the `ring` provider, which is what the §A5 TLS row
+# ("No OpenSSL; RustCrypto") intends. `macros` carries §A5's own rationale for
+# sqlx — "compile-time checked queries; offline mode".
 sqlx = { version = "=0.9.0", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls-ring",
@@ -88,22 +89,24 @@ sqlx = { version = "=0.9.0", default-features = false, features = [
 pgvector = "=0.4.2"
 
 # --- object storage -------------------------------------------------------
-# DEVIATION (recorded on VFL-9): §A5 asks for the `aws` feature. In
-# object_store 0.14 `aws` expands to `aws-base + reqwest + reqwest/rustls +
-# aws-lc-rs`, and both of those last two pull `aws-lc-rs` in unconditionally —
-# adding `ring` alongside does not remove it, it just puts two providers in the
-# tree. Because cargo unifies features, that one edge switched the *whole*
-# workspace's rustls onto aws-lc-rs, which is the cmake-and-C-heavy provider
-# §A5's TLS row ("No OpenSSL; RustCrypto") exists to avoid.
+# §A5 revision 4 ratifies this row as `fs` + `aws-base` + `reqwest` + `ring`.
+# The `aws` umbrella feature is not allowed: in object_store 0.14 `aws` expands
+# to `aws-base + reqwest + reqwest/rustls + aws-lc-rs`, and both of those last
+# two pull `aws-lc-rs` in unconditionally — adding `ring` alongside does not
+# remove it, it just puts two providers in the tree. Because cargo unifies
+# features, that one edge switches the *whole* workspace's rustls onto
+# aws-lc-rs, which is the cmake-and-C-heavy provider §A5's TLS row ("No
+# OpenSSL; RustCrypto") exists to avoid.
 #
 # This is object_store's own documented ring-only recipe: the S3 implementation
 # and the reqwest connector without the `aws` umbrella, plus `ring` for SigV4
 # signing. object_store's example writes the TLS backend as
 # `reqwest/rustls-no-provider`, but a dependency entry may not name another
 # crate's features, so reqwest's TLS choice stays where it already is — the
-# `reqwest` pin below — and `vf-db` depends on reqwest directly so that
-# building `vf-db` alone still selects one. `native-tls`, the other way to
-# drop aws-lc-rs, is not an option: it pulls OpenSSL, which deny.toml bans.
+# `reqwest` pin below — and every crate that initiates TLS names a rustls
+# provider of its own, directly or through sqlx or kube (see that pin).
+# `native-tls`, the other way to drop aws-lc-rs, is not an option: it pulls
+# OpenSSL, which deny.toml bans.
 #
 # The provider is installed once at startup
 # (`rustls::crypto::ring::default_provider().install_default()`); that is task
@@ -166,11 +169,16 @@ psl = "=2.1.239"
 
 # --- dns and http probes --------------------------------------------------
 hickory-resolver = "=0.26.3"
-# DEVIATION (recorded on VFL-9): reqwest 0.13 has no `rustls-tls` feature — the
-# §A5 name is the 0.12 spelling. 0.13 offers `rustls` (which forces the
-# aws-lc-rs provider, needing cmake) and `rustls-no-provider` (rustls with the
-# provider chosen by the binary). The latter is used so the provider stays
-# `ring`, consistent with sqlx, object_store and kube above.
+# §A5 revision 4 ratifies this row as `rustls-no-provider` with no default
+# features; the plain `rustls` spelling is not allowed. reqwest 0.13 has no
+# `rustls-tls` feature at all — that was the 0.12 name — and its `rustls`
+# feature forces the aws-lc-rs provider, which needs cmake.
+# `rustls-no-provider` is rustls with no provider compiled in, so the provider
+# is chosen by the binary and stays `ring`, consistent with sqlx, object_store
+# and kube above. The corollary is a per-binary rule: a crate that builds to a
+# deployable binary and initiates TLS depends on `rustls` with the `ring`
+# feature itself. `vf-admission` and `vf-hook-notify` name it directly; the
+# others inherit it through sqlx (`tls-rustls-ring`) or kube (`ring`).
 reqwest = { version = "=0.13.5", default-features = false, features = [
     "rustls-no-provider",
     "json",
@@ -205,13 +213,12 @@ wasm-bindgen-test = "=0.3.79"
 proptest = "=1.11.0"
 rstest = "=0.27.0"
 insta = "=1.49.0"
-# DEVIATION (recorded on VFL-9): §A5 pins testcontainers 0.28 and
-# testcontainers-modules 0.15. Those two cannot both be used: 0.15.0 is the
-# newest published testcontainers-modules and it requires testcontainers ^0.27,
-# because 0.28 was released after it and the modules crate has not caught up.
-# §A5's intent is "testcontainers plus the postgres module", so testcontainers
-# drops one minor to =0.27.3 and the modules pin is kept. Revisit when
-# testcontainers-modules 0.16 lands.
+# §A5 revision 4 ratifies testcontainers =0.27.3 with testcontainers-modules
+# =0.15.0. The pair cannot be 0.28 + 0.15: 0.15.0 is the newest published
+# testcontainers-modules and it requires testcontainers ^0.27, because 0.28 was
+# released after it and the modules crate has not caught up. §A5's intent is
+# "testcontainers plus the postgres module", so testcontainers stays one minor
+# behind. Revisit when testcontainers-modules 0.16 lands.
 testcontainers = "=0.27.3"
 testcontainers-modules = { version = "=0.15.0", features = ["postgres"] }
 wiremock = "=0.6.5"
@@ -248,6 +255,12 @@ lto = "thin"
 codegen-units = 1
 panic = "unwind" # §A5: panics are caught at the service boundary, not aborted
 
-[profile.release.package.vf-graph]
-# §A5 size budget for the browser build is 300 KiB gzipped.
+# §A5's 300 KiB gzipped size budget is a browser-build concern only, so it is a
+# separate profile rather than a `[profile.release.package.vf-graph]` override:
+# that override also applies to native release builds, where vf-graph is a
+# dependency of vf-api on the run-submission path and must stay speed
+# optimised. `just wasm` is the debug portability check; `just wasm-release`
+# is the build the budget is measured on.
+[profile.wasm-release]
+inherits = "release"
 opt-level = "z"
