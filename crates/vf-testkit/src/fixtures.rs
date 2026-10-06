@@ -104,6 +104,11 @@ pub fn load(name: &str) -> Result<Fixture> {
 /// Names use `/` as the separator on every platform, so they can be passed
 /// straight back to [`load`].
 pub fn list(prefix: &str) -> Result<Vec<String>> {
+    // Checked before the trailing `/` is trimmed, which would otherwise turn
+    // `/` into the empty prefix and so into the whole tree.
+    if prefix.starts_with('/') {
+        return Err(Error::FixtureEscape(prefix.to_owned()));
+    }
     let prefix = prefix.trim_end_matches('/');
     let dir = resolve(prefix)?;
 
