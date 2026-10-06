@@ -40,11 +40,11 @@
 # against, carries a container healthcheck, and `just dev-up` is
 # `docker compose up --wait`, so "up" means "answering". Each probe runs
 # inside its own container, using only a tool the pinned image ships:
-# `pg_isready`, busybox `nc` (pgbouncer), `curl` (rustfs), `valkey-cli` and
-# `mc ready` (minio). A probe from the host would not do: Docker's port proxy
-# accepts a connection on a published port before the service behind it is
-# listening, so a host-side TCP connect succeeds against a service that is
-# not up.
+# `pg_isready` over TCP (postgres and pgbouncer), `curl` (rustfs),
+# `valkey-cli` and `mc ready` (minio). A probe from the host would not do:
+# Docker's port proxy accepts a connection on a published port before the
+# service behind it is listening, so a host-side TCP connect succeeds against
+# a service that is not up.
 
 name: vulcanflow
 
@@ -84,8 +84,13 @@ services:
       - "127.0.0.1:${VF_PG_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    # Over TCP, never the Unix socket. On a fresh volume the image's
+    # entrypoint runs initdb's scripts against a temporary server started
+    # with `listen_addresses=''`, which answers on the socket only; a socket
+    # probe would pass then, `--wait` would return, and the first TCP client
+    # would be refused while that server stops and the real one starts.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 3s
       timeout: 5s
       retries: 20
@@ -131,11 +136,11 @@ services:
       ADMIN_USERS: ${VF_PG_USER:-vulcanflow}
     ports:
       - "127.0.0.1:${VF_PGBOUNCER_PORT:-6432}:6432"
-    # PgBouncer binds its listen port only after it has loaded its
-    # configuration, and inside the container no proxy stands in front of it,
-    # so an accepted connect here means the pooler is up.
+    # `pg_isready` ships in the image (it installs postgresql-client), so the
+    # probe is a protocol startup the pooler has to answer, not merely an
+    # open listen socket.
     healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "6432"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U $${DB_USER} -d $${DB_NAME}"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -157,7 +162,6 @@ services:
     environment:
       RUSTFS_ACCESS_KEY: ${VF_S3_ACCESS_KEY:-vulcanflow}
       RUSTFS_SECRET_KEY: ${VF_S3_SECRET_KEY:-vulcanflow}
-      RUSTFS_CONSOLE_ENABLE: "true"
     ports:
       - "127.0.0.1:${VF_S3_PORT:-9000}:9000"
     volumes:
@@ -195,7 +199,7 @@ services:
   # ---------------------------------------------------------------------------
   # profile: minio — the second S3 implementation.
   #
-  # §A6.1 calls MinIO the alternate profile, and the F2 acceptance criteria
+  # §A6.1 calls MinIO the alternate profile, and F3's acceptance criteria
   # require the T4 S3 conformance suite to pass against both it and RustFS
   # with path-style addressing. Two implementations is the point: a
   # conformance test that only ever ran against one would be a description of
@@ -204,13 +208,26 @@ services:
   # Port 9100 rather than 9000, so it can run beside RustFS and a test can
   # address each.
   #
-  # The image is Chainguard's build of the MinIO server from MinIO's source,
-  # because neither of MinIO's own images can be pulled anonymously: as of
-  # 2026-10-06 both `minio/minio` on Docker Hub and `quay.io/minio/minio`
-  # answer a manifest request with 401. It is signed and carries an SBOM
-  # attestation. Chainguard's free tier tags only `latest`, so the digest is
-  # the whole pin. It has no curl, so readiness is `mc ready`, which the image
-  # bundles at /usr/bin/mc; MC_HOST_local is the alias it probes.
+  # The image is Chainguard's build of the MinIO server, because neither of
+  # MinIO's own images can be pulled anonymously: as of 2026-10-06 both
+  # `minio/minio` on Docker Hub and `quay.io/minio/minio` answer a manifest
+  # request with 401, even with an anonymous registry token. It is signed and
+  # carries an SBOM attestation.
+  #
+  # Chainguard's free tier tags only `latest`, so no tag can anchor this pin.
+  # What it is instead, from the digest's SBOM attestation: minio
+  # RELEASE.2026-09-22T19-25-18Z (built from github.com/chainguard-forks/minio)
+  # with mc RELEASE.2025-08-13T08-35-41Z, image created 2026-10-05. Chainguard
+  # keeps superseded digests pullable: on 2026-10-06, 25 of 25 sampled earlier
+  # digests of this repository, back to 2025-10-28, still resolved. That is
+  # observed, not promised. If this digest ever answers `manifest unknown`, set
+  # VF_MINIO_IMAGE=cgr.dev/chainguard/minio:latest in `.env` to keep working,
+  # and propose that day's digest, with its release from the SBOM, as the pin.
+  #
+  # It has no curl, so readiness is `mc ready`, which the image bundles at
+  # /usr/bin/mc; MC_HOST_local is the alias it probes. That alias carries the
+  # credentials inside a URL, so VF_S3_ACCESS_KEY and VF_S3_SECRET_KEY must stay
+  # URL-safe (no `@`, `:`, `/` or `%`) or this probe reports unhealthy.
   # ---------------------------------------------------------------------------
   minio:
     image: ${VF_MINIO_IMAGE:-cgr.dev/chainguard/minio:latest@sha256:a05a4497e8dce3cb7a7a1bf1872ba5d30ea988f1e8c22c9e0920503761c4b5f1}
@@ -244,12 +261,16 @@ services:
   #   docker compose --profile keycloak up -d keycloak
   #   # console at http://127.0.0.1:8080, admin / admin
   #
+  # It has no healthcheck, here or in the image, so `up --wait` returns as
+  # soon as the container runs, well before the console answers. Its log says
+  # when it is ready.
+  #
   # `start-dev` means an in-memory H2 database and no TLS. Correct here and
   # disqualifying anywhere else; the real deployment is infrastructure work
   # that no task in this document covers.
   # ---------------------------------------------------------------------------
   keycloak:
-    image: ${VF_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0.8@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858}
+    image: ${VF_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.0@sha256:b0f60d489d51c5d113390bdf5461d4c06e6051be026c05549f2e1e10ec352bcc}
     profiles: ["keycloak"]
     restart: unless-stopped
     command: ["start-dev"]
@@ -263,7 +284,8 @@ services:
   # ---------------------------------------------------------------------------
   # profile: mailpit — SMTP sink for the M4 `Mailer` port. No task yet; the
   # profile exists so the M4 work does not start by writing a compose file.
-  # Web UI on 8025, SMTP on 1025.
+  # Web UI on 8025, SMTP on 1025. The image declares its own healthcheck
+  # (`mailpit readyz`), so `up --wait` covers it.
   # ---------------------------------------------------------------------------
   mailpit:
     image: ${VF_MAILPIT_IMAGE:-axllent/mailpit:v1.21.8@sha256:81370195cd4a0eab9604d17c2617a7525b0486f9365555253b6c5376c6350f1a}

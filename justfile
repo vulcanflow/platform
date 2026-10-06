@@ -21,6 +21,9 @@ export BASH_ENV := ''
 # assignment rather than a backtick detection, because just evaluates
 # top-level backticks on every invocation — including `just --list` — and the
 # list of recipes must work on a machine that has none of this installed.
+#
+# This and VF_DEV_UP_TIMEOUT come from the shell environment, not `.env`: just
+# reads them here, before any recipe has loaded `.env`.
 compose := env_var_or_default("VF_COMPOSE", "docker compose")
 
 # How long `just dev-up` waits for the default services. The F2 acceptance
@@ -64,7 +67,9 @@ bootstrap:
 # one spelling works for every recipe here rather than only this one:
 #
 #     COMPOSE_PROFILES=minio just dev-up      # second S3 implementation
-#     COMPOSE_PROFILES=keycloak just dev-up   # the real IdP (§A6.4), optional
+#
+# Not keycloak: it has no healthcheck, so this recipe would call it ready while
+# it is still starting. docker-compose.yml shows how to start it instead.
 #
 # (`just --list` shows the last comment line above a recipe, so each recipe in
 # this section ends its comment with a one-line summary.)
@@ -137,6 +142,7 @@ db-migrate:
       exit 0
     fi
 
+    : "${DATABASE_URL:?set DATABASE_URL in .env (see .env.example)}"
     echo "==> applying ${src}"
     sqlx migrate run --source "$src"
 
@@ -144,10 +150,13 @@ db-migrate:
 # without a database — in CI, in a release build, on a machine with nothing
 # running — so it is committed, and it has to be reproducible: the same
 # migrations and the same queries must give the same bytes. Two things make
-# that true here. `.sqlx/` is deleted before it is regenerated, so a query
+# that true here. `.sqlx/` is regenerated into an empty directory, so a query
 # that was removed cannot leave a stale file behind; and the generation runs
 # against a database built from the migrations alone, never against whatever
-# state a developer's dev database has drifted into.
+# state a developer's dev database has drifted into. The committed copy is
+# moved aside first and put back if generation fails. Generation compiles with
+# `--features integration`, so queries that exist only in the integration
+# tests are captured too.
 #
 # That template database is separate from the dev one and is dropped and
 # recreated every time. Your dev data is not touched.
@@ -187,8 +196,18 @@ db-template:
     fi
 
     echo "==> regenerating .sqlx/"
-    rm -rf .sqlx
-    DATABASE_URL="$template_url" cargo sqlx prepare --workspace -- --all-targets
+    saved="$(mktemp -d)"
+    if [ -d .sqlx ]; then mv .sqlx "$saved/"; fi
+    restore() {
+      rm -rf .sqlx
+      if [ -d "$saved/.sqlx" ]; then mv "$saved/.sqlx" .sqlx; fi
+      rm -rf "$saved"
+      echo "error: .sqlx/ was not regenerated; the previous one is back" >&2
+    }
+    trap restore EXIT
+    DATABASE_URL="$template_url" cargo sqlx prepare --workspace -- --all-targets --features integration
+    trap - EXIT
+    rm -rf "$saved"
 
     echo "==> done. 'git diff --stat .sqlx' should be empty unless a query changed."
 
@@ -212,24 +231,52 @@ run-local:
     set -euo pipefail
     if [ -f .env ]; then set -a; . ./.env; set +a; fi
 
+    # `wait -n` below needs bash 4.3; setsid is util-linux.
+    if (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] < 403 )); then
+      echo "error: run-local needs bash 4.3 or newer; this is ${BASH_VERSION}" >&2
+      exit 1
+    fi
+    if ! command -v setsid >/dev/null 2>&1; then
+      echo "error: run-local needs setsid (util-linux) on PATH" >&2
+      exit 1
+    fi
+
     echo "==> building"
     cargo build -p vf-api -p vf-operator -p vf-ingest --bins
 
-    bin="${CARGO_TARGET_DIR:-target}/debug"
     pids=()
     cleanup() {
       trap - EXIT
+      # A second Ctrl-C must not cut this short; it is bounded below.
+      trap '' INT TERM
       echo
       echo "==> stopping"
-      if [ ${#pids[@]} -gt 0 ]; then kill "${pids[@]}" 2>/dev/null || true; fi
+      if [ ${#pids[@]} -eq 0 ]; then return; fi
+      # Each service leads its own process group, so signalling the group
+      # reaches anything the service started too. TERM first; anything still
+      # there after ten seconds gets KILL, so a service that ignores TERM
+      # cannot hang the recipe.
+      for pid in "${pids[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
+      for _ in {1..50}; do
+        alive=0
+        for pid in "${pids[@]}"; do
+          if kill -0 -- "-$pid" 2>/dev/null; then alive=1; fi
+        done
+        if [ "$alive" -eq 0 ]; then break; fi
+        sleep 0.2
+      done
+      for pid in "${pids[@]}"; do kill -KILL -- "-$pid" 2>/dev/null || true; done
       wait 2>/dev/null || true
     }
     trap cleanup EXIT
     trap 'exit 130' INT TERM
 
-    "$bin/vf-api" & pids+=("$!")
-    "$bin/vf-operator" --runtime fake & pids+=("$!")
-    "$bin/vf-ingest" & pids+=("$!")
+    # setsid makes each service the leader of a new process group. `cargo run`
+    # finds the binary wherever this machine's cargo configuration put it, then
+    # execs it in place, so each pid here is the service's own.
+    setsid cargo run -q -p vf-api --bin vf-api & pids+=("$!")
+    setsid cargo run -q -p vf-operator --bin vf-operator -- --runtime fake & pids+=("$!")
+    setsid cargo run -q -p vf-ingest --bin vf-ingest & pids+=("$!")
 
     echo "==> vf-api, vf-operator (fake runtime) and vf-ingest started. Ctrl-C to stop."
     status=0

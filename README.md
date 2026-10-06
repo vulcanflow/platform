@@ -178,11 +178,12 @@ just run-local          # vf-api, vf-operator --runtime fake, vf-ingest
 just dev-down           # stop (add --volumes to discard the data)
 ```
 
-`just dev-up` returns only once the services answer, so the next recipe can
-assume them. `just run-local` stops the other two services when any one exits.
-Until tasks A1, O1 and I1 land, all three are empty entry points, so it stops
-straight after the build. Set `VF_COMPOSE` if your front end is not `docker compose` — for
-example `VF_COMPOSE='podman compose'`.
+`just dev-up` returns only once the default services answer, so the next
+recipe can assume them. `just run-local` stops the other two services when any
+one exits. Until tasks A1, O1 and I1 land, all three are empty entry points,
+so it stops straight after the build. If your front end is not
+`docker compose`, set `VF_COMPOSE` in your shell environment, not in `.env` —
+for example `VF_COMPOSE='podman compose' just dev-up`.
 
 Every image is pinned by tag and digest in `docker-compose.yml`, the one place
 the pins live. A `VF_*_IMAGE` variable in `.env` overrides one on your machine
@@ -192,8 +193,8 @@ Optional profiles, through compose's own `COMPOSE_PROFILES`:
 
 | Profile | What for |
 |---|---|
-| `minio` | the second S3 implementation, so the conformance suite runs against two. Chainguard's build of MinIO, since neither of MinIO's own images can be pulled anonymously |
-| `keycloak` | the real identity provider and its PKCE flow (§A6.4). Documented, required by no recipe and no task; tests use the dev issuer |
+| `minio` | the second S3 implementation, so the conformance suite runs against two. Chainguard's build of MinIO, since neither of MinIO's own images can be pulled anonymously; `docker-compose.yml` records the release behind the digest and what to do if it stops resolving |
+| `keycloak` | the real identity provider and its PKCE flow (§A6.4). Documented, required by no recipe and no task; tests use the dev issuer. It has no healthcheck, so start it as `docker-compose.yml` shows rather than through `just dev-up` |
 | `mailpit` | SMTP sink for the M4 mail work |
 
 `just db-template` rebuilds a throwaway template database from the migrations
