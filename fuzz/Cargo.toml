@@ -1,24 +1,30 @@
-# Standalone cargo-fuzz workspace for T2 (VFL-41): the `canonical_host` and
-# `scope_match` fuzz targets over C2's `vf-core::scope` module (architecture
-# §A3.1). Not a member of the root `platform` workspace — mirrors the same
-# escape hatch `tests/Cargo.toml` uses, since the root `Cargo.toml` `[workspace]
-# members` list is a production-lane file and `fuzz/` is a test-lane directory
-# per the lane table.
+# cargo-fuzz harness crate for vf-core::scope (VFL-145, T2 addendum to C2 /
+# VFL-15). Test-lane: `ci/lane-gate.sh:38` classifies `fuzz/*` as TEST and its
+# `TEST_MARKER_RE` counts `fuzz_target!` as a test declaration, so this whole
+# directory is Halsey's (Test Writer) to author, not Kelly's / C2's.
 #
-# Run with (C2's §A3.1 "Local verification" line):
-#   cargo +nightly fuzz run canonical_host -- -max_total_time=600
-#   cargo +nightly fuzz run scope_match -- -max_total_time=600
-
+# `[workspace]` below is empty on purpose: it makes this package its own
+# workspace root rather than an implicit member of the root workspace, which
+# is the standard `cargo fuzz init` shape and the only way to add a fuzz
+# crate without editing the root `Cargo.toml` (production-lane, §A5-governed,
+# not this task's to touch). `vf-core` itself stays a member of the root
+# workspace through its own manifest, so it still resolves its dependencies
+# against the root's pinned `[workspace.dependencies]` table.
 [package]
-name = "vf-core-fuzz"
+name = "vf-core-scope-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
 
-[workspace]
+[package.metadata]
+cargo-fuzz = true
 
 [dependencies]
+# Not part of the §A5 pin table (that table is production-lane and silent on
+# fuzzing); loosely constrained on purpose so this standalone workspace's own
+# lockfile can pick up current patch releases rather than one guessed here.
 libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.vf-core]
 path = "../crates/vf-core"
@@ -36,3 +42,11 @@ path = "fuzz_targets/scope_match.rs"
 test = false
 doc = false
 bench = false
+
+# Keeps a crash backtrace readable; this workspace is independent of the root
+# `[profile.release]` (strip = "symbols"), which exists for release artefacts
+# and does not apply here.
+[profile.release]
+debug = 1
+
+[workspace]
