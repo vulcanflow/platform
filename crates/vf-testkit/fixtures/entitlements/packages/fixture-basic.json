@@ -1,0 +1,5 @@
+{
+  "nodes": ["aggregate", "dnsx", "httpx", "subfinder"],
+  "max_hosts_per_run": 10,
+  "max_scanner_minutes_per_run": 30
+}

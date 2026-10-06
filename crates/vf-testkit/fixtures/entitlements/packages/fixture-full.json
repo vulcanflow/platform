@@ -1,0 +1,5 @@
+{
+  "nodes": ["aggregate", "amass", "dnsx", "httpx", "masscan", "nmap", "nuclei", "subfinder", "tlsx"],
+  "max_hosts_per_run": 1000,
+  "max_scanner_minutes_per_run": 600
+}
