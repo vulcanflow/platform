@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# bootstrap-toolchain.sh — give a runner the toolchain `just check` needs.
+#
+# The agent runners ship `curl`, `python3` and `dpkg-deb`, but no C compiler,
+# no linker, no libc headers and no Rust. Without a C toolchain nothing in this
+# workspace compiles: `serde_derive` and `thiserror-impl` are proc macros, so
+# `cargo check` builds their build scripts for the host and dies on
+# `linker 'cc' not found` before it reaches any of our own code. See VFL-142.
+#
+# The runner is uid 65532 and cannot take the dpkg lock, so the toolchain is
+# not installed — it is *unpacked*. Every package named in
+# ci/toolchain/debs-<arch>.lock is fetched from the Debian archive, checked
+# against the SHA256 recorded in that lock, and extracted into a private
+# sysroot with `dpkg-deb -x`. No maintainer script runs, nothing outside the
+# prefix is touched, and no privilege is needed beyond writing one directory.
+#
+# Two properties are worth stating because they are the reason this is safe
+# rather than a hack:
+#
+#   1. The sysroot is self-contained. libc6-dev ships `libc.so` as a linker
+#      script naming absolute paths, and ld resolves those relative to
+#      --sysroot, so libc6 itself is inside the lock rather than borrowed from
+#      the image. Nothing links against a library the lock does not pin.
+#
+#   2. libc6 and libc6-dev are pinned to the image's own glibc
+#      (2.41-12+deb13u4). The ELF interpreter baked into a binary we build is
+#      the unprefixed /lib/ld-linux-aarch64.so.1, so a built binary runs
+#      against the image's loader. Pinning the pair to the image's version is
+#      what keeps that from being a version skew.
+#
+# The lock is regenerated, not hand-edited: see ci/toolchain/resolve-debs.py.
+#
+# Usage:
+#   eval "$(ci/bootstrap-toolchain.sh)"   # bootstrap, then export the env
+#   ci/bootstrap-toolchain.sh --env-only  # just print the env, no network
+#
+# The prefix defaults to a sibling of the checkout so it survives `git clean`
+# and is shared by every task on the same workspace. Override with
+# VF_TOOLCHAIN_DIR. It is deliberately outside the work tree: it is 400 MiB of
+# third-party binaries and must never be a candidate for commit.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+prefix="${VF_TOOLCHAIN_DIR:-$(cd "$repo_root/.." && pwd)/.vf-toolchain}"
+
+sysroot="$prefix/sysroot"
+shim_dir="$prefix/bin"
+cache_dir="$prefix/cache"
+cargo_home="$prefix/cargo"
+rustup_home="$prefix/rustup"
+
+RUSTUP_VERSION="1.29.1"
+
+# Architecture is detected, never assumed: the project is architecture
+# agnostic and arm64 and amd64 are equal first-class targets (§A5).
+# `loader` is spelled out per architecture rather than derived from `uname -m`:
+# the two differ in both directory and suffix (/lib vs /lib64, .so.1 vs .so.2),
+# so there is no substitution that produces both.
+case "$(uname -m)" in
+  aarch64)
+    deb_arch=arm64; gnu_triple=aarch64-linux-gnu; rust_host=aarch64-unknown-linux-gnu
+    loader=/lib/ld-linux-aarch64.so.1 ;;
+  x86_64)
+    deb_arch=amd64; gnu_triple=x86_64-linux-gnu;  rust_host=x86_64-unknown-linux-gnu
+    loader=/lib64/ld-linux-x86-64.so.2 ;;
+  *) echo "bootstrap-toolchain: unsupported machine $(uname -m)" >&2; exit 1 ;;
+esac
+
+# rustup-init is pinned by version *and* digest. The unversioned
+# /rustup/dist/ URL always serves the newest release, so it cannot be pinned;
+# /rustup/archive/<version>/ can. These digests are upstream's own published
+# rustup-init.sha256 for 1.29.1.
+case "$rust_host" in
+  aarch64-unknown-linux-gnu) rustup_sha=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433 ;;
+  x86_64-unknown-linux-gnu)  rustup_sha=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 ;;
+esac
+
+lock="$repo_root/ci/toolchain/debs-$deb_arch.lock"
+
+print_env() {
+  printf 'export VF_TOOLCHAIN_DIR=%q\n' "$prefix"
+  printf 'export CARGO_HOME=%q\n' "$cargo_home"
+  printf 'export RUSTUP_HOME=%q\n' "$rustup_home"
+  # CC as well as PATH: `cc` on PATH is enough for rustc's default linker, but
+  # the cc crate resolves $CC first and some build scripts read it directly.
+  printf 'export CC=%q\n' "$shim_dir/cc"
+  printf 'export PATH=%q:%q:"$PATH"\n' "$shim_dir" "$cargo_home/bin"
+}
+
+if [[ "${1:-}" == "--env-only" ]]; then
+  print_env
+  exit 0
+fi
+
+if [[ ! -f "$lock" ]]; then
+  echo "bootstrap-toolchain: no lock for $deb_arch at $lock" >&2
+  echo "  regenerate it with ci/toolchain/resolve-debs.py --arch $deb_arch" >&2
+  exit 1
+fi
+
+mkdir -p "$prefix"
+
+# The workspace is shared between concurrent task runs, so two of them can
+# reach this script at once. Serialise on a lock file rather than letting both
+# extract into the same sysroot; the second one finds the stamp and no-ops.
+exec 9>"$prefix/.bootstrap.lock"
+flock 9
+
+log() { echo "bootstrap-toolchain: $*" >&2; }
+
+# The stamp carries the lock's digest, so editing the lock invalidates the
+# extracted tree instead of silently keeping the old one.
+lock_digest="$(sha256sum "$lock" | cut -d' ' -f1)"
+stamp="$sysroot/.bootstrapped-$lock_digest"
+
+if [[ -f "$stamp" ]]; then
+  log "sysroot already current for $lock_digest"
+else
+  log "unpacking $(grep -cv '^[[:space:]]*$' "$lock") packages into $sysroot"
+  rm -rf "$sysroot"
+  mkdir -p "$sysroot" "$cache_dir"
+
+  while read -r name version digest url; do
+    [[ -n "${name:-}" ]] || continue
+    deb="$cache_dir/$(basename "$url")"
+    if [[ ! -s "$deb" ]] || [[ "$(sha256sum "$deb" | cut -d' ' -f1)" != "$digest" ]]; then
+      curl -fsS --retry 3 --retry-delay 2 -m 300 -L -o "$deb.part" "$url"
+      mv "$deb.part" "$deb"
+    fi
+    got="$(sha256sum "$deb" | cut -d' ' -f1)"
+    if [[ "$got" != "$digest" ]]; then
+      echo "bootstrap-toolchain: digest mismatch for $name $version" >&2
+      echo "  expected $digest" >&2
+      echo "  got      $got" >&2
+      exit 1
+    fi
+    dpkg-deb -x "$deb" "$sysroot"
+  done < "$lock"
+
+  # Debian is merged-/usr: the packages put everything under /usr and the base
+  # filesystem supplies /lib -> usr/lib. `dpkg-deb -x` unpacks package contents
+  # only, so a bare extraction has no such symlink, and the absolute paths in
+  # libc6-dev's `libc.so` linker script — /lib/<triple>/libc.so.6 and
+  # /lib/ld-linux-*.so.1 — then resolve to nothing inside --sysroot. Recreate
+  # the base layout's links so the sysroot looks like a real root.
+  for merged in lib bin sbin; do
+    [[ -d "$sysroot/usr/$merged" ]] || continue
+    ln -sfn "usr/$merged" "$sysroot/$merged"
+  done
+
+  touch "$stamp"
+  log "sysroot ready"
+fi
+
+# The shims are rewritten every run: they are a few hundred bytes, and a stale
+# shim pointing at a moved prefix is far more confusing than regenerating.
+mkdir -p "$shim_dir"
+
+# gcc relocates itself from argv[0] — $sysroot/usr/bin/../lib/gcc finds cc1 and
+# collect2 — but its header and library search paths need --sysroot, and
+# collect2 needs -B to find our `ld` rather than a system one that is not
+# there. LD_LIBRARY_PATH is for gcc's *own* dependencies (libmpfr, libisl,
+# libmpc), which also live only in the sysroot.
+#
+# The two -Wl flags are what keep a built binary running after this prefix
+# moves or goes away. --sysroot applies to the linker too, so without them ld
+# is entitled to bake $sysroot/lib/ld-linux-*.so.1 in as the ELF interpreter,
+# and the binary would then depend on the toolchain directory at *runtime*.
+# Both paths are deliberately the image's, not the sysroot's: the loader and
+# the shared glibc are the image's copies, and the lock pins libc6 to the
+# image's version precisely so that is the same glibc.
+cat > "$shim_dir/cc" <<SHIM
+#!/usr/bin/env bash
+# Generated by ci/bootstrap-toolchain.sh — do not edit.
+export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple:$sysroot/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "$sysroot/usr/bin/$gnu_triple-gcc-14" \\
+  --sysroot="$sysroot" \\
+  -B"$sysroot/usr/bin" \\
+  -B"$sysroot/usr/lib/gcc/$gnu_triple/14" \\
+  -B"$sysroot/usr/libexec/gcc/$gnu_triple/14" \\
+  -B"$sysroot/usr/lib/$gnu_triple" \\
+  -Wl,-rpath-link,/lib/$gnu_triple \\
+  -Wl,--dynamic-linker=$loader \\
+  "\$@"
+SHIM
+chmod +x "$shim_dir/cc"
+
+# Rust's default linker for a *-linux-gnu target is `cc`, and the `cc` crate
+# honours $CC; both names resolve to the same shim. gcc/$triple-gcc exist
+# because some build scripts look for them by name.
+for alias in gcc "$gnu_triple-gcc" "$gnu_triple-cc"; do
+  ln -sf cc "$shim_dir/$alias"
+done
+
+# The binutils programs the `cc` crate and cargo reach for directly. These need
+# no sysroot flags, only their own shared libraries (libctf, libsframe,
+# libjansson, libzstd), so a plain exec with LD_LIBRARY_PATH is enough.
+for tool in ar ranlib nm strip objcopy objdump readelf ld ld.bfd as addr2line size strings; do
+  real="$sysroot/usr/bin/$gnu_triple-$tool"
+  [[ -x "$real" ]] || real="$sysroot/usr/bin/$tool"
+  [[ -x "$real" ]] || continue
+  cat > "$shim_dir/$tool" <<SHIM
+#!/usr/bin/env bash
+# Generated by ci/bootstrap-toolchain.sh — do not edit.
+export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "$real" "\$@"
+SHIM
+  chmod +x "$shim_dir/$tool"
+  ln -sf "$tool" "$shim_dir/$gnu_triple-$tool"
+done
+
+# Rust. rustup reads rust-toolchain.toml, so the channel, components and target
+# set come from the committed pin (§A5) and are not restated here.
+export CARGO_HOME="$cargo_home"
+export RUSTUP_HOME="$rustup_home"
+# Exported before rustup-init runs, not after: rustup-init probes for a default
+# linker on startup and warns that no C toolchain is present if the shims are
+# not already on PATH. The warning is harmless but it is the exact message this
+# script exists to eliminate, so it must not appear in the bootstrap's own log.
+export PATH="$shim_dir:$cargo_home/bin:$PATH"
+
+if [[ -x "$cargo_home/bin/rustup" ]]; then
+  log "rustup already present ($("$cargo_home/bin/rustup" --version 2>/dev/null | head -1))"
+else
+  log "installing rustup $RUSTUP_VERSION"
+  init="$cache_dir/rustup-init-$RUSTUP_VERSION-$rust_host"
+  if [[ ! -s "$init" ]] || [[ "$(sha256sum "$init" | cut -d' ' -f1)" != "$rustup_sha" ]]; then
+    curl -fsS --retry 3 --retry-delay 2 -m 300 -L -o "$init.part" \
+      "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/$rust_host/rustup-init"
+    mv "$init.part" "$init"
+  fi
+  got="$(sha256sum "$init" | cut -d' ' -f1)"
+  if [[ "$got" != "$rustup_sha" ]]; then
+    echo "bootstrap-toolchain: rustup-init digest mismatch" >&2
+    echo "  expected $rustup_sha" >&2
+    echo "  got      $got" >&2
+    exit 1
+  fi
+  chmod +x "$init"
+  # --no-modify-path: the env comes from print_env below, not from a dotfile a
+  # runner would not source anyway.
+  "$init" -y --no-modify-path --default-toolchain none --profile minimal >&2
+fi
+
+# Materialise the pinned toolchain now rather than on whichever cargo command
+# a coder happens to run first, so the multi-minute download is attributed to
+# the bootstrap and not to a test run that looks like it hung.
+if [[ -f "$repo_root/rust-toolchain.toml" ]]; then
+  log "installing the toolchain pinned in rust-toolchain.toml"
+  ( cd "$repo_root" && rustup show active-toolchain >&2 )
+fi
+
+log "ready — $(cd "$repo_root" && rustc --version 2>&1), $("$shim_dir/cc" --version | head -1)"
+print_env

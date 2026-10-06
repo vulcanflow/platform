@@ -10,6 +10,15 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
+# Toolchain bootstrap for a machine that has no C compiler and no Rust — the
+# agent runners. Prints the environment to stdout and its progress to stderr,
+# so the whole thing is `eval "$(just bootstrap)"`. Idempotent and cached: a
+# second run re-prints the environment without downloading anything. Not a
+# dependency of any other recipe, because on a normal developer machine the
+# toolchain is already there and this must not run behind their back.
+bootstrap:
+    @ci/bootstrap-toolchain.sh
+
 # Full local gate: formatting, lints, supply chain. Matches the definition of
 # done for every coding task.
 check: fmt-check clippy deny audit
