@@ -119,7 +119,11 @@ services:
       DB_PORT: "5432"
       DB_USER: ${VF_PG_USER:-vulcanflow}
       DB_PASSWORD: ${VF_PG_PASSWORD:-vulcanflow}
-      DB_NAME: ${VF_PG_DATABASE:-vulcanflow}
+      # No DB_NAME, on purpose. The image's entrypoint writes `${DB_NAME:-*}`
+      # as the one `[databases]` key, so leaving it unset routes every
+      # database to Postgres. `TestDb`'s compose backend (slice F2b) creates a
+      # fresh database per handle and reaches it through here; with DB_NAME
+      # set, only that one database would be routed.
       AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
       LISTEN_PORT: "6432"
@@ -140,7 +144,7 @@ services:
     # probe is a protocol startup the pooler has to answer, not merely an
     # open listen socket.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U $${DB_USER} -d $${DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U $${DB_USER} -d ${VF_PG_DATABASE:-vulcanflow}"]
       interval: 3s
       timeout: 3s
       retries: 20
