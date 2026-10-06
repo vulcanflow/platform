@@ -7,9 +7,12 @@
 //! Graph and node config types, the type lattice, the validation rules, JSON
 //! schema generation and the `wasm-bindgen` export consumed by the SPA.
 //!
-//! Two graph rules from §A1.4 apply to this crate and are enforced by
-//! `deny.toml`, `just graph-rules` and test pack T9:
+//! Two graph rules from §A1.4 apply to this crate, and they are enforced in
+//! different places:
 //!
-//! - it depends on no I/O crate, so the wasm32 build stays clean;
+//! - it depends on no I/O crate, so the wasm32 build stays clean. Not
+//!   expressible as a cargo-deny ban; checked by `just graph-rules`
+//!   (`cargo tree --target wasm32-unknown-unknown`) and test pack T9.
 //! - it does not depend on `vf-core`. It exports its own small types instead,
-//!   so the browser bundle carries nothing it does not need.
+//!   so the browser bundle carries nothing it does not need. This one *is* a
+//!   ban: `vf-core`'s `wrappers` list in `deny.toml` omits `vf-graph`.

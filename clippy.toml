@@ -17,6 +17,7 @@ allow-indexing-slicing-in-tests = true
 # source-compatible yet, so the lints that protect one would only add noise.
 avoid-breaking-exported-api = false
 
-# §A5: panics are caught at the service boundary and reported as platform
-# errors, so a panic message is a developer-facing string and must be useful.
+# `dbg!` is not an assertion, it is a debugging leftover, so the exemption the
+# four settings above grant tests does not extend to it. A test that wants to
+# report something uses an assertion message.
 allow-dbg-in-tests = false

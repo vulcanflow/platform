@@ -58,11 +58,18 @@ the generated OpenAPI document so the 3.1 output can be diffed.
 
 ### Dependency direction (§A1.4)
 
-`vf-core` is I/O free: it must never reach `tokio`, `sqlx`, `reqwest` or `kube`,
-and `cargo tree -p vf-core` is the check. `vf-graph` must stay portable to the
-browser, so it carries no I/O crate on `wasm32-unknown-unknown` either. Both
-rules are enforced mechanically by the `bans.wrappers` entries in `deny.toml`,
-not by convention.
+`vf-core` is I/O free: it must never reach `tokio`, `sqlx`, `reqwest` or `kube`.
+`vf-graph` must stay portable to the browser, so it carries no I/O crate on
+`wasm32-unknown-unknown` either.
+
+Most of §A1.4 is enforced mechanically by the `bans.wrappers` entries in
+`deny.toml`, which list exhaustively who may depend on each internal crate.
+These two rules are the exception: they cannot be written as bans, because the
+legitimate direct dependents of `tokio`, `sqlx`, `reqwest` and `kube` are
+third-party crates whose set changes on every bump. They are enforced by
+`just graph-rules` (`cargo tree`, per target) and by the workspace test pack
+T9 instead. Dropping `graph-rules` from `just gate` drops the only
+pre-push check of them.
 
 ## Delivery lanes
 
@@ -79,8 +86,11 @@ reaches GitHub through one shared identity.
 | NEUTRAL | everything else | any lane |
 
 The gate also refuses `#[cfg(test)]` inside production source, and refuses
-diffs that ignore, delete or thin out existing tests. Run it with
-`just lane-gate`.
+diffs that ignore, delete or thin out existing tests. `just lane-gate` runs all
+three checks on this working tree against `origin/main`;
+`just lane-gate-selftest` is a different thing — it replays fixture diffs
+through the gate in a throwaway repository to check the gate itself. `just gate`
+runs both.
 
 Nothing is pushed until the matching test pack passes under the test runner,
 both reviewers have reviewed the same code/test pair, and the architect has
@@ -95,7 +105,8 @@ just build      # cargo build --workspace --all-targets
 just test-unit  # unit tests, no services
 just wasm       # vf-graph on wasm32-unknown-unknown
 just check-cross# the workspace on the other CPU architecture
-just gate       # lane gate, then all of the above
+just lane-gate  # the delivery-lane gate on this tree, vs origin/main
+just gate       # lane gate and its self-test, then all of the above
 ```
 
 `just test-integration` additionally needs the compose stand-ins from
@@ -109,8 +120,11 @@ committed. Crates do not declare versions of their own; they take
 `{ workspace = true }`. A bump is a reviewed change to the architecture §A5
 table first and to this workspace second.
 
-Deviations from the §A5 table are recorded inline in `Cargo.toml` next to the
-pin they apply to, each with its reason, and on the task that introduced them.
+There are no open deviations from the §A5 table: every row this workspace
+carries is the ratified one (§A5 revision 4). Where a pin's feature set is not
+self-explanatory — the four TLS-bearing rows, and `testcontainers` — the reason
+it reads the way it does is recorded in a comment next to the pin, because the
+one-line edits that would undo it are not obviously wrong on sight.
 
 ## Deferred
 

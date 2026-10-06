@@ -8,8 +8,10 @@
 //! §8.2, §15.1, §17.3), the role x action policy (§4.2), the Problem type
 //! catalogue (§13.3), the event shapes (§A3.3) and the port traits (§A6.1).
 //!
-//! The crate depends on no I/O crate — no tokio, sqlx, reqwest or kube — and
-//! that is enforced mechanically by `deny.toml`, by `just graph-rules` and by
-//! the workspace test pack T9.
+//! The crate depends on no I/O crate — no tokio, sqlx, reqwest or kube. That
+//! rule is one of the two in §A1.4 that `deny.toml` cannot express as a ban, so
+//! it is enforced by `just graph-rules` (`cargo tree`, per target) and by the
+//! workspace test pack T9. `deny.toml` enforces the rest of §A1.4, including
+//! which crates may depend on this one.
 
 pub mod ports;

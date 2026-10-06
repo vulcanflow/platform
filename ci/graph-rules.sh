@@ -24,11 +24,15 @@ pass() { printf '\033[32mok\033[0m   %s\n' "$1"; }
 
 status=0
 
-# The crates that must stay I/O free, with the target each is checked on.
-# vf-graph is checked on wasm32 because that is the build whose bundle size and
-# browser portability the rule protects.
+# The crates that must stay I/O free, with the target each is checked on. Every
+# entry names its target: `cargo tree` with no `--target` resolves for the host
+# only, and the project is architecture agnostic, so vf-core is checked on both
+# Linux GNU targets — the same set deny.toml evaluates. vf-graph is checked on
+# wasm32 because that is the build whose bundle size and browser portability the
+# rule protects.
 io_free_crates=(
-  "vf-core|"
+  "vf-core|--target aarch64-unknown-linux-gnu"
+  "vf-core|--target x86_64-unknown-linux-gnu"
   "vf-graph|--target wasm32-unknown-unknown"
 )
 
@@ -41,7 +45,9 @@ io_crates=(tokio sqlx reqwest kube hyper object_store redis)
 # ---------------------------------------------------------------------------
 
 check_io_free() {
-  local crate="$1" extra="$2" tree hits=()
+  local crate="$1" extra="$2" tree hits=() label
+
+  label="$crate (${extra#--target })"
 
   # shellcheck disable=SC2086 # $extra is a deliberate argument list
   tree="$(cargo tree -p "$crate" $extra --prefix none --no-dedupe)"
@@ -54,9 +60,9 @@ check_io_free() {
   done
 
   if [ ${#hits[@]} -gt 0 ]; then
-    fail "$crate depends on I/O crates: ${hits[*]} (§A1.4)"
+    fail "$label depends on I/O crates: ${hits[*]} (§A1.4)"
   else
-    pass "$crate: no I/O crate"
+    pass "$label: no I/O crate"
   fi
 }
 
