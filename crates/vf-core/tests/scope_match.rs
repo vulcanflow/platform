@@ -122,11 +122,19 @@ fn domain_tree_admits_a_descendant_run_target_when_include_subdomains_is_true() 
 }
 
 #[test]
-fn domain_tree_never_admits_a_descendant_run_target_when_include_subdomains_is_false() {
+fn domain_tree_admits_a_descendant_run_target_even_when_include_subdomains_is_false() {
     let approval = domain_tree("example.com");
-    assert_ne!(
+    assert_eq!(
         check_run_scope(&approval, &run("www.example.com", false)),
         ScopeVerdict::InScope
+    );
+    assert_eq!(
+        check_candidate(
+            &domain_tree("example.com"),
+            &run("www.example.com", false),
+            &host("deep.www.example.com")
+        ),
+        ScopeVerdict::DiscoveryNotSelected
     );
 }
 
