@@ -1,0 +1,31 @@
+[package]
+name = "vf-db"
+description = "Postgres schemas, migrations, tenant/control transactions, repositories, outbox, infrastructure adapters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# Enables the parts of the suite that need `just dev-up` services (§A6.2).
+integration = []
+
+[dependencies]
+vf-core = { workspace = true }
+sqlx = { workspace = true }
+object_store = { workspace = true }
+# object_store's `reqwest` feature turns on the reqwest HTTP connector but
+# cannot choose reqwest's TLS backend for it. Depending on reqwest here is what
+# selects `rustls-no-provider`, so `cargo build -p vf-db` compiles on its own
+# rather than only when some other workspace crate happens to pull reqwest in.
+reqwest = { workspace = true }
+redis = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+

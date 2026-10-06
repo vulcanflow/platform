@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+.env
+
+# Harness-local settings, not part of the project.
+.claude/settings.local.json

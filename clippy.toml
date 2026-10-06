@@ -1,0 +1,23 @@
+# Clippy configuration. The lint levels themselves are crate attributes
+# (architecture §A5), not settings here; this file only configures the lints.
+
+# Matches rust-toolchain.toml, so clippy will not suggest an API newer than the
+# version every crate is compiled with.
+msrv = "1.99.0"
+
+# Tests live in crates/<crate>/tests and tests/ (the lane gate refuses
+# #[cfg(test)] in src). A test that unwraps is asserting, so the two panic lints
+# denied in every crate root do not apply there.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# Everything is 0.0.0 and `publish = false`; there is no published API to keep
+# source-compatible yet, so the lints that protect one would only add noise.
+avoid-breaking-exported-api = false
+
+# `dbg!` is not an assertion, it is a debugging leftover, so the exemption the
+# four settings above grant tests does not extend to it. A test that wants to
+# report something uses an assertion message.
+allow-dbg-in-tests = false

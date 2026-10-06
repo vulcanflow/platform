@@ -1,0 +1,24 @@
+[package]
+name = "vf-graph"
+description = "Pipeline graph DSL, type lattice, validation and JSON schema; native and wasm32."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# Enables the parts of the suite that need `just dev-up` services (§A6.2).
+integration = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+
+
+# wasm-bindgen is target-gated so the native build carries nothing browser
+# specific, and so `cargo tree -p vf-graph` stays free of it off wasm32.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
