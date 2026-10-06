@@ -237,7 +237,11 @@ clickhouse = "=0.15.2"
 # Build profiles
 # ---------------------------------------------------------------------------
 [profile.release]
-# Deterministic, auditable release artefacts; arm64 image builds consume these.
+# Deterministic, auditable release artefacts. These settings are architecture
+# neutral and are consumed by the multi-architecture release image builds
+# (arm64 and amd64 alike); see README.md, "Architecture agnostic". Nothing here
+# may be tuned for one CPU — no target-cpu, no target-feature, no per-arch
+# profile override.
 debug = false
 strip = "symbols"
 lto = "thin"
