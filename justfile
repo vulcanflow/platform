@@ -7,6 +7,15 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# Every recipe below is a non-interactive bash, and bash sources $BASH_ENV on
+# startup. The agent runners point BASH_ENV at a generated .bashrc that assigns
+# PATH *absolutely*, which deletes the bootstrapped toolchain from each recipe's
+# PATH — `just check` then fails with `cargo: command not found` even though
+# cargo resolves fine in the caller's own shell. Clearing it for recipes makes
+# that independent of whether the caller remembered to clear it as well.
+# A no-op on a developer machine, where BASH_ENV is not set in the first place.
+export BASH_ENV := ''
+
 default:
     @just --list
 
@@ -38,6 +47,15 @@ deny:
     cargo deny check
 
 audit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # gix — the git implementation compiled into cargo-audit, not the git CLI —
+    # refuses to load any git configuration when GIT_CONFIG_COUNT is set but
+    # empty, which is how the agent runners export it. It surfaces as
+    # `failed to prepare clone` against the advisory database, so it reads like
+    # a network or disk fault rather than an environment one. The bootstrap's
+    # env clears it, but this recipe is also run on its own by Test Runner.
+    [ -n "${GIT_CONFIG_COUNT:-}" ] || unset GIT_CONFIG_COUNT
     cargo audit --deny warnings
 
 build:

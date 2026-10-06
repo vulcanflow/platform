@@ -86,6 +86,43 @@ print_env() {
   # the cc crate resolves $CC first and some build scripts read it directly.
   printf 'export CC=%q\n' "$shim_dir/cc"
   printf 'export PATH=%q:%q:"$PATH"\n' "$shim_dir" "$cargo_home/bin"
+  # Exporting PATH is not enough on an agent runner. The harness sets BASH_ENV
+  # to a generated .bashrc, so *every* non-interactive bash sources it on
+  # startup — and that file assigns PATH absolutely rather than appending to it.
+  # The toolchain therefore resolves in the shell that evals this, and vanishes
+  # in every child: `just`'s own `set shell := ["bash", "-euo", "pipefail",
+  # "-c"]` makes each recipe such a child, so `just check` reported
+  # `cargo: command not found` even after a successful bootstrap.
+  #
+  # Dropping BASH_ENV is safe here, and that is worth recording because it looks
+  # like it is discarding harness setup. Beyond the PATH line, that file only
+  # turns the four GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL} variables from
+  # set-but-empty into unset, which the loop below does itself.
+  printf 'unset BASH_ENV\n'
+
+  # The runners export several GIT_* variables with empty values. An empty
+  # GIT_* variable is never meaningful to git, and two of them break tooling:
+  #
+  #   GIT_CONFIG_COUNT= makes gix — the git implementation inside cargo-audit,
+  #   not the git CLI, which tolerates it — refuse to load any configuration at
+  #   all. `cargo audit` then dies on `GIT_CONFIG_COUNT was not a positive
+  #   integer` while fetching the advisory database, and reports it as a clone
+  #   failure, which reads like a network or disk problem rather than an
+  #   environment one. That failed `just audit`, and so `just check`.
+  #
+  #   GIT_AUTHOR_NAME= and its three companions are the ones the harness's
+  #   BASH_ENV file was clearing; since that file no longer runs for our
+  #   children, clear them here so a commit from a recipe keeps resolving its
+  #   identity from git configuration.
+  #
+  # Matched by shape rather than by name, because this is a property of the
+  # environment and the exact set has already grown once.
+  cat <<'GITENV'
+for __vf_git_var in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=$/\1/p'); do
+  unset "$__vf_git_var"
+done
+unset __vf_git_var
+GITENV
 }
 
 if [[ "${1:-}" == "--env-only" ]]; then
