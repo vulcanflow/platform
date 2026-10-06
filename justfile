@@ -80,29 +80,16 @@ dev-up:
     fi
 
     echo "==> starting the default services"
-    # --wait blocks on every healthcheck declared in docker-compose.yml.
-    # pgbouncer and rustfs declare none, for the reason given in that file, so
-    # they are waited on below from the host, where bash is guaranteed.
-    {{ compose }} up -d --wait --wait-timeout {{ dev_up_timeout }}
-
-    wait_tcp() {
-      local name="$1" host="$2" port="$3"
-      local deadline=$(( SECONDS + {{ dev_up_timeout }} ))
-      printf '==> waiting for %s on %s:%s' "$name" "$host" "$port"
-      until (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; do
-        if [ "$SECONDS" -ge "$deadline" ]; then
-          printf ' timed out after %ss\n' '{{ dev_up_timeout }}' >&2
-          echo "    see: {{ compose }} logs ${name}" >&2
-          exit 1
-        fi
-        printf '.'
-        sleep 1
-      done
-      printf ' ok\n'
-    }
-
-    wait_tcp pgbouncer 127.0.0.1 "${VF_PGBOUNCER_PORT:-6432}"
-    wait_tcp rustfs 127.0.0.1 "${VF_S3_PORT:-9000}"
+    # --wait blocks until every started service's healthcheck passes. Every
+    # default service in docker-compose.yml declares one, probed from inside
+    # its container, so this returning means they answer — see that file's
+    # header for why a probe from the host would not.
+    if ! {{ compose }} up -d --wait --wait-timeout {{ dev_up_timeout }}; then
+      echo "error: the services were not healthy within {{ dev_up_timeout }}s" >&2
+      {{ compose }} ps >&2 || true
+      echo "       see: {{ compose }} logs <service>" >&2
+      exit 1
+    fi
 
     echo
     {{ compose }} ps

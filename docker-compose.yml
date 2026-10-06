@@ -36,14 +36,15 @@
 #     local-only by construction: see "VF_ENV" in `.env.example`, and §A7
 #     invariant 11 — dev adapters are refused under VF_ENV=production, by test.
 #
-# Readiness is split deliberately. `postgres`, `valkey` and `minio` carry
-# container healthchecks, because each ships a first-party readiness probe
-# (`pg_isready`, `valkey-cli ping`, MinIO's `mc ready`). `pgbouncer`
-# and `rustfs` do not: their images' shells and bundled tools are not something
-# this file should assume, so `just dev-up` waits on them from the host, where
-# bash is guaranteed. Readiness is therefore a property of `just dev-up`, not
-# of `docker compose up` alone — which is also what the acceptance criterion
-# measures.
+# Every default service, and the minio profile the S3 conformance suite runs
+# against, carries a container healthcheck, and `just dev-up` is
+# `docker compose up --wait`, so "up" means "answering". Each probe runs
+# inside its own container, using only a tool the pinned image ships:
+# `pg_isready`, busybox `nc` (pgbouncer), `curl` (rustfs), `valkey-cli` and
+# `mc ready` (minio). A probe from the host would not do: Docker's port proxy
+# accepts a connection on a published port before the service behind it is
+# listening, so a host-side TCP connect succeeds against a service that is
+# not up.
 
 name: vulcanflow
 
@@ -96,8 +97,8 @@ services:
   # pooling hands a server connection to the next transaction, so prepared
   # statements, `SET`, `LISTEN` and temp tables behave differently from a
   # direct connection. Exercising that now rather than on Aether is the whole
-  # point, and it is why `vf-testkit::TestDb` hands out both a pooled and a
-  # direct pool.
+  # point, and it is why `vf-testkit`'s `TestDb` (slice F2b) hands out both a
+  # pooled and a direct pool.
   #
   # See the `VF_DATABASE_URL` note in `.env.example` for the prepared-statement
   # setting this requires on the client side.
@@ -130,11 +131,21 @@ services:
       ADMIN_USERS: ${VF_PG_USER:-vulcanflow}
     ports:
       - "127.0.0.1:${VF_PGBOUNCER_PORT:-6432}:6432"
+    # PgBouncer binds its listen port only after it has loaded its
+    # configuration, and inside the container no proxy stands in front of it,
+    # so an accepted connect here means the pooler is up.
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "6432"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   # ---------------------------------------------------------------------------
   # RustFS: the S3-compatible object store for findings artifacts (§A6.1
-  # `ArtifactStore` row). The same software Aether is expected to run, so the
-  # local adapter and the real one differ only in endpoint and credentials.
+  # `ArtifactStore` row). It is one of Aether's two candidate object stores
+  # (Ceph RGW / RustFS, §A6.1; open question O7), and the adapter reaches
+  # either through the same S3 API, so local and real differ only in endpoint
+  # and credentials.
   #
   # Path-style addressing, always: a virtual-hosted-style bucket name would
   # need wildcard DNS, and §A5 makes path-style an explicit configuration of
@@ -151,6 +162,13 @@ services:
       - "127.0.0.1:${VF_S3_PORT:-9000}:9000"
     volumes:
       - rustfs-data:/data
+    # The probe RustFS's own compose file uses at this release.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
   # ---------------------------------------------------------------------------
   # Valkey: the `WakeBus` (§A6.1) — wake-up publish/subscribe between the API
@@ -187,11 +205,12 @@ services:
   # address each.
   #
   # The image is Chainguard's build of the MinIO server from MinIO's source,
-  # because MinIO no longer publishes one: as of 2026-10-06 `minio/minio` is
-  # gone from Docker Hub and `quay.io/minio/minio` refuses anonymous pulls. It
-  # is signed and carries an SBOM attestation. Chainguard's free tier tags only
-  # `latest`, so the digest is the whole pin. It has no curl, so readiness is
-  # `mc ready`, which the image bundles; MC_HOST_local is the alias it probes.
+  # because neither of MinIO's own images can be pulled anonymously: as of
+  # 2026-10-06 both `minio/minio` on Docker Hub and `quay.io/minio/minio`
+  # answer a manifest request with 401. It is signed and carries an SBOM
+  # attestation. Chainguard's free tier tags only `latest`, so the digest is
+  # the whole pin. It has no curl, so readiness is `mc ready`, which the image
+  # bundles at /usr/bin/mc; MC_HOST_local is the alias it probes.
   # ---------------------------------------------------------------------------
   minio:
     image: ${VF_MINIO_IMAGE:-cgr.dev/chainguard/minio:latest@sha256:a05a4497e8dce3cb7a7a1bf1872ba5d30ea988f1e8c22c9e0920503761c4b5f1}
@@ -204,7 +223,7 @@ services:
       MC_HOST_local: http://${VF_S3_ACCESS_KEY:-vulcanflow}:${VF_S3_SECRET_KEY:-vulcanflow}@127.0.0.1:9000
     ports:
       - "127.0.0.1:${VF_MINIO_PORT:-9100}:9000"
-      - "127.0.0.1:9101:9101"
+      - "127.0.0.1:${VF_MINIO_CONSOLE_PORT:-9101}:9101"
     volumes:
       - minio-data:/data
     healthcheck:

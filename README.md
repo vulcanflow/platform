@@ -190,7 +190,7 @@ Optional profiles, through compose's own `COMPOSE_PROFILES`:
 
 | Profile | What for |
 |---|---|
-| `minio` | the second S3 implementation, so the conformance suite runs against two. Chainguard's build of MinIO, since MinIO no longer publishes an image |
+| `minio` | the second S3 implementation, so the conformance suite runs against two. Chainguard's build of MinIO, since neither of MinIO's own images can be pulled anonymously |
 | `keycloak` | the real identity provider and its PKCE flow (§A6.4). Documented, required by no recipe and no task; tests use the dev issuer |
 | `mailpit` | SMTP sink for the M4 mail work |
 
@@ -201,11 +201,6 @@ your dev database.
 
 `just kind-up` prints `reserved for later infrastructure work` and exits. §A6.3
 reserves the name; no task is verified on a cluster.
-
-`vf-testkit` is the matching library side: `TestDb` for a migrated Postgres
-with both a pooled and a direct pool, `fixtures::load` for the corpus under
-`crates/vf-testkit/fixtures/`, `DeterministicClock`, `SeqIdGen` and
-`token(tenant, role, claims)`.
 
 ## Pins
 
