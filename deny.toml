@@ -26,7 +26,15 @@ feature-depth = 1
 # Advisories — deny, per §A5
 # ---------------------------------------------------------------------------
 [advisories]
-db-path = "~/.cargo/advisory-db"
+# `db-path` is a *root* that cargo-deny clones one database per `db-urls` entry
+# into, so it must not be `~/.cargo/advisory-db` — that is the path cargo-audit
+# clones the RustSec repository to directly. Pointing both at one directory makes
+# `just check` fail in recipe order: `deny` runs first and leaves the directory
+# non-empty but not a repository, then `audit` cannot clone into it and exits 1
+# with "Refusing to initialize the non-empty directory". It passes only where a
+# cargo-audit clone already exists, so it is green on a developer machine and red
+# on every fresh CI runner. `advisory-dbs` is cargo-deny's own default root.
+db-path = "~/.cargo/advisory-dbs"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 version = 2
 yanked = "deny"
