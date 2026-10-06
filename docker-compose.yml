@@ -35,6 +35,10 @@
 #   * Credentials come from `.env` with insecure, obvious defaults. They are
 #     local-only by construction: see "VF_ENV" in `.env.example`, and §A7
 #     invariant 11 — dev adapters are refused under VF_ENV=production, by test.
+#   * Every service runs with `no-new-privileges`, so nothing inside it gains
+#     privilege through a setuid binary. The images that start as root and
+#     drop to a service user (postgres, valkey) still can: dropping is not
+#     gaining.
 #
 # Every default service, and the minio profile the S3 conformance suite runs
 # against, carries a container healthcheck, and `just dev-up` is
@@ -59,6 +63,7 @@ services:
   postgres:
     image: ${VF_POSTGRES_IMAGE:-pgvector/pgvector:0.8.7-pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     environment:
       POSTGRES_DB: ${VF_PG_DATABASE:-vulcanflow}
       POSTGRES_USER: ${VF_PG_USER:-vulcanflow}
@@ -111,6 +116,7 @@ services:
   pgbouncer:
     image: ${VF_PGBOUNCER_IMAGE:-edoburu/pgbouncer:v1.24.1-p1@sha256:3db3d7223e93af52b4116f642951a1a5fa44702a88c2a59cf7562cac19320c9e}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,6 +149,11 @@ services:
     # `pg_isready` ships in the image (it installs postgresql-client), so the
     # probe is a protocol startup the pooler has to answer, not merely an
     # open listen socket.
+    #
+    # The two variables below are expanded at different times on purpose:
+    # `$${DB_USER}` by the container's shell when the probe runs, and
+    # `${VF_PG_DATABASE...}` by compose when it reads this file, because
+    # DB_NAME is deliberately absent from the container (see above).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U $${DB_USER} -d ${VF_PG_DATABASE:-vulcanflow}"]
       interval: 3s
@@ -163,6 +174,7 @@ services:
   rustfs:
     image: ${VF_RUSTFS_IMAGE:-rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     environment:
       RUSTFS_ACCESS_KEY: ${VF_S3_ACCESS_KEY:-vulcanflow}
       RUSTFS_SECRET_KEY: ${VF_S3_SECRET_KEY:-vulcanflow}
@@ -191,6 +203,7 @@ services:
   valkey:
     image: ${VF_VALKEY_IMAGE:-valkey/valkey:8.1.10-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     command: ["valkey-server", "--save", "", "--appendonly", "no"]
     ports:
       - "127.0.0.1:${VF_VALKEY_PORT:-6379}:6379"
@@ -237,6 +250,7 @@ services:
     image: ${VF_MINIO_IMAGE:-cgr.dev/chainguard/minio:latest@sha256:a05a4497e8dce3cb7a7a1bf1872ba5d30ea988f1e8c22c9e0920503761c4b5f1}
     profiles: ["minio"]
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     command: ["server", "/data", "--console-address", ":9101"]
     environment:
       MINIO_ROOT_USER: ${VF_S3_ACCESS_KEY:-vulcanflow}
@@ -277,6 +291,7 @@ services:
     image: ${VF_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.0@sha256:b0f60d489d51c5d113390bdf5461d4c06e6051be026c05549f2e1e10ec352bcc}
     profiles: ["keycloak"]
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     command: ["start-dev"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${VF_KEYCLOAK_ADMIN:-admin}
@@ -295,6 +310,7 @@ services:
     image: ${VF_MAILPIT_IMAGE:-axllent/mailpit:v1.21.8@sha256:81370195cd4a0eab9604d17c2617a7525b0486f9365555253b6c5376c6350f1a}
     profiles: ["mailpit"]
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     ports:
       - "127.0.0.1:${VF_MAILPIT_SMTP_PORT:-1025}:1025"
       - "127.0.0.1:${VF_MAILPIT_UI_PORT:-8025}:8025"

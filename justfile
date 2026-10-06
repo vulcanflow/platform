@@ -61,7 +61,7 @@ bootstrap:
 
 # The default stand-ins are Postgres 17 with pgvector, PgBouncer in
 # transaction pooling, RustFS and Valkey. Needs Docker Compose v2.17 or newer,
-# for `up --wait`.
+# for `up --wait-timeout`.
 #
 # Optional profiles go through COMPOSE_PROFILES, which compose reads itself, so
 # one spelling works for every recipe here rather than only this one:
@@ -128,18 +128,20 @@ db-migrate:
     set -euo pipefail
     if [ -f .env ]; then set -a; . ./.env; set +a; fi
 
-    if ! command -v sqlx >/dev/null 2>&1; then
-      echo "error: sqlx-cli is not on PATH." >&2
-      echo "       {{ sqlx_cli_install }}" >&2
-      exit 1
-    fi
-
+    # Before the sqlx check, so the walking loop works on a machine without
+    # sqlx-cli for as long as there is nothing to apply.
     src=crates/vf-db/migrations
     if [ ! -d "$src" ] || [ -z "$(find "$src" -maxdepth 1 -name '*.sql' -print -quit)" ]; then
       echo "==> no migrations: ${src} is absent or holds no .sql file."
       echo "    Task C1 owns the control schema and the tenant template, so until it"
       echo "    lands the migration set is empty and applying it is a no-op."
       exit 0
+    fi
+
+    if ! command -v sqlx >/dev/null 2>&1; then
+      echo "error: sqlx-cli is not on PATH." >&2
+      echo "       {{ sqlx_cli_install }}" >&2
+      exit 1
     fi
 
     : "${DATABASE_URL:?set DATABASE_URL in .env (see .env.example)}"
@@ -223,7 +225,8 @@ db-template:
 #
 # Until tasks A1, O1 and I1 land, the three binaries are F1's empty entry
 # points, which return at once, so this recipe builds them and then stops with
-# "a service exited (status 0)". That is the contract working, not a fault.
+# "vf-api exited (status 0)", or whichever returned first. That is the
+# contract working, not a fault.
 #
 # Run vf-api, vf-operator (fake scan runtime) and vf-ingest in the foreground.
 run-local:
@@ -274,14 +277,25 @@ run-local:
     # setsid makes each service the leader of a new process group. `cargo run`
     # finds the binary wherever this machine's cargo configuration put it, then
     # execs it in place, so each pid here is the service's own.
+    names=(vf-api vf-operator vf-ingest)
     setsid cargo run -q -p vf-api --bin vf-api & pids+=("$!")
     setsid cargo run -q -p vf-operator --bin vf-operator -- --runtime fake & pids+=("$!")
     setsid cargo run -q -p vf-ingest --bin vf-ingest & pids+=("$!")
 
     echo "==> vf-api, vf-operator (fake runtime) and vf-ingest started. Ctrl-C to stop."
     status=0
-    wait -n || status=$?
-    echo "==> a service exited (status ${status}); stopping the others" >&2
+    # `wait -p` (bash 5.1) says which one returned; older bash cannot.
+    exited=""
+    if (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 501 )); then
+      wait -n -p exited || status=$?
+    else
+      wait -n || status=$?
+    fi
+    who="a service"
+    for i in "${!pids[@]}"; do
+      if [ "${pids[$i]}" = "${exited:-}" ]; then who="${names[$i]}"; fi
+    done
+    echo "==> ${who} exited (status ${status}); stopping the others" >&2
     exit 1
 
 # §A6.3 is explicit about this: "a kind profile is reserved in the harness
