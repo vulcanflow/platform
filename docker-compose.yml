@@ -1,0 +1,247 @@
+# VulcanFlow local development stand-ins — architecture §A6.1, §A6.2.
+#
+# Everything the platform talks to, on one developer machine, with no
+# Kubernetes, no Aether, no cloud account and no hosted CI. The port boundary
+# (§A6.1) is what makes this possible: the services here are the *local*
+# adapter column of that table, and the real column is swapped in by
+# configuration, not by changing application code.
+#
+#   just dev-up      bring the default services up and wait for readiness
+#   just dev-down    stop them (add `just dev-down --volumes` to discard data)
+#
+# Default services: postgres, pgbouncer, rustfs, valkey. Nothing else starts
+# unless a profile is named.
+#
+#   --profile minio     MinIO instead of RustFS, to run the S3 conformance
+#                       suite against a second implementation
+#   --profile keycloak  the real identity provider, for anyone who wants the
+#                       PKCE flow locally. Documented, and required by no
+#                       recipe and no task (§A6.4)
+#   --profile mailpit   SMTP sink for the M4 mail work
+#
+# Conventions this file keeps:
+#
+#   * Every published port binds 127.0.0.1 only. A developer laptop on a
+#     conference network must not be running an unauthenticated object store
+#     on 0.0.0.0, and a scanner sandbox is a hostile workload by design.
+#   * Every image is pinned through a variable with a default, so a pin is a
+#     one-line change in `.env` rather than an edit to this file, and
+#     `.env.example` is the single place the pinned set is read off.
+#   * Credentials come from `.env` with insecure, obvious defaults. They are
+#     local-only by construction: see "VF_ENV" in `.env.example`, and §A7
+#     invariant 11 — dev adapters are refused under VF_ENV=production, by test.
+#
+# Readiness is split deliberately. `postgres`, `valkey` and `minio` carry
+# container healthchecks, because each ships a first-party readiness probe
+# (`pg_isready`, `valkey-cli ping`, MinIO's `/minio/health/live`). `pgbouncer`
+# and `rustfs` do not: their images' shells and bundled tools are not something
+# this file should assume, so `just dev-up` waits on them from the host, where
+# bash is guaranteed. Readiness is therefore a property of `just dev-up`, not
+# of `docker compose up` alone — which is also what the acceptance criterion
+# measures.
+
+name: vulcanflow
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres 17 with pgvector. §A4's control schema `vf` plus one schema per
+  # tenant, RLS forced on every tenant table (§A7 invariant 7). pgvector is
+  # part of the image rather than built at run time because §A4 uses it for
+  # finding similarity and a missing extension should fail at migration, not
+  # at first query.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: ${VF_POSTGRES_IMAGE:-pgvector/pgvector:pg17}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${VF_PG_DATABASE:-vulcanflow}
+      POSTGRES_USER: ${VF_PG_USER:-vulcanflow}
+      POSTGRES_PASSWORD: ${VF_PG_PASSWORD:-vulcanflow}
+      # scram-sha-256 locally too, because PgBouncer's auth path differs
+      # between md5 and scram and the local harness exists to exercise the
+      # real one.
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    command:
+      # Session-level settings a developer machine wants and production does
+      # not: log every statement slower than 200 ms so a missing index is
+      # visible while writing the query, and keep the connection ceiling low
+      # enough that a leak in a test shows up as an error rather than as
+      # swap.
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - log_min_duration_statement=200
+      - -c
+      - log_lock_waits=on
+    ports:
+      - "127.0.0.1:${VF_PG_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # PgBouncer in transaction pooling mode, which is how Aether's CNPG cluster
+  # is reached. §A5 pins it into the local harness for one reason: transaction
+  # pooling hands a server connection to the next transaction, so prepared
+  # statements, `SET`, `LISTEN` and temp tables behave differently from a
+  # direct connection. Exercising that now rather than on Aether is the whole
+  # point, and it is why `vf-testkit::TestDb` hands out both a pooled and a
+  # direct pool.
+  #
+  # See the `VF_DATABASE_URL` note in `.env.example` for the prepared-statement
+  # setting this requires on the client side.
+  # ---------------------------------------------------------------------------
+  pgbouncer:
+    image: ${VF_PGBOUNCER_IMAGE:-edoburu/pgbouncer:v1.24.1-p1}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${VF_PG_USER:-vulcanflow}
+      DB_PASSWORD: ${VF_PG_PASSWORD:-vulcanflow}
+      DB_NAME: ${VF_PG_DATABASE:-vulcanflow}
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      LISTEN_PORT: "6432"
+      # Deliberately small. The pool is here to be contended: a test that
+      # proves a pooled connection is reused across transactions needs reuse
+      # to actually happen, and a generous pool would hide it.
+      DEFAULT_POOL_SIZE: "10"
+      MAX_CLIENT_CONN: "100"
+      # PgBouncer 1.21+ can track protocol-level prepared statements in
+      # transaction mode. Left at 0 — the stricter setting — so the client
+      # side has to be correct rather than rescued by the pooler, which is
+      # what the real cluster's configuration cannot be assumed to do for us.
+      MAX_PREPARED_STATEMENTS: "0"
+      ADMIN_USERS: ${VF_PG_USER:-vulcanflow}
+    ports:
+      - "127.0.0.1:${VF_PGBOUNCER_PORT:-6432}:6432"
+
+  # ---------------------------------------------------------------------------
+  # RustFS: the S3-compatible object store for findings artifacts (§A6.1
+  # `ArtifactStore` row). The same software Aether is expected to run, so the
+  # local adapter and the real one differ only in endpoint and credentials.
+  #
+  # Path-style addressing, always: a virtual-hosted-style bucket name would
+  # need wildcard DNS, and §A5 makes path-style an explicit configuration of
+  # the `object_store` adapter rather than something inferred.
+  # ---------------------------------------------------------------------------
+  rustfs:
+    image: ${VF_RUSTFS_IMAGE:-rustfs/rustfs:latest}
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${VF_S3_ACCESS_KEY:-vulcanflow}
+      RUSTFS_SECRET_KEY: ${VF_S3_SECRET_KEY:-vulcanflow}
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "127.0.0.1:${VF_S3_PORT:-9000}:9000"
+    volumes:
+      - rustfs-data:/data
+
+  # ---------------------------------------------------------------------------
+  # Valkey: the `WakeBus` (§A6.1) — wake-up publish/subscribe between the API
+  # and the operator, and the token buckets behind the §A3.7 rate limits.
+  #
+  # No persistence. The bus carries wake-ups, not state: every durable fact is
+  # in Postgres, and a worker that misses a wake-up must recover from the
+  # reconciliation sweep. Running Valkey without an AOF locally keeps that
+  # honest — if a test passes only because the bus remembered something across
+  # a restart, it is testing the wrong thing.
+  # ---------------------------------------------------------------------------
+  valkey:
+    image: ${VF_VALKEY_IMAGE:-valkey/valkey:8-alpine}
+    restart: unless-stopped
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${VF_VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # ---------------------------------------------------------------------------
+  # profile: minio — the second S3 implementation.
+  #
+  # §A6.1 calls MinIO the alternate profile, and the F2 acceptance criteria
+  # require the T4 S3 conformance suite to pass against both it and RustFS
+  # with path-style addressing. Two implementations is the point: a
+  # conformance test that only ever ran against one would be a description of
+  # that one's behaviour.
+  #
+  # Port 9100 rather than 9000, so it can run beside RustFS and a test can
+  # address each.
+  # ---------------------------------------------------------------------------
+  minio:
+    image: ${VF_MINIO_IMAGE:-minio/minio:latest}
+    profiles: ["minio"]
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9101"]
+    environment:
+      MINIO_ROOT_USER: ${VF_S3_ACCESS_KEY:-vulcanflow}
+      MINIO_ROOT_PASSWORD: ${VF_S3_SECRET_KEY:-vulcanflow}
+    ports:
+      - "127.0.0.1:${VF_MINIO_PORT:-9100}:9000"
+      - "127.0.0.1:9101:9101"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # ---------------------------------------------------------------------------
+  # profile: keycloak — the approved identity provider (§A6.4).
+  #
+  # Documented and required by nothing. No recipe starts it and no task in the
+  # architecture is verified against it; tests use the dev issuer
+  # (`vf-testkit::token`, `vf-api dev-issuer`), which signs the same claim set.
+  # This profile is for a developer who wants to see the real PKCE
+  # authorization-code flow against the real product's IdP.
+  #
+  #   docker compose --profile keycloak up -d keycloak
+  #   # console at http://127.0.0.1:8080, admin / admin
+  #
+  # `start-dev` means an in-memory H2 database and no TLS. Correct here and
+  # disqualifying anywhere else; the real deployment is infrastructure work
+  # that no task in this document covers.
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: ${VF_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}
+    profiles: ["keycloak"]
+    restart: unless-stopped
+    command: ["start-dev"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${VF_KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${VF_KEYCLOAK_PASSWORD:-admin}
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:${VF_KEYCLOAK_PORT:-8080}:8080"
+
+  # ---------------------------------------------------------------------------
+  # profile: mailpit — SMTP sink for the M4 `Mailer` port. No task yet; the
+  # profile exists so the M4 work does not start by writing a compose file.
+  # Web UI on 8025, SMTP on 1025.
+  # ---------------------------------------------------------------------------
+  mailpit:
+    image: ${VF_MAILPIT_IMAGE:-axllent/mailpit:v1.21}
+    profiles: ["mailpit"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VF_MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${VF_MAILPIT_UI_PORT:-8025}:8025"
+
+volumes:
+  postgres-data:
+  rustfs-data:
+  minio-data:

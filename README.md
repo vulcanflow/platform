@@ -165,6 +165,44 @@ just gate       # lane gate and its self-test, then all of the above
 `just test-integration` additionally needs the compose stand-ins from
 `just dev-up` (Postgres 17, PgBouncer, RustFS, Valkey).
 
+## The local harness (architecture §A6.2)
+
+Everything the platform talks to runs in `docker-compose.yml` on one machine.
+No Kubernetes, no Aether, no cloud account.
+
+```
+cp .env.example .env    # the template, and the documentation for every variable
+just dev-up             # postgres + pgvector, pgbouncer, rustfs, valkey
+just db-migrate         # apply the vf-db migrations
+just run-local          # vf-api, vf-operator --runtime fake, vf-ingest
+just dev-down           # stop (add --volumes to discard the data)
+```
+
+`just dev-up` returns only once the services answer, so the next recipe can
+assume them. Set `VF_COMPOSE` if your front end is not `docker compose` — for
+example `VF_COMPOSE='podman compose'`.
+
+Optional profiles, through compose's own `COMPOSE_PROFILES`:
+
+| Profile | What for |
+|---|---|
+| `minio` | the second S3 implementation, so the conformance suite runs against two |
+| `keycloak` | the real identity provider and its PKCE flow (§A6.4). Documented, required by no recipe and no task; tests use the dev issuer |
+| `mailpit` | SMTP sink for the M4 mail work |
+
+`just db-template` rebuilds a throwaway template database from the migrations
+and regenerates the committed `.sqlx/` offline query data from it, so a build
+with no database reachable still type-checks every query. It does not touch
+your dev database.
+
+`just kind-up` prints `reserved for later infrastructure work` and exits. §A6.3
+reserves the name; no task is verified on a cluster.
+
+`vf-testkit` is the matching library side: `TestDb` for a migrated Postgres
+with both a pooled and a direct pool, `fixtures::load` for the corpus under
+`crates/vf-testkit/fixtures/`, `DeterministicClock`, `SeqIdGen` and
+`token(tenant, role, claims)`.
+
 ## Pins
 
 The toolchain is pinned in `rust-toolchain.toml` and every dependency is pinned
