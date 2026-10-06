@@ -85,12 +85,12 @@ pub trait TokenVerifier: Send + Sync + 'static {}
 /// Every timestamp the platform persists or publishes comes from here, so a
 /// test can drive the temporal rules — the 90-day control validity and 14-day
 /// grace of §5.2, the seven-day challenge expiry, the 15-minute SSE replay
-/// window and the outbox lease of §A3.3 — without sleeping. No `vf-core`
+/// window and the outbox lease of §A3.3 — without sleeping. No other `vf-core`
 /// function reads the clock itself; the caller passes the instant in.
 ///
-/// `vf-core` ships no implementation of this trait: the system clock is I/O,
-/// and the deterministic test clock belongs to `vf-testkit`. This crate owns
-/// only the contract.
+/// The real and local implementation is [`SystemClock`]. The deterministic
+/// test double lives in `vf-testkit` (§A1.3, task F2), which is a
+/// dev-dependency only and so cannot be selected by a shipped binary.
 pub trait Clock: Send + Sync + 'static {
     /// The current instant, in UTC.
     ///
@@ -115,6 +115,9 @@ pub trait Clock: Send + Sync + 'static {
 /// primary key keeps the §A4 indexes append-mostly, and it makes the keyset
 /// pagination of §A3.8 (`(observed_at desc, id desc)`) order consistently with
 /// insertion.
+///
+/// The real and local implementation is [`SystemIdGen`]. The deterministic
+/// test double lives in `vf-testkit` (§A1.3, task F2).
 pub trait IdGen: Send + Sync + 'static {
     /// A fresh UUID v7.
     ///
@@ -124,6 +127,33 @@ pub trait IdGen: Send + Sync + 'static {
     /// the same thing, and the §6.2 type safety is already carried by the
     /// newtype at the call site.
     fn new_uuid(&self) -> uuid::Uuid;
+}
+
+/// The real and local [`Clock`]: the operating system's wall clock (§A6.1).
+///
+/// The one place in `vf-core` that reads the time. It is a system call, not an
+/// I/O crate, so it does not breach the §A1.4 rule `just graph-rules` enforces.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now()
+    }
+}
+
+/// The real and local [`IdGen`]: UUID v7 from the system clock and the
+/// operating system's CSPRNG (§A6.1).
+///
+/// `uuid` guarantees that the values one process generates this way are ordered
+/// by creation, which is the property §A3.1 wants from v7.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SystemIdGen;
+
+impl IdGen for SystemIdGen {
+    fn new_uuid(&self) -> uuid::Uuid {
+        uuid::Uuid::now_v7()
+    }
 }
 
 /// Outbound mail. M4; real: an SMTP provider, local: Mailpit. No task yet.

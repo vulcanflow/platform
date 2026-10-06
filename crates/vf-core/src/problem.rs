@@ -328,8 +328,8 @@ pub enum Problem {
 
     /// An unexpected failure on our side (§13.3).
     ///
-    /// Carries no caller-facing detail by construction: its `detail` is
-    /// [`INTERNAL_DETAIL`] and the extension holds only a trace identifier.
+    /// Carries no caller-facing detail by construction: its `detail` is one
+    /// fixed sentence and the extension holds only a trace identifier.
     Internal {
         /// The request path.
         instance: Option<String>,
@@ -424,7 +424,7 @@ impl Problem {
 
     /// The per-occurrence, human-readable explanation (RFC 9457 §3.1.4).
     ///
-    /// [`Self::Internal`] returns the fixed [`INTERNAL_DETAIL`]: §13.3 forbids
+    /// [`Self::Internal`] returns one fixed sentence: §13.3 forbids
     /// serializing a database error or a panic message to the client.
     #[must_use]
     pub fn detail(&self) -> &str {
