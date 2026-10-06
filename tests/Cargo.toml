@@ -1,0 +1,33 @@
+# Standalone single-crate workspace for the cross-crate `tests/` lane of the
+# `platform` workspace (architecture doc §A1.3 "Rules enforced by ... a workspace
+# test in tests/workspace_graph.rs"; lane table in README.md; ADR-0005 lane gate).
+#
+# This manifest is deliberately NOT a member of the root `platform` workspace: the
+# root `Cargo.toml`'s `[workspace] members` list is a production-lane file (the lane
+# gate classifies `Cargo.toml` as PROD) and Halsey never edits production files. The
+# empty `[workspace]` table below tells Cargo that this directory roots its own
+# one-crate workspace instead of being swept into the parent workspace it happens to
+# sit inside — the standard escape hatch for a crate nested under another
+# workspace's tree that must not become a member of it.
+#
+# This suite is independent of `just test-unit` / `cargo test --workspace` for the
+# same reason: it is not a member. Test Runner invokes it directly:
+#
+#   cargo test --manifest-path tests/Cargo.toml
+
+[package]
+name = "vf-workspace-graph-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[test]]
+name = "workspace_graph"
+path = "workspace_graph.rs"
+
+[dependencies]
+# Pinned to the same exact version the `platform` workspace resolves (§A5), purely
+# for consistency; this crate has no dependency on the reviewed §A5 table itself.
+serde_json = "=1.0.151"
