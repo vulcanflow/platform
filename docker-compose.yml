@@ -24,16 +24,21 @@
 #   * Every published port binds 127.0.0.1 only. A developer laptop on a
 #     conference network must not be running an unauthenticated object store
 #     on 0.0.0.0, and a scanner sandbox is a hostile workload by design.
-#   * Every image is pinned through a variable with a default, so a pin is a
-#     one-line change in `.env` rather than an edit to this file, and
-#     `.env.example` is the single place the pinned set is read off.
+#   * Every image is pinned here, by tag and digest: the tag is for the
+#     reader, the digest is what is pulled. This file is the single place the
+#     pinned set lives, because it is tracked — a pin kept in `.env` would
+#     never reach a `.env` copied before the pin moved. Each reference is read
+#     through a variable, so `.env` can override one pin on one machine to try
+#     a release before proposing it here. Every pin is a multi-arch index with
+#     linux/amd64 and linux/arm64, resolved against its registry on
+#     2026-10-06.
 #   * Credentials come from `.env` with insecure, obvious defaults. They are
 #     local-only by construction: see "VF_ENV" in `.env.example`, and §A7
 #     invariant 11 — dev adapters are refused under VF_ENV=production, by test.
 #
 # Readiness is split deliberately. `postgres`, `valkey` and `minio` carry
 # container healthchecks, because each ships a first-party readiness probe
-# (`pg_isready`, `valkey-cli ping`, MinIO's `/minio/health/live`). `pgbouncer`
+# (`pg_isready`, `valkey-cli ping`, MinIO's `mc ready`). `pgbouncer`
 # and `rustfs` do not: their images' shells and bundled tools are not something
 # this file should assume, so `just dev-up` waits on them from the host, where
 # bash is guaranteed. Readiness is therefore a property of `just dev-up`, not
@@ -51,7 +56,7 @@ services:
   # at first query.
   # ---------------------------------------------------------------------------
   postgres:
-    image: ${VF_POSTGRES_IMAGE:-pgvector/pgvector:pg17}
+    image: ${VF_POSTGRES_IMAGE:-pgvector/pgvector:0.8.7-pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d}
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${VF_PG_DATABASE:-vulcanflow}
@@ -98,7 +103,7 @@ services:
   # setting this requires on the client side.
   # ---------------------------------------------------------------------------
   pgbouncer:
-    image: ${VF_PGBOUNCER_IMAGE:-edoburu/pgbouncer:v1.24.1-p1}
+    image: ${VF_PGBOUNCER_IMAGE:-edoburu/pgbouncer:v1.24.1-p1@sha256:3db3d7223e93af52b4116f642951a1a5fa44702a88c2a59cf7562cac19320c9e}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -136,7 +141,7 @@ services:
   # the `object_store` adapter rather than something inferred.
   # ---------------------------------------------------------------------------
   rustfs:
-    image: ${VF_RUSTFS_IMAGE:-rustfs/rustfs:latest}
+    image: ${VF_RUSTFS_IMAGE:-rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c}
     restart: unless-stopped
     environment:
       RUSTFS_ACCESS_KEY: ${VF_S3_ACCESS_KEY:-vulcanflow}
@@ -158,7 +163,7 @@ services:
   # a restart, it is testing the wrong thing.
   # ---------------------------------------------------------------------------
   valkey:
-    image: ${VF_VALKEY_IMAGE:-valkey/valkey:8-alpine}
+    image: ${VF_VALKEY_IMAGE:-valkey/valkey:8.1.10-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507}
     restart: unless-stopped
     command: ["valkey-server", "--save", "", "--appendonly", "no"]
     ports:
@@ -180,22 +185,30 @@ services:
   #
   # Port 9100 rather than 9000, so it can run beside RustFS and a test can
   # address each.
+  #
+  # The image is Chainguard's build of the MinIO server from MinIO's source,
+  # because MinIO no longer publishes one: as of 2026-10-06 `minio/minio` is
+  # gone from Docker Hub and `quay.io/minio/minio` refuses anonymous pulls. It
+  # is signed and carries an SBOM attestation. Chainguard's free tier tags only
+  # `latest`, so the digest is the whole pin. It has no curl, so readiness is
+  # `mc ready`, which the image bundles; MC_HOST_local is the alias it probes.
   # ---------------------------------------------------------------------------
   minio:
-    image: ${VF_MINIO_IMAGE:-minio/minio:latest}
+    image: ${VF_MINIO_IMAGE:-cgr.dev/chainguard/minio:latest@sha256:a05a4497e8dce3cb7a7a1bf1872ba5d30ea988f1e8c22c9e0920503761c4b5f1}
     profiles: ["minio"]
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9101"]
     environment:
       MINIO_ROOT_USER: ${VF_S3_ACCESS_KEY:-vulcanflow}
       MINIO_ROOT_PASSWORD: ${VF_S3_SECRET_KEY:-vulcanflow}
+      MC_HOST_local: http://${VF_S3_ACCESS_KEY:-vulcanflow}:${VF_S3_SECRET_KEY:-vulcanflow}@127.0.0.1:9000
     ports:
       - "127.0.0.1:${VF_MINIO_PORT:-9100}:9000"
       - "127.0.0.1:9101:9101"
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 3s
       timeout: 5s
       retries: 20
@@ -217,7 +230,7 @@ services:
   # that no task in this document covers.
   # ---------------------------------------------------------------------------
   keycloak:
-    image: ${VF_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}
+    image: ${VF_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0.8@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858}
     profiles: ["keycloak"]
     restart: unless-stopped
     command: ["start-dev"]
@@ -234,7 +247,7 @@ services:
   # Web UI on 8025, SMTP on 1025.
   # ---------------------------------------------------------------------------
   mailpit:
-    image: ${VF_MAILPIT_IMAGE:-axllent/mailpit:v1.21}
+    image: ${VF_MAILPIT_IMAGE:-axllent/mailpit:v1.21.8@sha256:81370195cd4a0eab9604d17c2617a7525b0486f9365555253b6c5376c6350f1a}
     profiles: ["mailpit"]
     restart: unless-stopped
     ports:

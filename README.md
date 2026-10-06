@@ -182,11 +182,15 @@ just dev-down           # stop (add --volumes to discard the data)
 assume them. Set `VF_COMPOSE` if your front end is not `docker compose` — for
 example `VF_COMPOSE='podman compose'`.
 
+Every image is pinned by tag and digest in `docker-compose.yml`, the one place
+the pins live. A `VF_*_IMAGE` variable in `.env` overrides one on your machine
+only, to try a release before proposing it as the pin.
+
 Optional profiles, through compose's own `COMPOSE_PROFILES`:
 
 | Profile | What for |
 |---|---|
-| `minio` | the second S3 implementation, so the conformance suite runs against two |
+| `minio` | the second S3 implementation, so the conformance suite runs against two. Chainguard's build of MinIO, since MinIO no longer publishes an image |
 | `keycloak` | the real identity provider and its PKCE flow (§A6.4). Documented, required by no recipe and no task; tests use the dev issuer |
 | `mailpit` | SMTP sink for the M4 mail work |
 
