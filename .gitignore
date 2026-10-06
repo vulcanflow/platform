@@ -2,5 +2,13 @@
 **/*.rs.bk
 .env
 
+# The unpacked C toolchain and Rust install from ci/bootstrap-toolchain.sh.
+# It defaults to a sibling of the checkout and so is already outside the work
+# tree; this covers the case where VF_TOOLCHAIN_DIR is pointed inside it.
+/.vf-toolchain
+
+# Bytecode from ci/toolchain/resolve-debs.py, which is run in place.
+__pycache__/
+
 # Harness-local settings, not part of the project.
 .claude/settings.local.json
