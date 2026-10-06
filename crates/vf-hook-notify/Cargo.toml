@@ -17,6 +17,17 @@ integration = []
 [dependencies]
 vf-core = { workspace = true }
 reqwest = { workspace = true }
+# reqwest is pinned `rustls-no-provider` (§A5 revision 4), i.e. rustls with no
+# crypto provider compiled in: the provider is a per-binary dependency, chosen
+# here and installed at startup. This crate is the one reqwest consumer that
+# reaches neither sqlx nor kube, so it names the provider itself, exactly as
+# vf-admission does. Without this line `cargo build -p vf-hook-notify` still
+# compiles — the gap is invisible to `just build` and to clippy — and yields a
+# binary in which rustls has no provider and none can be installed, so the
+# §8.4 signed POST fails on its first HTTPS call. §A1.3 mapping point 2 copies
+# this binary into each scanner image on its own, so the single-crate graph is
+# the deployed one.
+rustls = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
