@@ -22,3 +22,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+# `TestDb` hands tests `sqlx::PgPool`s and applies the `vf-db` migrations, so
+# both appear in its public signatures. The pin, its features and its rustls
+# provider are the workspace ones (§A5); nothing is selected here.
+sqlx = { workspace = true }
