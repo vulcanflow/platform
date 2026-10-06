@@ -45,14 +45,23 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import http.client
 import lzma
 import re
+import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
 
 SUITE = "trixie"
+
+# Fetch retries, matching the bootstrap's `curl --retry 3 --retry-delay 2`, so
+# one transient error does not abort a regeneration.
+RETRIES = 3
+RETRY_DELAY = 2
+TRANSIENT_HTTP = {408, 429, 500, 502, 503, 504}
 
 DIGITS = "0123456789"
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -81,6 +90,38 @@ SKIP = {
 }
 
 
+def fetch(url: str) -> bytes | None:
+    """Return the body at `url`, or None if the server answers 404.
+
+    Retries like the bootstrap's `curl --retry 3 --retry-delay 2`: a timeout,
+    a dropped connection or a 408/429/5xx is tried again, up to RETRIES times,
+    RETRY_DELAY seconds apart. Unlike curl without --retry-connrefused, a
+    refused connection is retried too. Any other HTTP status is an answer,
+    not a hiccup, and a certificate that fails to verify is never retried.
+    """
+    err: Exception | None = None
+    for attempt in range(RETRIES + 1):
+        if attempt:
+            print(f"# retry {attempt}/{RETRIES} {url}: {err}", file=sys.stderr)
+            time.sleep(RETRY_DELAY)
+        try:
+            with urllib.request.urlopen(url, timeout=180) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            if exc.code not in TRANSIENT_HTTP:
+                raise SystemExit(f"resolve-debs: cannot fetch {url}: {exc}")
+            err = exc
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                raise SystemExit(f"resolve-debs: cannot fetch {url}: {exc}")
+            err = exc
+        except (OSError, http.client.HTTPException) as exc:
+            err = exc
+    raise SystemExit(f"resolve-debs: cannot fetch {url} after {RETRIES} retries: {err}")
+
+
 def fetch_index(base: str, path: str) -> str:
     # .xz first. -updates and -security publish *only* Packages.xz, so a reader
     # that asked for .gz got a 404 from both, took it for an empty suite, and
@@ -88,15 +129,9 @@ def fetch_index(base: str, path: str) -> str:
     # carries only that. Anything other than a 404 is a fault, not a format.
     for suffix, decompress in ((".xz", lzma.decompress), (".gz", gzip.decompress)):
         url = base + path + suffix
-        try:
-            with urllib.request.urlopen(url, timeout=180) as resp:
-                raw = resp.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                continue
-            raise SystemExit(f"resolve-debs: cannot fetch {url}: {exc}")
-        except Exception as exc:
-            raise SystemExit(f"resolve-debs: cannot fetch {url}: {exc}")
+        raw = fetch(url)
+        if raw is None:
+            continue
         try:
             blob = decompress(raw).decode("utf-8", "replace")
         except (OSError, lzma.LZMAError) as exc:
