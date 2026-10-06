@@ -26,13 +26,29 @@
 //!
 //! These tokens are accepted only when `VF_AUTH=dev`, and §A6.4 requires every
 //! binary to refuse that setting under `VF_ENV=production`.
+//!
+//! # Ed25519
+//!
+//! The fixture issuer signs `EdDSA` over Ed25519, because Ed25519 is the one
+//! scheme whose private key *is* a 32-byte seed: deriving it from a constant
+//! needs a hash and nothing else, where RSA would need a seeded prime search
+//! and P-256 a scalar range check. Its signatures are deterministic too, so a
+//! token minted from fixed claims is byte-identical on every run.
+//! [`DevIssuer::from_pem_env`] also takes P-256, P-384 and RSA keys, for a
+//! developer pointing the harness at an issuer that uses one of those.
+//!
+//! The `kid` is the RFC 7638 thumbprint of the public key, so it changes
+//! exactly when the key does.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 use chrono::{DateTime, TimeDelta, Utc};
+use jsonwebtoken::jwk::{Jwk, JwkSet, PublicKeyUse, ThumbprintHash};
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use sha2::{Digest, Sha256};
 
-use crate::Result;
+use crate::{Error, Result};
 
 /// The `iss` claim the dev issuer signs, and the issuer a test configures a
 /// `TokenVerifier` with.
@@ -95,6 +111,11 @@ pub struct Claims {
     /// `iat`. Defaults to [`crate::clock::epoch`], so a signed token is itself
     /// reproducible; set it from a [`crate::DeterministicClock`] when the test
     /// is about expiry.
+    ///
+    /// The default therefore puts `exp` at `2026-01-01T01:00:00Z`. A verifier
+    /// that checks expiry against the injected `Clock` accepts it; one that
+    /// reads the system clock refuses it, so set this to the wall clock when
+    /// the code under test does.
     pub issued_at: Option<DateTime<Utc>>,
     /// Claims beyond the §A6.4 set.
     ///
@@ -172,10 +193,12 @@ pub struct DevIssuer {
     issuer: String,
     audience: String,
     key_id: String,
-    /// PKCS#8 PEM. Private, so the representation can become
-    /// `secrecy::SecretString` when the bodies land without that being an API
-    /// change.
-    private_key_pem: String,
+    algorithm: Algorithm,
+    /// The private key. Never printed; see the `Debug` impl.
+    signing_key: EncodingKey,
+    /// The public half, as the JWK [`DevIssuer::jwks`] publishes, `kid`
+    /// included.
+    public_key: Jwk,
 }
 
 impl fmt::Debug for DevIssuer {
@@ -184,10 +207,27 @@ impl fmt::Debug for DevIssuer {
             .field("issuer", &self.issuer)
             .field("audience", &self.audience)
             .field("key_id", &self.key_id)
-            .field("private_key_pem", &"<redacted>")
+            .field("algorithm", &self.algorithm)
+            .field("signing_key", &"<redacted>")
             .finish()
     }
 }
+
+/// How long a token is valid for when [`Claims::ttl`] is not set.
+fn default_ttl() -> TimeDelta {
+    TimeDelta::hours(1)
+}
+
+/// The DER prefix that makes a 32-byte Ed25519 seed a PKCS#8 private key
+/// (RFC 8410 §7): a version-0 `OneAsymmetricKey` whose algorithm is
+/// id-Ed25519 (1.3.101.112) and whose `privateKey` is an OCTET STRING
+/// wrapping the 32-byte `CurvePrivateKey` OCTET STRING. The seed follows it.
+const ED25519_PKCS8_PREFIX: [u8; 16] = [
+    0x30, 0x2e, // SEQUENCE, 46 bytes
+    0x02, 0x01, 0x00, // INTEGER 0 (version)
+    0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, // SEQUENCE { OID 1.3.101.112 }
+    0x04, 0x22, 0x04, 0x20, // OCTET STRING { OCTET STRING, 32 bytes }
+];
 
 impl DevIssuer {
     /// The seed [`DevIssuer::fixture`] derives its keypair from.
@@ -205,7 +245,13 @@ impl DevIssuer {
     /// token minted in one test binary verifies in another, and the JWKS can
     /// be written into a fixture.
     pub fn fixture() -> Result<Self> {
-        Err(crate::Error::NotImplemented("DevIssuer::fixture"))
+        // The Ed25519 private key is the 32-byte seed itself, so the
+        // derivation is one hash.
+        let seed = Sha256::digest(Self::FIXTURE_SEED);
+        let mut der = Vec::with_capacity(ED25519_PKCS8_PREFIX.len() + seed.len());
+        der.extend_from_slice(&ED25519_PKCS8_PREFIX);
+        der.extend_from_slice(&seed);
+        Self::new(EncodingKey::from_ed_der(&der), Algorithm::EdDSA)
     }
 
     /// An issuer that signs with the PKCS#8 PEM private key in the environment
@@ -216,9 +262,63 @@ impl DevIssuer {
     /// variable rather than passed as a string so that the only way to use this
     /// is the way that keeps the key out of the repository and out of the
     /// process's argv.
+    ///
+    /// The algorithm follows the key: `EdDSA` for Ed25519, `ES256` or `ES384`
+    /// for a P-256 or P-384 key, `RS256` for RSA. No error message includes
+    /// the variable's value.
     pub fn from_pem_env(var: &str) -> Result<Self> {
-        let _ = var;
-        Err(crate::Error::NotImplemented("DevIssuer::from_pem_env"))
+        let pem = std::env::var(var).map_err(|e| {
+            Error::Identity(match e {
+                std::env::VarError::NotPresent => {
+                    format!("environment variable `{var}` is not set")
+                }
+                // Not `e.to_string()`: that would print the value.
+                std::env::VarError::NotUnicode(_) => {
+                    format!("environment variable `{var}` is not valid UTF-8")
+                }
+            })
+        })?;
+        let pem = pem.as_bytes();
+
+        if let Ok(key) = EncodingKey::from_ed_pem(pem) {
+            return Self::new(key, Algorithm::EdDSA);
+        }
+        if let Ok(key) = EncodingKey::from_ec_pem(pem) {
+            // The curve decides the algorithm; deriving the public key under
+            // the wrong one fails, so the first that succeeds is the curve.
+            for algorithm in [Algorithm::ES256, Algorithm::ES384] {
+                if let Ok(issuer) = Self::new(key.clone(), algorithm) {
+                    return Ok(issuer);
+                }
+            }
+        }
+        if let Ok(key) = EncodingKey::from_rsa_pem(pem) {
+            return Self::new(key, Algorithm::RS256);
+        }
+        Err(Error::Identity(format!(
+            "`{var}` does not hold a PEM private key this issuer can sign with \
+             (Ed25519, P-256, P-384 or RSA)"
+        )))
+    }
+
+    /// An issuer at [`DEV_ISSUER_URL`] and [`DEV_AUDIENCE`] signing with `key`
+    /// under `algorithm`.
+    fn new(signing_key: EncodingKey, algorithm: Algorithm) -> Result<Self> {
+        let mut public_key =
+            Jwk::from_encoding_key(&signing_key, algorithm).map_err(identity_error)?;
+        let key_id = public_key
+            .thumbprint(ThumbprintHash::SHA256)
+            .map_err(identity_error)?;
+        public_key.common.key_id = Some(key_id.clone());
+        public_key.common.public_key_use = Some(PublicKeyUse::Signature);
+        Ok(Self {
+            issuer: DEV_ISSUER_URL.to_owned(),
+            audience: DEV_AUDIENCE.to_owned(),
+            key_id,
+            algorithm,
+            signing_key,
+            public_key,
+        })
     }
 
     /// Overrides `iss`, for the test that proves a token from an unexpected
@@ -258,16 +358,28 @@ impl DevIssuer {
     /// Serve it from a `wiremock` host to test the JWKS path end to end, or
     /// hand it to a verifier directly to test only the signature check.
     pub fn jwks(&self) -> Result<serde_json::Value> {
-        Err(crate::Error::NotImplemented("DevIssuer::jwks"))
+        serde_json::to_value(JwkSet {
+            keys: vec![self.public_key.clone()],
+        })
+        .map_err(|e| Error::Identity(format!("serialising the JWKS: {e}")))
     }
 
     /// Mints a signed compact JWT.
     ///
     /// `role` is appended to `claims.roles`; the rest of the §A6.4 claim set
     /// comes from `claims` and this issuer's `iss`/`aud`.
+    ///
+    /// A name in [`Claims::extra`] that is also one of the claims above
+    /// replaces it. That is deliberate: it is how a test mints a token whose
+    /// `tenant_id` is a number, or whose `roles` is a string, to prove the
+    /// verifier refuses the shape and not only the signature.
     pub fn mint(&self, tenant: &str, role: &str, claims: Claims) -> Result<String> {
-        let _ = (tenant, role, claims);
-        Err(crate::Error::NotImplemented("DevIssuer::mint"))
+        let header = Header {
+            kid: Some(self.key_id.clone()),
+            ..Header::new(self.algorithm)
+        };
+        let body = self.body(tenant, role, claims)?;
+        jsonwebtoken::encode(&header, &body, &self.signing_key).map_err(identity_error)
     }
 
     /// Mints a token whose signature does not match its body.
@@ -276,8 +388,100 @@ impl DevIssuer {
     /// tampered token" is a test every protected path needs, and building the
     /// broken token by hand in each one is how a test ends up asserting on a
     /// malformed token instead of a mis-signed one.
+    ///
+    /// The header and body are exactly what [`DevIssuer::mint`] produces for
+    /// the same arguments. The signature is that token's with the first
+    /// base64url character replaced by another, which changes its first byte
+    /// and nothing else: still well-formed, still the right length, no longer
+    /// valid.
     pub fn mint_mis_signed(&self, tenant: &str, role: &str, claims: Claims) -> Result<String> {
-        let _ = (tenant, role, claims);
-        Err(crate::Error::NotImplemented("DevIssuer::mint_mis_signed"))
+        let token = self.mint(tenant, role, claims)?;
+        let (signed, signature) = token
+            .rsplit_once('.')
+            .ok_or_else(|| Error::Identity("a minted token has no signature segment".to_owned()))?;
+        let mut chars = signature.chars();
+        let replacement = match chars.next() {
+            Some('A') => 'B',
+            Some(_) => 'A',
+            None => {
+                return Err(Error::Identity(
+                    "a minted token has an empty signature".to_owned(),
+                ));
+            }
+        };
+        Ok(format!("{signed}.{replacement}{}", chars.as_str()))
     }
+
+    /// The JWT body: the §A6.4 claims, the registered ones, then
+    /// [`Claims::extra`] over the top.
+    fn body(
+        &self,
+        tenant: &str,
+        role: &str,
+        claims: Claims,
+    ) -> Result<serde_json::Map<String, serde_json::Value>> {
+        let Claims {
+            subject,
+            mut roles,
+            package,
+            kyc_level,
+            ttl,
+            issued_at,
+            extra,
+        } = claims;
+        roles.push(role.to_owned());
+        let issued_at = issued_at.unwrap_or_else(crate::clock::epoch);
+        let ttl = ttl.unwrap_or_else(default_ttl);
+        let expires_at = issued_at
+            .checked_add_signed(ttl)
+            .ok_or_else(|| Error::Identity(format!("{issued_at} + {ttl} is out of range")))?;
+
+        let mut body = serde_json::Map::new();
+        body.insert("iss".to_owned(), self.issuer.clone().into());
+        body.insert("aud".to_owned(), self.audience.clone().into());
+        body.insert(
+            "sub".to_owned(),
+            subject
+                .unwrap_or_else(|| default_subject(tenant, role))
+                .into(),
+        );
+        body.insert("iat".to_owned(), issued_at.timestamp().into());
+        body.insert("exp".to_owned(), expires_at.timestamp().into());
+        body.insert("tenant_id".to_owned(), tenant.into());
+        body.insert("roles".to_owned(), roles.into());
+        if let Some(package) = package {
+            body.insert("package".to_owned(), package.into());
+        }
+        body.insert("kyc_level".to_owned(), kyc_level.into());
+        body.extend(extra);
+        Ok(body)
+    }
+}
+
+/// The `sub` of a token whose [`Claims::subject`] is not set: a UUID derived
+/// from the tenant and the role, so one role in one tenant is always the same
+/// principal.
+///
+/// UUID-shaped because that is what a real issuer's `sub` is, so a verifier
+/// that parses it as one does not need a test-only path. A version-8 (custom)
+/// UUID over the first 16 bytes of a SHA-256: that is the RFC 9562 version for
+/// "derived by a method of our own", and the hash is the method.
+fn default_subject(tenant: &str, role: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"vf-testkit dev subject\0");
+    hash.update(tenant.as_bytes());
+    hash.update(b"\0");
+    hash.update(role.as_bytes());
+    let digest = hash.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_custom_bytes(bytes)
+        .into_uuid()
+        .hyphenated()
+        .to_string()
+}
+
+/// [`Error::Identity`] from a `jsonwebtoken` error.
+fn identity_error(e: jsonwebtoken::errors::Error) -> Error {
+    Error::Identity(e.to_string())
 }
