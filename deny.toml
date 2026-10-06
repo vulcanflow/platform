@@ -34,10 +34,15 @@ ignore = []
 [licenses]
 version = 2
 # Exactly the six of §A5, and no more. Cortana's ruling of 2026-10-05 is that
-# this list does not grow: any other licence enters as a `[[licenses.exceptions]]`
-# entry naming one crate and its edge, so that admitting a licence for one
+# this list does not grow: any other licence enters as a per-crate exception
+# below, naming one crate and its edge, so that admitting a licence for one
 # dependency cannot silently cover the next crate someone adds. A reviewer reads
 # the exception list below and sees every such decision by crate name.
+#
+# Do not write the exception table's `[[...]]` header form inside a comment
+# anywhere in this file. The exception blocks are counted by matching that
+# header text, so a prose copy of it reads as a seventh exception that does
+# not exist. Refer to them as per-crate exceptions, as above.
 allow = [
     "MIT",
     "Apache-2.0",
