@@ -28,6 +28,10 @@ compose := env_var_or_default("VF_COMPOSE", "docker compose")
 # download time.
 dev_up_timeout := env_var_or_default("VF_DEV_UP_TIMEOUT", "120")
 
+# The sqlx-cli that db-migrate and db-template need, at the version of the
+# workspace's `sqlx` pin, so the CLI and the macros that write `.sqlx/` agree.
+sqlx_cli_install := "cargo install sqlx-cli --version =0.9.0 --locked --no-default-features --features rustls,postgres"
+
 default:
     @just --list
 
@@ -52,8 +56,9 @@ bootstrap:
 # template and documents every variable.
 # ---------------------------------------------------------------------------
 
-# Brings up the default stand-ins — Postgres 17 with pgvector, PgBouncer in
-# transaction pooling, RustFS, Valkey — and does not return until they answer.
+# The default stand-ins are Postgres 17 with pgvector, PgBouncer in
+# transaction pooling, RustFS and Valkey. Needs Docker Compose v2.17 or newer,
+# for `up --wait`.
 #
 # Optional profiles go through COMPOSE_PROFILES, which compose reads itself, so
 # one spelling works for every recipe here rather than only this one:
@@ -61,7 +66,10 @@ bootstrap:
 #     COMPOSE_PROFILES=minio just dev-up      # second S3 implementation
 #     COMPOSE_PROFILES=keycloak just dev-up   # the real IdP (§A6.4), optional
 #
-# Needs Docker Compose v2.17 or newer, for `up --wait`.
+# (`just --list` shows the last comment line above a recipe, so each recipe in
+# this section ends its comment with a one-line summary.)
+#
+# Start the default stand-ins and wait until every one answers.
 dev-up:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -95,21 +103,21 @@ dev-up:
     {{ compose }} ps
     echo "==> ready. next: just db-migrate && just run-local"
 
-# Stops the stand-ins. Data survives in the named volumes.
-#
 #     just dev-down --volumes     discard the data too, which is also how you
 #                                 recover from a half-initialised Postgres
+#
+# Stop the stand-ins; data survives in the named volumes.
 dev-down *args:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -f .env ]; then set -a; . ./.env; set +a; fi
     {{ compose }} down {{ args }}
 
-# Applies the `vf-db` migrations to the database in DATABASE_URL.
-#
 # Straight at Postgres, never through PgBouncer: DDL in transaction pooling
 # mode is a good way to deadlock against a connection you cannot see, so
 # `.env.example` points DATABASE_URL at the direct port.
+#
+# Apply the vf-db migrations to the database in DATABASE_URL.
 db-migrate:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -117,7 +125,7 @@ db-migrate:
 
     if ! command -v sqlx >/dev/null 2>&1; then
       echo "error: sqlx-cli is not on PATH." >&2
-      echo "       cargo install sqlx-cli --no-default-features --features rustls,postgres" >&2
+      echo "       {{ sqlx_cli_install }}" >&2
       exit 1
     fi
 
@@ -132,9 +140,6 @@ db-migrate:
     echo "==> applying ${src}"
     sqlx migrate run --source "$src"
 
-# Rebuilds the sqlx template database and regenerates the offline query data
-# in `.sqlx/`.
-#
 # `.sqlx/` is what lets the workspace compile its compile-time-checked queries
 # without a database — in CI, in a release build, on a machine with nothing
 # running — so it is committed, and it has to be reproducible: the same
@@ -146,6 +151,8 @@ db-migrate:
 #
 # That template database is separate from the dev one and is dropped and
 # recreated every time. Your dev data is not touched.
+#
+# Rebuild the sqlx template database and regenerate `.sqlx/` from it.
 db-template:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -153,7 +160,7 @@ db-template:
 
     if ! command -v sqlx >/dev/null 2>&1; then
       echo "error: sqlx-cli is not on PATH." >&2
-      echo "       cargo install sqlx-cli --no-default-features --features rustls,postgres" >&2
+      echo "       {{ sqlx_cli_install }}" >&2
       exit 1
     fi
 
@@ -185,16 +192,21 @@ db-template:
 
     echo "==> done. 'git diff --stat .sqlx' should be empty unless a query changed."
 
-# Runs the control plane locally: vf-api, vf-operator with the fake scan
-# runtime, and vf-ingest, together, in the foreground.
-#
 # `--runtime fake` is passed explicitly rather than left to VF_SCAN_RUNTIME,
 # because this recipe is the one place where "no Kubernetes is involved" has to
 # be true by construction and not by configuration.
 #
-# If any of the three exits, the other two are stopped. A control plane with
-# the ingest endpoint missing is not a running system, and discovering that
-# from a silent 404 half an hour later is worse than stopping.
+# If any of the three exits, the other two are stopped and the recipe fails,
+# whatever that one's exit status was: these are long-running services, so one
+# that returns has stopped serving. A control plane with the ingest endpoint
+# missing is not a running system, and discovering that from a silent 404 half
+# an hour later is worse than stopping. Ctrl-C stops all three and exits 130.
+#
+# Until tasks A1, O1 and I1 land, the three binaries are F1's empty entry
+# points, which return at once, so this recipe builds them and then stops with
+# "a service exited (status 0)". That is the contract working, not a fault.
+#
+# Run vf-api, vf-operator (fake scan runtime) and vf-ingest in the foreground.
 run-local:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -206,29 +218,33 @@ run-local:
     bin="${CARGO_TARGET_DIR:-target}/debug"
     pids=()
     cleanup() {
-      trap - INT TERM EXIT
+      trap - EXIT
       echo
       echo "==> stopping"
       if [ ${#pids[@]} -gt 0 ]; then kill "${pids[@]}" 2>/dev/null || true; fi
       wait 2>/dev/null || true
     }
-    trap cleanup INT TERM EXIT
+    trap cleanup EXIT
+    trap 'exit 130' INT TERM
 
     "$bin/vf-api" & pids+=("$!")
     "$bin/vf-operator" --runtime fake & pids+=("$!")
     "$bin/vf-ingest" & pids+=("$!")
 
-    echo "==> vf-api, vf-operator (fake runtime) and vf-ingest are up. Ctrl-C to stop."
-    wait -n
+    echo "==> vf-api, vf-operator (fake runtime) and vf-ingest started. Ctrl-C to stop."
+    status=0
+    wait -n || status=$?
+    echo "==> a service exited (status ${status}); stopping the others" >&2
+    exit 1
 
-# Reserved for later infrastructure work.
-#
 # §A6.3 is explicit about this: "a kind profile is reserved in the harness
 # (`just kind-up`) but no task in this document is verified on it". The real
 # admission registration, CRD watch, NetworkPolicy and pool paths are
 # deployment work that the owner has not authorised and that no acceptance
 # criterion depends on. The recipe exists so the name is taken by something
 # honest rather than by a half-built cluster.
+#
+# Reserved for later infrastructure work; prints that and exits 0.
 kind-up:
     @echo "reserved for later infrastructure work"
 

@@ -179,7 +179,9 @@ just dev-down           # stop (add --volumes to discard the data)
 ```
 
 `just dev-up` returns only once the services answer, so the next recipe can
-assume them. Set `VF_COMPOSE` if your front end is not `docker compose` — for
+assume them. `just run-local` stops the other two services when any one exits.
+Until tasks A1, O1 and I1 land, all three are empty entry points, so it stops
+straight after the build. Set `VF_COMPOSE` if your front end is not `docker compose` — for
 example `VF_COMPOSE='podman compose'`.
 
 Every image is pinned by tag and digest in `docker-compose.yml`, the one place

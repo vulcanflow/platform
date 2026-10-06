@@ -236,8 +236,8 @@ services:
   # profile: keycloak — the approved identity provider (§A6.4).
   #
   # Documented and required by nothing. No recipe starts it and no task in the
-  # architecture is verified against it; tests use the dev issuer
-  # (`vf-testkit::token`, `vf-api dev-issuer`), which signs the same claim set.
+  # architecture is verified against it; tests use §A6.4's dev issuer, which
+  # signs the same claim set.
   # This profile is for a developer who wants to see the real PKCE
   # authorization-code flow against the real product's IdP.
   #
