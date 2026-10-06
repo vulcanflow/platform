@@ -33,15 +33,18 @@ ignore = []
 # ---------------------------------------------------------------------------
 [licenses]
 version = 2
+# Exactly the six of §A5, and no more. Cortana's ruling of 2026-10-05 is that
+# this list does not grow: any other licence enters as a `[[licenses.exceptions]]`
+# entry naming one crate and its edge, so that admitting a licence for one
+# dependency cannot silently cover the next crate someone adds. A reviewer reads
+# the exception list below and sees every such decision by crate name.
 allow = [
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Zlib",
 ]
 confidence-threshold = 0.93
 
@@ -49,16 +52,23 @@ confidence-threshold = 0.93
 # they are not third-party code and are not license-checked.
 private = { ignore = true }
 
-# MPL-2.0 is allowed for listed crates only, per §A5. Each entry is a
-# deliberate, reviewed exception rather than a blanket allow, because MPL-2.0
-# file-level copyleft has to be understood per crate before it is accepted.
-[[licenses.exceptions]]
-name = "webpki-roots"
-allow = ["MPL-2.0", "CDLA-Permissive-2.0"]
+# The six per-crate exceptions ratified by Cortana on 2026-10-05 (VFL-9), one
+# crate each, each with the dependency edge that brings it in. Removing the
+# dependency named in the edge removes the exception.
+#
+# Only crates whose whole licence expression falls outside the six appear here.
+# A crate offering a choice that includes one of the six — `rustix` and
+# `linux-raw-sys` (Apache-2.0 OR MIT OR Apache-2.0 WITH LLVM-exception),
+# `arcstr` and `tinyvec` (Zlib OR MIT OR Apache-2.0), `ryu` and `whoami`
+# (BSL-1.0 OR MIT OR Apache-2.0) — is already satisfied by MIT and needs
+# nothing here. That is why neither `Apache-2.0 WITH LLVM-exception` nor `Zlib`
+# belongs in the allow list above.
 
 # ammonia (§A5, HTML sanitising for M4 reports) pulls the Servo CSS parser,
 # which is MPL-2.0, as is its float formatter. Both are used unmodified as
 # libraries; MPL-2.0's copyleft is per-file and is not triggered by linking.
+# §A5 allows MPL-2.0 "for listed crates only" — these two are that list.
+# Edge: vf-report -> ammonia -> cssparser -> dtoa-short.
 [[licenses.exceptions]]
 name = "cssparser"
 allow = ["MPL-2.0"]
@@ -67,9 +77,23 @@ allow = ["MPL-2.0"]
 name = "dtoa-short"
 allow = ["MPL-2.0"]
 
-# The Mozilla CA root bundle as data, reached through rustls-platform-verifier
-# from both kube and reqwest. CDLA-Permissive-2.0 is a data licence with no
-# conditions on downstream use.
+# foldhash is the default hasher inside hashbrown, and is Zlib-only — unlike
+# the other two Zlib crates in the graph it offers no MIT alternative. Zlib is
+# permissive and notice-only, with no obligation on a linked binary.
+# Edge: vf-db -> sqlx -> sqlx-core -> hashbrown -> foldhash.
+[[licenses.exceptions]]
+name = "foldhash"
+allow = ["Zlib"]
+
+# The Mozilla CA root bundle as data, under two crate names. Both are
+# CDLA-Permissive-2.0 only, a data licence that places no condition on a binary
+# that embeds the bundle. Edges: vf-db -> sqlx -> sqlx-core -> webpki-roots,
+# and reqwest -> rustls-platform-verifier -> webpki-root-certs (kube reaches
+# the same crate by the same verifier).
+[[licenses.exceptions]]
+name = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
 [[licenses.exceptions]]
 name = "webpki-root-certs"
 allow = ["CDLA-Permissive-2.0"]
@@ -78,6 +102,7 @@ allow = ["CDLA-Permissive-2.0"]
 # licence: permissive, OSI approved, no attribution requirement on binaries.
 # It is not on the §A5 allow-list, so it is a per-crate exception here rather
 # than a silent widening of the list.
+# Edge: vf-db -> redis -> xxhash-rust.
 [[licenses.exceptions]]
 name = "xxhash-rust"
 allow = ["BSL-1.0"]

@@ -220,6 +220,16 @@ tower-test = "=0.4.0"
 # --- email (M4) -----------------------------------------------------------
 lettre = "=0.11.23"
 
+# --- renderer (M4) --------------------------------------------------------
+# §A5 does not settle this row: it reads "chromiumoxide 0.9 or headless
+# Chromium CLI; decided in the M4 contract freeze". The crate alternative is
+# pinned here so the choice is a one-line edit rather than a new pin review,
+# and because the table is declared in full at F1 so the pins are reviewed
+# once. It has no consumer, so it is absent from Cargo.lock and from the
+# licence and advisory graph; if M4 freezes on the headless CLI, this row is
+# deleted and nothing else changes.
+chromiumoxide = "=0.9.1"
+
 # --- clickhouse (M3+; no task in this document uses it) -------------------
 clickhouse = "=0.15.2"
 
