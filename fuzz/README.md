@@ -25,9 +25,12 @@ locally without panic. Requires the toolchain VFL-201 provisions: the
 compiler (`libfuzzer-sys` compiles bundled C++ in its build script, so even
 `cargo check` needs one).
 
-Type-checking only, without linking libFuzzer or running the nightly pin at
-all, is `just fuzz-check` from the repository root (stable `1.99.0`, wired
-into `just gate` and `.github/workflows/rust-check.yml`).
+Type-checking only, without linking libFuzzer or actually fuzzing, is
+`just fuzz-check` from the repository root — wired into `just gate` and
+`.github/workflows/rust-check.yml`. It still resolves this directory's
+`rust-toolchain.toml`, so it runs on the nightly pin, not the production
+`1.99.0` one; it needs the same toolchain (plus a C++ compiler) as the real
+runs above, just not libFuzzer's linking step.
 
 ## Crash reproducers
 

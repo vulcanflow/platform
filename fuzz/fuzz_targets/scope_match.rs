@@ -117,6 +117,14 @@ fn derive(base_str: &str, related: &Related) -> String {
         Related::Same => base_str.to_owned(),
         Related::Descendant(indices) => {
             let mut parts = label_stack(indices, 3);
+            if parts.is_empty() {
+                // An empty `indices` would otherwise materialize to
+                // `base_str` unchanged — indistinguishable from `Same` and
+                // not a descendant at all. Force at least one extra label
+                // so this arm always holds the "1..=3 extra labels" shape
+                // documented below.
+                parts.push(LABELS[0]);
+            }
             parts.push(base_str);
             parts.join(".")
         }
