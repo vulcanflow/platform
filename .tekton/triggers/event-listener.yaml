@@ -1,0 +1,75 @@
+# Receives the GitHub webhook for vulcanflow/platform.
+#
+# Every trigger runs the `github` ClusterInterceptor first. It checks the
+# X-Hub-Signature-256 HMAC against the Secret vf-ci/vf-ci-github-webhook (key
+# `secret`) and the X-GitHub-Event type; a request that is unsigned, wrongly
+# signed or of another event type stops there and creates nothing. The `cel`
+# interceptor that follows only narrows which signed events start a run.
+#
+# The Secret is not in this directory. Its value is held in Paperclip
+# (ci/tekton/vulcanflow-platform/github-webhook-secret) and is created in the
+# cluster from there; see README.md.
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: vf-platform
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  serviceAccountName: vf-ci-triggers
+  triggers:
+    - name: pull-request
+      interceptors:
+        - name: verify-github-signature
+          ref:
+            name: github
+            kind: ClusterInterceptor
+          params:
+            - name: secretRef
+              value:
+                secretName: vf-ci-github-webhook
+                secretKey: secret
+            - name: eventTypes
+              value: ["pull_request"]
+        - name: platform-pr-updates
+          ref:
+            name: cel
+            kind: ClusterInterceptor
+          params:
+            - name: filter
+              value: >-
+                body.repository.full_name == 'vulcanflow/platform' &&
+                body.action in ['opened', 'synchronize', 'reopened']
+      bindings:
+        - ref: vf-github-pull-request
+      template:
+        ref: vf-ci-noop
+    - name: push
+      interceptors:
+        - name: verify-github-signature
+          ref:
+            name: github
+            kind: ClusterInterceptor
+          params:
+            - name: secretRef
+              value:
+                secretName: vf-ci-github-webhook
+                secretKey: secret
+            - name: eventTypes
+              value: ["push"]
+        - name: platform-branch-pushes
+          ref:
+            name: cel
+            kind: ClusterInterceptor
+          params:
+            # Branch pushes only; tag pushes and branch deletions start nothing.
+            - name: filter
+              value: >-
+                body.repository.full_name == 'vulcanflow/platform' &&
+                body.ref.startsWith('refs/heads/') &&
+                !body.deleted
+      bindings:
+        - ref: vf-github-push
+      template:
+        ref: vf-ci-noop

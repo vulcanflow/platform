@@ -1,0 +1,51 @@
+# One PipelineRun per accepted delivery. The GitHub delivery id is put on the
+# run as a label, so the run a given webhook delivery created is found with
+#
+#   kubectl -n vf-ci get pipelineruns -l vulcanflow.io/github-delivery=<id>
+#
+# Triggers adds its own labels as well (triggers.tekton.dev/eventlistener,
+# .../trigger, .../triggers-eventid).
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: vf-ci-noop
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  params:
+    - name: event-type
+    - name: delivery-id
+    - name: repo-full-name
+    - name: git-ref
+    - name: revision
+    - name: base-branch
+      default: ""
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        generateName: vf-ci-noop-
+        namespace: vf-ci
+        labels:
+          app.kubernetes.io/part-of: vf-ci
+          vulcanflow.io/github-event: $(tt.params.event-type)
+          vulcanflow.io/github-delivery: $(tt.params.delivery-id)
+      spec:
+        pipelineRef:
+          name: vf-ci-noop
+        params:
+          - name: event-type
+            value: $(tt.params.event-type)
+          - name: delivery-id
+            value: $(tt.params.delivery-id)
+          - name: repo-full-name
+            value: $(tt.params.repo-full-name)
+          - name: git-ref
+            value: $(tt.params.git-ref)
+          - name: revision
+            value: $(tt.params.revision)
+          - name: base-branch
+            value: $(tt.params.base-branch)
+        timeouts:
+          pipeline: 5m
