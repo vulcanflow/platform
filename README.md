@@ -165,6 +165,46 @@ just gate       # lane gate and its self-test, then all of the above
 `just test-integration` additionally needs the compose stand-ins from
 `just dev-up` (Postgres 17, PgBouncer, RustFS, Valkey).
 
+## The local harness (architecture §A6.2)
+
+Everything the platform talks to runs in `docker-compose.yml` on one machine.
+No Kubernetes, no Aether, no cloud account.
+
+```
+cp .env.example .env    # the template, and the documentation for every variable
+just dev-up             # postgres + pgvector, pgbouncer, rustfs, valkey
+just db-migrate         # apply the vf-db migrations
+just run-local          # vf-api, vf-operator --runtime fake, vf-ingest
+just dev-down           # stop (add --volumes to discard the data)
+```
+
+`just dev-up` returns only once the default services answer, so the next
+recipe can assume them. `just run-local` stops the other two services when any
+one exits. Until tasks A1, O1 and I1 land, all three are empty entry points,
+so it stops straight after the build. If your front end is not
+`docker compose`, set `VF_COMPOSE` in your shell environment, not in `.env` —
+for example `VF_COMPOSE='podman compose' just dev-up`.
+
+Every image is pinned by tag and digest in `docker-compose.yml`, the one place
+the pins live. A `VF_*_IMAGE` variable in `.env` overrides one on your machine
+only, to try a release before proposing it as the pin.
+
+Optional profiles, through compose's own `COMPOSE_PROFILES`:
+
+| Profile | What for |
+|---|---|
+| `minio` | the second S3 implementation, so the conformance suite runs against two. Chainguard's build of MinIO, since neither of MinIO's own images can be pulled anonymously; `docker-compose.yml` records the release behind the digest and what to do if it stops resolving |
+| `keycloak` | the real identity provider and its PKCE flow (§A6.4). Documented, required by no recipe and no task; tests use the dev issuer. It has no healthcheck, so start it as `docker-compose.yml` shows rather than through `just dev-up` |
+| `mailpit` | SMTP sink for the M4 mail work |
+
+`just db-template` rebuilds a throwaway template database from the migrations
+and regenerates the committed `.sqlx/` offline query data from it, so a build
+with no database reachable still type-checks every query. It does not touch
+your dev database.
+
+`just kind-up` prints `reserved for later infrastructure work` and exits. §A6.3
+reserves the name; no task is verified on a cluster.
+
 ## Pins
 
 The toolchain is pinned in `rust-toolchain.toml` and every dependency is pinned
