@@ -1,9 +1,11 @@
-//! Port-contract tests for `vf_core::ports::wake` — VFL-314, the F3a slice
-//! of T4 (VFL-44) for F3a (VFL-310).
+//! Port-contract tests for `vf_core::ports::wake` — VFL-314 and its rev2
+//! follow-up VFL-355, the F3a slices of T4 (VFL-44) for F3a (VFL-310).
 //!
-//! Written against `f9af174` on `jorge/f3a-ports`; see
+//! Rebased onto `426b848` on `jorge/f3a-ports`; see
 //! `artifact_port_contract.rs`'s header for the revision and split note
-//! shared by both files in this pack.
+//! shared by both files in this pack. F3a rev2's changes to this module are
+//! rustdoc only (sticky terminal `recv` errors, `retry_after` rounding, the
+//! pending-tenant-scope note); nothing here needed a test change.
 //!
 //! Scope is VFL-310's criterion 2 for the wake side: topic, bucket-key and
 //! rate validation behave as their rustdoc states, and the two wake-only

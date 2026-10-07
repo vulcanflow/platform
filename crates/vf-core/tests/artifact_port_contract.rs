@@ -1,20 +1,25 @@
-//! Port-contract tests for `vf_core::ports::artifact` — VFL-314, the F3a
-//! slice of T4 (VFL-44) for F3a (VFL-310).
+//! Port-contract tests for `vf_core::ports::artifact` — VFL-314 and its
+//! rev2 follow-up VFL-355, the F3a slices of T4 (VFL-44) for F3a (VFL-310).
 //!
-//! Written against `f9af174` on `jorge/f3a-ports` (one commit on
-//! `origin/main` `81bff86`, not pushed), whose `vf-core` tree is
-//! byte-identical to the F3 API skeleton `38cc5e6`.
+//! Rebased onto `426b848` on `jorge/f3a-ports` (one commit on `f9af174`,
+//! not pushed), F3a rev2 (VFL-310). That revision adds the required
+//! `ArtifactStore::get_stream` method and the `ArtifactReader` trait it
+//! returns, and changes `delete` of an absent key from `NotFound` to
+//! `Ok(())` (Cortana's ruling on card `b4a430a9`, VFL-339).
 //!
 //! Scope is VFL-310's criteria exactly: (1) `TenantArtifactStore` refuses a
 //! key or list prefix outside `{tenant_id}/` before any I/O, rewriting a
-//! root list prefix to the tenant prefix rather than refusing it; (2) key,
-//! prefix and digest validation behave as their rustdoc states. There is no
-//! concrete `ArtifactStore` adapter yet — that is F3b (VFL-311) — so
-//! criterion 1 is tested against a hand-written inner store that panics if
-//! any method it must not reach is ever called, which turns a refusal bug
-//! into a test failure directly rather than one inferred from an I/O side
-//! effect. Adapter conformance and production refusal are out of scope here
-//! by the issue's own words and belong to the F3b/F3c slices.
+//! root list prefix to the tenant prefix rather than refusing it, and this
+//! now covers `get_stream` as well as `put`/`get`/`head`/`list`/`delete`;
+//! (2) key, prefix and digest validation behave as their rustdoc states.
+//! There is no concrete `ArtifactStore` adapter yet — that is F3b
+//! (VFL-311) — so criterion 1 is tested against a hand-written inner store
+//! that panics if any method it must not reach is ever called, which turns
+//! a refusal bug into a test failure directly rather than one inferred from
+//! an I/O side effect. Adapter conformance (including `get_stream`'s
+//! `NotFound`/`TooLarge`-before-first-chunk and finished-reader-stays-
+//! finished behavior, contract items 8-9) and production refusal are out of
+//! scope here by the issue's own words and belong to the F3b/F3c slices.
 //!
 //! `vf-core` carries no async runtime (§A1.3): `support::block_on` drives
 //! the returned `PortFuture`s by polling once, which every future here needs
@@ -26,25 +31,44 @@ use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
 use vf_core::ports::{
-    ArtifactBody, ArtifactContent, ArtifactKey, ArtifactMeta, ArtifactPrefix, ArtifactSource,
-    ArtifactStore, ArtifactStoreError, DigestParseError, MAX_ARTIFACT_KEY_BYTES, PortFuture,
-    PutReceipt, Sha256Digest, TenantArtifactStore,
+    ArtifactBody, ArtifactContent, ArtifactKey, ArtifactMeta, ArtifactPrefix, ArtifactReader,
+    ArtifactSource, ArtifactStore, ArtifactStoreError, DigestParseError, MAX_ARTIFACT_KEY_BYTES,
+    PortFuture, PutReceipt, Sha256Digest, TenantArtifactStore,
 };
 
 // ---------------------------------------------------------------------------
 // Test doubles
 // ---------------------------------------------------------------------------
 
-/// An inner `ArtifactStore` that panics on every method except `list`,
-/// which instead records the prefix it was called with.
+/// An inner `ArtifactStore` that panics on every method except `list` and
+/// `get_stream`, which instead record what they were called with.
 ///
 /// `TenantArtifactStore`'s rustdoc promises refusal "before any I/O"; wiring
 /// this in as the inner store turns a refusal bug straight into a test
 /// failure (the panic) instead of something that would need an I/O
-/// assertion to catch.
+/// assertion to catch. `list` and `get_stream` cannot panic unconditionally
+/// because each also has a non-refused path under test (a rewritten root
+/// list prefix; an in-tenant key forwarded to `get_stream`), so for those two
+/// the recorded calls stand in for the panic: empty means never reached,
+/// non-empty names exactly what got through.
 #[derive(Default)]
 struct PanicUnlessListed {
     list_calls: Mutex<Vec<ArtifactPrefix>>,
+    get_stream_calls: Mutex<Vec<ArtifactKey>>,
+}
+
+/// A canned `ArtifactReader` with no chunks, returned by a forwarded
+/// `PanicUnlessListed::get_stream` call so the caller has something to hold.
+struct EmptyReader(ArtifactMeta);
+
+impl ArtifactReader for EmptyReader {
+    fn meta(&self) -> &ArtifactMeta {
+        &self.0
+    }
+
+    fn next_chunk(&mut self) -> PortFuture<'_, Result<Option<Vec<u8>>, ArtifactStoreError>> {
+        Box::pin(std::future::ready(Ok(None)))
+    }
 }
 
 impl ArtifactStore for PanicUnlessListed {
@@ -63,6 +87,21 @@ impl ArtifactStore for PanicUnlessListed {
         _key: &ArtifactKey,
     ) -> PortFuture<'_, Result<ArtifactContent, ArtifactStoreError>> {
         panic!("TenantArtifactStore must refuse before the inner store's get is ever called");
+    }
+
+    fn get_stream(
+        &self,
+        key: &ArtifactKey,
+    ) -> PortFuture<'_, Result<Box<dyn ArtifactReader>, ArtifactStoreError>> {
+        self.get_stream_calls.lock().unwrap().push(key.clone());
+        let meta = ArtifactMeta {
+            key: key.clone(),
+            size: 0,
+            last_modified: None,
+            e_tag: None,
+        };
+        let reader: Box<dyn ArtifactReader> = Box::new(EmptyReader(meta));
+        Box::pin(std::future::ready(Ok(reader)))
     }
 
     fn head(&self, _key: &ArtifactKey) -> PortFuture<'_, Result<ArtifactMeta, ArtifactStoreError>> {
@@ -179,6 +218,45 @@ fn refuses_delete_outside_its_prefix_before_touching_the_inner_store() {
         result,
         Err(ArtifactStoreError::OutsideTenantPrefix { .. })
     ));
+}
+
+#[test]
+fn refuses_get_stream_outside_its_prefix_before_touching_the_inner_store() {
+    let tenant_id = Uuid::from_u128(1);
+    let other_tenant_id = Uuid::from_u128(2);
+    let (inner, store) = tenant_store(tenant_id);
+    let foreign_key = ArtifactPrefix::for_tenant(other_tenant_id)
+        .join("findings.json")
+        .unwrap();
+
+    let result = support::block_on(store.get_stream(&foreign_key));
+
+    assert!(matches!(
+        result,
+        Err(ArtifactStoreError::OutsideTenantPrefix { .. })
+    ));
+    assert!(
+        inner.get_stream_calls.lock().unwrap().is_empty(),
+        "a refused get_stream must never reach the inner store"
+    );
+}
+
+#[test]
+fn forwards_an_in_tenant_key_to_the_inner_stores_get_stream() {
+    let tenant_id = Uuid::from_u128(1);
+    let (inner, store) = tenant_store(tenant_id);
+    let key = store.key("findings.json").unwrap();
+
+    let result = support::block_on(store.get_stream(&key));
+
+    assert!(
+        result.is_ok(),
+        "an in-tenant key must be forwarded to the inner store, not refused: {result:?}"
+    );
+    assert_eq!(
+        inner.get_stream_calls.lock().unwrap().as_slice(),
+        std::slice::from_ref(&key)
+    );
 }
 
 #[test]
