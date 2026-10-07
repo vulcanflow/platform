@@ -38,9 +38,9 @@ pub mod artifact;
 pub mod wake;
 
 pub use artifact::{
-    ArtifactBody, ArtifactContent, ArtifactKey, ArtifactMeta, ArtifactPrefix, ArtifactSource,
-    ArtifactStore, ArtifactStoreError, DigestParseError, MAX_ARTIFACT_KEY_BYTES, PutReceipt,
-    Sha256Digest, TenantArtifactStore,
+    ArtifactBody, ArtifactContent, ArtifactKey, ArtifactMeta, ArtifactPrefix, ArtifactReader,
+    ArtifactSource, ArtifactStore, ArtifactStoreError, DigestParseError, MAX_ARTIFACT_KEY_BYTES,
+    PutReceipt, Sha256Digest, TenantArtifactStore,
 };
 pub use wake::{
     BucketKey, MAX_WAKE_NAME_BYTES, MAX_WAKE_PAYLOAD_BYTES, Permit, TokenRate, Topic, WakeBus,

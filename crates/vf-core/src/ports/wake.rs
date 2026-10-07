@@ -296,6 +296,8 @@ pub trait WakeStream: Send + 'static {
     /// [`WakeBusError::Lagged`] when wake-ups were dropped — the caller logs
     /// and continues. [`WakeBusError::Closed`] when nothing more will arrive.
     /// [`WakeBusError::Backend`] for an unrecoverable transport failure.
+    /// `Closed` and `Backend` are sticky: every later call returns the same
+    /// error at once (bus contract item 7).
     fn recv(&mut self) -> PortFuture<'_, Result<WakeMessage, WakeBusError>>;
 }
 
@@ -351,9 +353,11 @@ impl fmt::Debug for WakeSubscription {
 /// A refill rate: `tokens` tokens every `period`.
 ///
 /// Expressed as a pair of integers rather than a float so the type is `Eq`,
-/// so a quota round-trips through configuration unchanged, and so the Redis
+/// so two quotas read from configuration compare exactly, and so the Redis
 /// and in-process adapters compute the refill with the same integer
-/// arithmetic from the same inputs.
+/// arithmetic from the same inputs. It is not `Deserialize`: a configuration
+/// loader reads the two numbers and calls [`Self::new`], so a zero rate is
+/// refused where it is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TokenRate {
     tokens: u32,
@@ -418,8 +422,11 @@ pub enum Permit {
     },
     /// The call must not proceed. No token was consumed.
     Denied {
-        /// How long until one token is available. The value a `Retry-After`
-        /// header is built from (§13.3).
+        /// How long until one token is available, rounded up to a whole
+        /// number of seconds and never less than one. The value a
+        /// `Retry-After` header is built from (§13.3); the header counts
+        /// whole seconds, so a sub-second wait truncated to `0` would invite
+        /// an immediate retry.
         retry_after: Duration,
     },
 }
@@ -447,22 +454,42 @@ impl Permit {
 ///
 /// 1. `publish` to a topic nobody is subscribed to succeeds. There is no
 ///    delivery guarantee to report, so there is no error to return.
-/// 2. A subscriber created before a `publish` receives it. A subscriber
-///    created after it does not: there is no replay.
+/// 2. A subscriber created before a `publish` receives it, unless the
+///    delivery is lost as item 3 describes. A subscriber created after it
+///    does not: there is no replay.
 /// 3. Every subscriber to a topic receives every message published after it
-///    subscribed, unless it falls behind, which surfaces as
-///    [`WakeBusError::Lagged`] and leaves the subscription usable.
+///    subscribed, unless it falls behind or the adapter reconnects. Either
+///    loss surfaces as [`WakeBusError::Lagged`] and leaves the subscription
+///    usable. Every delivered [`WakeMessage`] carries the subscription's
+///    topic.
 /// 4. A payload over [`MAX_WAKE_PAYLOAD_BYTES`] is refused with
 ///    [`WakeBusError::PayloadTooLarge`] and nothing is published.
 /// 5. `token_bucket` consumes one token per granted call. A bucket starts
-///    full at `burst`. Calls are granted while tokens remain and denied with
-///    a positive `retry_after` once they do not. A `burst` of zero is refused
-///    with [`WakeBusError::InvalidQuota`]. The same `(key, rate, burst)`
-///    names the same bucket; the same `key` with a different quota is the
-///    same bucket re-measured, so callers must not vary the quota per call.
+///    full at `burst`. Calls are granted while tokens remain and denied once
+///    they do not, with a `retry_after` that is a whole number of seconds and
+///    at least one. A `burst` of zero is refused with
+///    [`WakeBusError::InvalidQuota`]. `key` alone names the bucket: an
+///    adapter never derives the backend key from `rate` or `burst`, because
+///    then a caller could mint a fresh, full bucket by varying `burst`. A call
+///    with a different quota re-measures the same bucket, so callers must not
+///    vary the quota per call.
 /// 6. Everything on this port is best-effort with respect to delivery and
 ///    exact with respect to accounting: a dropped wake-up is a latency cost
 ///    (§A3.3), but a token is never granted twice.
+/// 7. Terminal subscription errors are sticky. Once `recv` returns
+///    [`WakeBusError::Closed`] or [`WakeBusError::Backend`], every later
+///    `recv` returns the same error at once: it never hangs, panics or
+///    resumes delivering.
+///
+/// # Tenant scope is pending
+///
+/// [`Topic`] and [`BucketKey`] are not tenant-scoped yet. §A7-7 makes tenant
+/// context a type, and [`TenantArtifactStore`](super::TenantArtifactStore)
+/// does that for object storage; the bus counterpart, a `TenantWakeBus` that
+/// refuses a topic or bucket key outside the tenant's namespace before any
+/// I/O, is task F3d. Until it lands, a caller holding `Arc<dyn WakeBus>`
+/// builds every topic and bucket key from the tenant it is serving, so that
+/// tenants neither see each other's wake-ups nor share a §19 bucket.
 pub trait WakeBus: Send + Sync + 'static {
     /// Publishes `payload` on `topic`.
     fn publish(&self, topic: &Topic, payload: &[u8]) -> PortFuture<'_, Result<(), WakeBusError>>;

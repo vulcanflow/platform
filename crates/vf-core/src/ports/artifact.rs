@@ -10,10 +10,11 @@
 //! into a sibling tenant, and [`TenantArtifactStore`] refuses a key outside
 //! `{tenant_id}/` before the call reaches an adapter (§A7-2, §A7-7).
 //!
-//! Every artifact write and read carries its SHA-256 explicitly
-//! ([`Sha256Digest`]): §A7-6 requires the checksum to be verified against the
-//! trusted work record before a parse, and a port that returns bytes without
-//! the digest it verified cannot support that.
+//! Every artifact write carries the caller's declared SHA-256
+//! ([`Sha256Digest`]) and every whole-object read returns the digest the
+//! adapter computed: §A7-6 requires the checksum to be verified against the
+//! trusted work record before a parse. A streamed read returns no digest;
+//! its caller hashes as it reads (see [`ArtifactReader`]).
 //!
 //! Implemented in `vf-db::adapters` (task F3): `S3ArtifactStore`,
 //! `LocalFsArtifactStore`, `InMemoryArtifactStore`.
@@ -44,7 +45,7 @@ pub const MAX_ARTIFACT_KEY_BYTES: usize = 1024;
 /// `OutsideTenantPrefix`, `ChecksumMismatch`, `TooLarge`) from a *backend
 /// failure* (`Backend`). §A7-6 turns the first group into a platform outcome
 /// with a visible reason and never into a target outcome.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ArtifactStoreError {
     /// The key is not a well-formed artifact key. Never reached storage.
@@ -71,14 +72,17 @@ pub enum ArtifactStoreError {
         prefix: ArtifactPrefix,
     },
 
-    /// No object is stored under this key.
+    /// No object is stored under this key. Returned by `head`, `get` and
+    /// `get_stream`, never by `delete` (contract item 4 on [`ArtifactStore`]).
     #[error("artifact not found: {key}")]
     NotFound {
         /// The key that was looked up.
         key: ArtifactKey,
     },
 
-    /// An object already exists under this key and the put was conditional.
+    /// Reserved: no method returns it yet. `put` is last-writer-wins
+    /// (contract item 2 on [`ArtifactStore`]); a conditional put, if one is
+    /// ever added, is what would raise it.
     #[error("artifact already exists: {key}")]
     AlreadyExists {
         /// The key that was written.
@@ -163,7 +167,9 @@ impl ArtifactKey {
             return Err(invalid("empty"));
         }
         if raw.len() > MAX_ARTIFACT_KEY_BYTES {
-            return Err(invalid("longer than 1024 bytes"));
+            return Err(invalid(&format!(
+                "longer than {MAX_ARTIFACT_KEY_BYTES} bytes"
+            )));
         }
         if raw.starts_with('/') {
             return Err(invalid("absolute: starts with `/`"));
@@ -264,6 +270,10 @@ impl ArtifactPrefix {
 
     /// Validates `raw` and returns the prefix, appending the trailing `/` when
     /// it is missing. The empty string is [`Self::root`].
+    ///
+    /// The result can be one byte over [`MAX_ARTIFACT_KEY_BYTES`]: a legal
+    /// key of the full length plus the boundary `/`. Such a prefix names no
+    /// object and lists nothing, which is harmless.
     ///
     /// # Errors
     ///
@@ -375,6 +385,10 @@ impl From<ArtifactPrefix> for String {
 /// Hex formatting and parsing are hand-written rather than taken from the
 /// `hex` crate: §A1.3 fixes `vf-core`'s dependency list, and 30 lines is a
 /// cheaper price than an entry on it.
+///
+/// The derived `PartialEq` is an ordinary byte comparison, not a
+/// constant-time one. That is right for a content checksum and wrong for a
+/// MAC: the §A3.6 `X-VF-Signature` check must not be built on this type.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Sha256Digest([u8; 32]);
@@ -495,10 +509,10 @@ impl From<Sha256Digest> for String {
 ///
 /// This exists so a 100 MiB findings artifact can be uploaded in parts
 /// without ever being whole in memory, which is what §A7-6's "size-bounded
-/// and streaming" requires on the write side as well as the read side. It is
-/// a trait with a boxed future rather than a `futures::Stream` because
-/// `vf-core` carries no async crate; `vf-db::adapters` adapts it to
-/// `object_store`'s multipart writer.
+/// and streaming" requires on the write side; [`ArtifactReader`] is the
+/// read-side mirror. It is a trait with a boxed future rather than a
+/// `futures::Stream` because `vf-core` carries no async crate;
+/// `vf-db::adapters` adapts it to `object_store`'s multipart writer.
 pub trait ArtifactSource: Send + 'static {
     /// The next chunk, or `Ok(None)` at end of stream.
     ///
@@ -612,6 +626,47 @@ pub struct ArtifactContent {
     pub bytes: Vec<u8>,
 }
 
+/// One stored object, read in chunks: what [`ArtifactStore::get_stream`]
+/// returns.
+///
+/// The read-side mirror of [`ArtifactSource`], so a §A3.6 `findings.json` at
+/// its 64 MiB bound is parsed as it arrives rather than held whole in memory
+/// per concurrent ingest (§A7-6, "size-bounded and streaming").
+///
+/// **No digest.** Unlike [`ArtifactContent`], a reader reports no SHA-256. A
+/// digest the adapter computed would be known only at end of stream, after
+/// the caller had consumed the bytes, and the digest that counts is the one
+/// declared in the trusted work record (§A3.6), not one the store reports. So
+/// the caller hashes what it reads and compares it with the declared digest,
+/// and §A7-6 puts that comparison before any parse.
+pub trait ArtifactReader: Send + 'static {
+    /// What the backend reported about the object when the read was opened.
+    fn meta(&self) -> &ArtifactMeta;
+
+    /// The next chunk, or `Ok(None)` at end of stream.
+    ///
+    /// A chunk is never empty and may be any size. Once this returns
+    /// `Ok(None)` or an error, every later call returns the same value at
+    /// once (contract item 9 on [`ArtifactStore`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ArtifactStoreError::TooLarge`] instead of a chunk that would carry
+    /// the total past the adapter's read limit. [`ArtifactStoreError::Backend`]
+    /// when the transfer fails.
+    fn next_chunk(&mut self) -> PortFuture<'_, Result<Option<Vec<u8>>, ArtifactStoreError>>;
+}
+
+impl fmt::Debug for dyn ArtifactReader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never the bytes: they are scanner output, written by a hostile
+        // workload.
+        f.debug_struct("ArtifactReader")
+            .field("meta", self.meta())
+            .finish_non_exhaustive()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The port
 // ---------------------------------------------------------------------------
@@ -631,20 +686,43 @@ pub struct ArtifactContent {
 ///    the declared digest, it fails with
 ///    [`ArtifactStoreError::ChecksumMismatch`] and the object is not
 ///    observable afterwards.
-/// 2. `put` is last-writer-wins for the same key, and a failed `put` never
-///    leaves a partial object.
+/// 2. `put` is last-writer-wins for the same key. A reader never observes a
+///    partial object, neither while a `put` is in flight nor after one fails.
 /// 3. `get` returns the digest it computed over the bytes it returns, and
 ///    refuses an object over the adapter's read limit with
-///    [`ArtifactStoreError::TooLarge`] rather than buffering it.
-/// 4. `head`, `get` and `delete` on an absent key return
-///    [`ArtifactStoreError::NotFound`]; `delete` is *not* idempotent-silent,
-///    because the outbox handlers need to tell a missed delete from a done one.
+///    [`ArtifactStoreError::TooLarge`] rather than buffering it. The read
+///    limit is adapter construction configuration (§A3.6 sets the
+///    `findings.json` default at 64 MiB), so the conformance pack builds each
+///    adapter with a known limit and asserts the boundary there.
+/// 4. `head`, `get` and `get_stream` on an absent key return
+///    [`ArtifactStoreError::NotFound`]. `delete` of an absent key returns
+///    `Ok(())`: S3 `DeleteObject` carries no signal that the key existed, so
+///    the production adapter could only fake one with a racy extra `HEAD`. A
+///    repeated delete is a done one.
 /// 5. `list` returns keys under `prefix` at any depth, sorted by key, and an
 ///    empty `Vec` for a prefix with nothing under it. Never an error for
-///    "nothing there".
+///    "nothing there". A scoping decorator may narrow the prefix it is given:
+///    [`TenantArtifactStore`] lists `{tenant_id}/` for the root.
 /// 6. Nothing in this trait is tenant-scoped. Scoping is
 ///    [`TenantArtifactStore`]'s job, so an adapter is never the thing that
 ///    has to remember it.
+/// 7. Callers never store a key that is a segment-boundary prefix of another
+///    stored key (`T/a` beside `T/a/b`). A flat keyspace (S3, memory) accepts
+///    both and a filesystem cannot, so the outcome is unspecified and not part
+///    of the conformance pack. The §A3.6 layout always has exactly four
+///    segments, so it never produces such a pair.
+/// 8. `get_stream` refuses before the first chunk: an absent key is
+///    [`ArtifactStoreError::NotFound`], and an object whose reported size is
+///    over the read limit `get` applies is [`ArtifactStoreError::TooLarge`],
+///    both from `get_stream` itself. The reader's
+///    [`ArtifactReader::meta`] names the key and size read, and it yields
+///    exactly the object's bytes, in order, then `Ok(None)`. It counts what it
+///    yields and returns `TooLarge` rather than a chunk that crosses the
+///    limit, so a backend that under-reports a size cannot widen the bound.
+///    It returns no digest; the caller verifies the declared one.
+/// 9. A finished reader stays finished. Once `next_chunk` returns `Ok(None)`
+///    or an error, every later call returns the same value at once: it never
+///    hangs, panics or resumes yielding bytes.
 pub trait ArtifactStore: Send + Sync + 'static {
     /// Writes `body` under `key`, verifying it hashes to `sha256`.
     fn put(
@@ -655,8 +733,18 @@ pub trait ArtifactStore: Send + Sync + 'static {
     ) -> PortFuture<'_, Result<PutReceipt, ArtifactStoreError>>;
 
     /// Reads the whole object under `key`, bounded by the adapter's read limit.
+    /// For small objects; a caller that parses an artifact uses
+    /// [`Self::get_stream`].
     fn get(&self, key: &ArtifactKey)
     -> PortFuture<'_, Result<ArtifactContent, ArtifactStoreError>>;
+
+    /// Opens the object under `key` for a chunked read, bounded by the same
+    /// read limit as [`Self::get`]. Returns no digest: the caller verifies
+    /// the declared one (contract item 8).
+    fn get_stream(
+        &self,
+        key: &ArtifactKey,
+    ) -> PortFuture<'_, Result<Box<dyn ArtifactReader>, ArtifactStoreError>>;
 
     /// Reads the metadata of the object under `key` without its bytes.
     fn head(&self, key: &ArtifactKey) -> PortFuture<'_, Result<ArtifactMeta, ArtifactStoreError>>;
@@ -667,7 +755,7 @@ pub trait ArtifactStore: Send + Sync + 'static {
         prefix: &ArtifactPrefix,
     ) -> PortFuture<'_, Result<Vec<ArtifactMeta>, ArtifactStoreError>>;
 
-    /// Deletes the object under `key`.
+    /// Deletes the object under `key`. Succeeds when there is none.
     fn delete(&self, key: &ArtifactKey) -> PortFuture<'_, Result<(), ArtifactStoreError>>;
 }
 
@@ -809,6 +897,16 @@ impl ArtifactStore for TenantArtifactStore {
             return refuse(error);
         }
         self.inner.get(key)
+    }
+
+    fn get_stream(
+        &self,
+        key: &ArtifactKey,
+    ) -> PortFuture<'_, Result<Box<dyn ArtifactReader>, ArtifactStoreError>> {
+        if let Err(error) = self.guard_key(key) {
+            return refuse(error);
+        }
+        self.inner.get_stream(key)
     }
 
     fn head(&self, key: &ArtifactKey) -> PortFuture<'_, Result<ArtifactMeta, ArtifactStoreError>> {
