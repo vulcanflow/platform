@@ -140,11 +140,12 @@ pub struct GraphError {
     pub message: String,
 }
 
-/// A refused observation state change, as the caller can act on it (§15.1).
+/// A refused observation state change, as the caller can act on it (§15.1,
+/// §A3.2).
 ///
 /// Carries the admitted alternatives rather than only the rejection, which is
-/// §13.3's "structured remediation hint" applied to the §15.1 diagram: a client
-/// that asked for the wrong edge is told which edges exist from where it
+/// §13.3's "structured remediation hint" applied to the §A3.2 edge table: a
+/// client that asked for the wrong edge is told which edges exist from where it
 /// actually is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TransitionHints {
@@ -152,10 +153,10 @@ pub struct TransitionHints {
     pub from: ObservationState,
     /// The refused event.
     pub attempted: ObservationEvent,
-    /// Every event §15.1 admits from `from`. Empty for a terminal state, which
-    /// tells the caller to stop rather than to retry differently, and for
-    /// `verifying`, where only the running verification can move the
-    /// observation on.
+    /// Every event the §A3.2 edge table admits from `from`. Empty for a
+    /// terminal state, which tells the caller to stop rather than to retry
+    /// differently, and for `verifying`, where only the running verification
+    /// can move the observation on.
     pub admitted: Vec<ObservationEvent>,
 }
 
@@ -511,7 +512,8 @@ impl Problem {
 
 impl From<IllegalTransition> for Problem {
     /// Lifts the domain error of [`crate::state::observation_transition`] into
-    /// its catalogue entry, filling in the admitted alternatives from §15.1.
+    /// its catalogue entry, filling in the admitted alternatives from the §A3.2
+    /// edge table.
     ///
     /// Having this conversion in `vf-core` means the handler for
     /// `POST /v1/findings/{id}/state` cannot accidentally report a refused

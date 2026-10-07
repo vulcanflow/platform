@@ -9,11 +9,14 @@
 //!    which is why serde goes through the same two functions rather than a
 //!    second `rename_all` derive that could drift from them.
 //! 2. **Transitions are total functions and a transition absent from the TDD is
-//!    unrepresentable** (§A3.2). Each edge of the §15.1 diagram is encoded
-//!    exactly once: the six caller-requested edges in
-//!    [`observation_transition`], the three exits from `Verifying` in
+//!    unrepresentable** (§A3.2). Each observation edge is encoded exactly once:
+//!    the twelve caller-requested edges of the §A3.2 edge table in
+//!    [`observation_transition`], the three §15.1 exits from `Verifying` in
 //!    [`apply_verification`]. Neither has a catch-all that would admit a new
-//!    edge by accident.
+//!    edge by accident. The §A3.2 table is architect ruling VFL-235, which
+//!    completes the §15.1 diagram with the `accepted_risk` edges and the
+//!    triage edges out of `acknowledged` and `fix_pending` that §10.4, §6.3 and
+//!    §A3.8 require.
 //! 3. **The policy is one exhaustive `match` with no wildcard arm** (§4.2), so
 //!    adding a [`Role`] or an [`Action`] fails compilation until the policy
 //!    decides the new cells.
@@ -243,12 +246,11 @@ status_enum! {
         Fixed => "fixed",
         /// An explicit false-positive decision was recorded (§10.2).
         FalsePositive => "false_positive",
-        /// The risk was accepted. §6.3 lists this value and §A3.8's
-        /// `POST /v1/findings/{id}/state` accepts it, but the §15.1 diagram
-        /// draws no edge to it, so neither [`observation_transition`] nor
-        /// [`apply_verification`] can reach it. That is an open contract gap
-        /// between §6.3 and §15.1; adding the edge is a TDD change, not a code
-        /// one.
+        /// The risk was accepted (§10.4 "accept its risk"). Reached by
+        /// [`ObservationEvent::AcceptRisk`] from `new`, `acknowledged` or
+        /// `fix_pending`. The §15.1 diagram draws no edge here; the edges are
+        /// architect ruling VFL-235, recorded in the §A3.2 edge table. Final for
+        /// this observation, like `fixed` and `false_positive`.
         AcceptedRisk => "accepted_risk",
     }
 }
@@ -328,12 +330,18 @@ status_enum! {
 }
 
 status_enum! {
-    /// One cell of the §4.2 role matrix.
+    /// One cell of the §4.2 role matrix, plus the two §A3.8 admin-only
+    /// authorization writes.
     ///
     /// The §4.2 table has six columns and the cells distinguish scope, so
     /// "cancel" and "cancel own" and "CRUD" and "CRUD own" are separate
     /// actions. Enforcement is a single middleware layer with this declarative
     /// table, not per-handler checks (§4.2).
+    ///
+    /// [`Self::AuthorizationManualReview`] and [`Self::AuthorizationRevoke`]
+    /// have no §4.2 column. §A3.8 marks both routes admin-only, and architect
+    /// ruling VFL-235 names them here so that rule goes through the same table
+    /// instead of a per-handler check.
     Action {
         /// Submit a pipeline run. Both roles.
         ScanDispatch => "scan_dispatch",
@@ -363,6 +371,14 @@ status_enum! {
         BillingManage => "billing_manage",
         /// Invite, remove and re-role tenant members. `admin` only.
         MemberManage => "member_manage",
+        /// Record a manual authorization review for a target
+        /// (`POST /v1/targets/{id}/manual-review`). `admin` only (§A3.8).
+        AuthorizationManualReview => "authorization_manual_review",
+        /// Revoke a target's authorization
+        /// (`DELETE /v1/targets/{id}/authorization`). `admin` only: revocation
+        /// cancels every pending and active run on the target (§A3.8), and
+        /// §4.2 lets a member cancel only its own runs.
+        AuthorizationRevoke => "authorization_revoke",
     }
 }
 
@@ -379,8 +395,8 @@ impl WorkUnitStatus {
 }
 
 impl ObservationState {
-    /// The events §15.1 admits from this state, in [`ObservationEvent::ALL`]
-    /// order.
+    /// The events the §A3.2 edge table admits from this state, in
+    /// [`ObservationEvent::ALL`] order.
     ///
     /// Derived from [`observation_transition`] rather than written out a second
     /// time, so the two can never disagree about the edge set. Returned in
@@ -399,7 +415,7 @@ impl ObservationState {
 
 status_enum! {
     /// A caller-requested change to an observation, as one edge label of the
-    /// §15.1 diagram.
+    /// §A3.2 edge table (§15.1 as completed by architect ruling VFL-235).
     ///
     /// Verification results are deliberately **not** events. The three exits
     /// from [`ObservationState::Verifying`] are [`VerificationOutcome`]s that
@@ -415,12 +431,54 @@ status_enum! {
         StartFix => "start_fix",
         /// §15.1 "explicit false-positive decision".
         DecideFalsePositive => "decide_false_positive",
+        /// §10.4 "accept its risk". §15.1 draws no such edge; ruling VFL-235
+        /// adds it.
+        AcceptRisk => "accept_risk",
         /// §15.1 "request verification".
         RequestVerification => "request_verification",
     }
 }
 
-/// An observation state change that §15.1 does not draw.
+status_enum! {
+    /// The `state` a caller may name in `POST /v1/findings/{id}/state`
+    /// (§A3.8; architect ruling VFL-235).
+    ///
+    /// The request body names a target state, but the transition table is
+    /// keyed by [`ObservationEvent`]. This enum and its `From` impl are the
+    /// single mapping from one to the other, so no handler can pick a
+    /// different event for the same body. `new`, `verifying` and `fixed` are
+    /// not members and fail to parse with [`UnknownValue`]. No request body can
+    /// therefore reopen an observation, put it into `verifying` without a
+    /// verification run, or mark it fixed. Verification is requested only
+    /// through `POST /v1/findings/{id}/verify`.
+    RequestedObservationState {
+        /// Maps to [`ObservationEvent::Acknowledge`].
+        Acknowledged => "acknowledged",
+        /// Maps to [`ObservationEvent::StartFix`].
+        FixPending => "fix_pending",
+        /// Maps to [`ObservationEvent::AcceptRisk`].
+        AcceptedRisk => "accepted_risk",
+        /// Maps to [`ObservationEvent::DecideFalsePositive`].
+        FalsePositive => "false_positive",
+    }
+}
+
+impl From<RequestedObservationState> for ObservationEvent {
+    /// The event that moves an observation into the requested state.
+    ///
+    /// Whether that event is admitted from the observation's current state is
+    /// still [`observation_transition`]'s decision.
+    fn from(requested: RequestedObservationState) -> Self {
+        match requested {
+            RequestedObservationState::Acknowledged => Self::Acknowledge,
+            RequestedObservationState::FixPending => Self::StartFix,
+            RequestedObservationState::AcceptedRisk => Self::AcceptRisk,
+            RequestedObservationState::FalsePositive => Self::DecideFalsePositive,
+        }
+    }
+}
+
+/// An observation state change that the §A3.2 edge table does not admit.
 ///
 /// Maps to
 /// [`Problem::IllegalTransition`](crate::problem::Problem::IllegalTransition)
@@ -434,24 +492,34 @@ pub struct IllegalTransition {
     pub event: ObservationEvent,
 }
 
-/// Applies one caller-requested §15.1 edge to one observation.
+/// Applies one caller-requested edge to one observation.
 ///
-/// The single encoding of the six §15.1 edges a caller can ask for, and a total
-/// function: every `(from, event)` pair either names one of those edges or is
-/// an [`IllegalTransition`]. There is **no wildcard arm** — every state that
+/// The single encoding of the twelve caller-requested edges of the §A3.2 edge
+/// table (architect ruling VFL-235), and a total function: every
+/// `(from, event)` pair either names one of those edges or is an
+/// [`IllegalTransition`]. There is **no wildcard arm** — every state that
 /// admits an event matches exhaustively over [`ObservationEvent`], so adding an
-/// event variant fails compilation until the diagram says where it leads from
+/// event variant fails compilation until the table says where it leads from
 /// each state.
 ///
-/// [`ObservationState::Verifying`] admits no event: only a completed
-/// verification run moves it on, through [`apply_verification`]. The three
-/// terminal states admit nothing either, because §15.1 ends there and a later
-/// scan produces a fresh observation rather than reviving this one.
+/// | From | `Acknowledge` | `StartFix` | `DecideFalsePositive` | `AcceptRisk` | `RequestVerification` |
+/// |---|---|---|---|---|---|
+/// | `new` | `acknowledged` | `fix_pending` | `false_positive` | `accepted_risk` | `verifying` |
+/// | `acknowledged` | — | `fix_pending` | `false_positive` | `accepted_risk` | `verifying` |
+/// | `fix_pending` | — | — | `false_positive` | `accepted_risk` | `verifying` |
+/// | `verifying`, `fixed`, `false_positive`, `accepted_risk` | — | — | — | — | — |
+///
+/// There are no self-loops, and triage never moves backwards: `fix_pending`
+/// does not return to `acknowledged`. [`ObservationState::Verifying`] admits no
+/// event; only a completed verification run moves it on, through
+/// [`apply_verification`]. The three final states admit nothing either,
+/// because a later scan produces a fresh observation rather than reviving this
+/// one (§15.5).
 ///
 /// # Errors
 ///
-/// [`IllegalTransition`] when §15.1 draws no caller-requested edge for the
-/// pair. §A3.8 maps that to HTTP 409 and
+/// [`IllegalTransition`] when the table has no edge for the pair. §A3.8 maps
+/// that to HTTP 409 and
 /// [`Problem::IllegalTransition`](crate::problem::Problem::IllegalTransition).
 pub fn observation_transition(
     from: ObservationState,
@@ -466,11 +534,21 @@ pub fn observation_transition(
             E::Acknowledge => Ok(S::Acknowledged),
             E::StartFix => Ok(S::FixPending),
             E::DecideFalsePositive => Ok(S::FalsePositive),
+            E::AcceptRisk => Ok(S::AcceptedRisk),
             E::RequestVerification => Ok(S::Verifying),
         },
-        S::Acknowledged | S::FixPending => match event {
+        S::Acknowledged => match event {
+            E::StartFix => Ok(S::FixPending),
+            E::DecideFalsePositive => Ok(S::FalsePositive),
+            E::AcceptRisk => Ok(S::AcceptedRisk),
             E::RequestVerification => Ok(S::Verifying),
-            E::Acknowledge | E::StartFix | E::DecideFalsePositive => illegal,
+            E::Acknowledge => illegal,
+        },
+        S::FixPending => match event {
+            E::DecideFalsePositive => Ok(S::FalsePositive),
+            E::AcceptRisk => Ok(S::AcceptedRisk),
+            E::RequestVerification => Ok(S::Verifying),
+            E::Acknowledge | E::StartFix => illegal,
         },
         S::Verifying | S::Fixed | S::FalsePositive | S::AcceptedRisk => illegal,
     }
@@ -691,6 +769,14 @@ pub fn pipeline_outcome(
 /// | `admin` | dispatch, cancel | read, triage, verify | CRUD | generate, configure branding | full | manage |
 /// | `member` | dispatch, cancel own | read, triage, verify | CRUD own | generate | read | — |
 ///
+/// The two authorization writes have no §4.2 column. §A3.8 makes both
+/// `admin` only, and architect ruling VFL-235 puts them in this table:
+///
+/// | | target authorization |
+/// |---|---|
+/// | `admin` | manual review, revoke |
+/// | `member` | — |
+///
 /// This decides the role cell only. Ownership ("own"), tenant membership,
 /// suspension (§4.1) and the live authorization basis (§5.7) are separate
 /// checks; `ScanCancelOwn` being allowed for a member means the member may
@@ -735,5 +821,12 @@ pub const fn allowed(role: Role, action: Action) -> bool {
         // Members: admin only; §4.2 leaves the member cell empty.
         (Role::Admin, Action::MemberManage) => true,
         (Role::Member, Action::MemberManage) => false,
+
+        // Target authorization writes: admin only (§A3.8). A member may not
+        // revoke, because revocation cancels other members' runs too.
+        (Role::Admin, Action::AuthorizationManualReview) => true,
+        (Role::Member, Action::AuthorizationManualReview) => false,
+        (Role::Admin, Action::AuthorizationRevoke) => true,
+        (Role::Member, Action::AuthorizationRevoke) => false,
     }
 }
