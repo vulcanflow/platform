@@ -244,7 +244,8 @@ services:
   # It has no curl, so readiness is `mc ready`, which the image bundles at
   # /usr/bin/mc; MC_HOST_local is the alias it probes. That alias carries the
   # credentials inside a URL, so VF_S3_ACCESS_KEY and VF_S3_SECRET_KEY must stay
-  # URL-safe (no `@`, `:`, `/` or `%`) or this probe reports unhealthy.
+  # URL-safe (no `@`, `:`, `/`, `?`, `#` or `%`) or this probe reports
+  # unhealthy.
   # ---------------------------------------------------------------------------
   minio:
     image: ${VF_MINIO_IMAGE:-cgr.dev/chainguard/minio:latest@sha256:a05a4497e8dce3cb7a7a1bf1872ba5d30ea988f1e8c22c9e0920503761c4b5f1}
