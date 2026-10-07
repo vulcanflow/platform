@@ -32,7 +32,7 @@
 //! once per database) and `crates/vf-db/migrations/tenant/` (applied once per
 //! tenant schema, with `search_path` set to that schema). They are read at run
 //! time rather than embedded with `sqlx::migrate!`, because the macro refuses
-//! to compile against a directory that does not exist, and until task C1
+//! to compile against a directory that does not exist, and until task C3
 //! lands neither does. An absent or empty directory is an empty migration
 //! set, as it is for `just db-migrate`.
 //!
@@ -129,10 +129,10 @@ impl TestDb {
     /// does not read `.env`, so export it (`set -a; . ./.env; set +a`) to get
     /// the compose backend.
     ///
-    /// Until task C1 lands there are no migration files; the migration step
+    /// Until task C3 lands there are no migration files; the migration step
     /// applies an empty set and succeeds, and the resulting database has the
     /// two schemas and nothing in them. The acceptance test for this
-    /// constructor is re-run when C1 closes.
+    /// constructor is re-run when C3 closes.
     pub async fn new() -> Result<Self> {
         if let Some(config) = ComposeConfig::from_env()?
             && config.answers().await
