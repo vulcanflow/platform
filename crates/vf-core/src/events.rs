@@ -32,30 +32,36 @@
 //!   `sampled` and `dropped` so a consumer can tell a quiet node from a
 //!   throttled one (§9.3).
 
+use core::fmt;
+use core::str::FromStr;
+
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::ids::{
     BillingPeriodId, FindingId, FpDecisionId, NodeId, PipelineRunId, ReportId, ScanFingerprint,
     VerificationRunId, WorkUnitId,
 };
 use crate::state::{
-    ObservationState, OutcomeClass, PipelineState, ReportState, VerificationOutcome, WorkUnitStatus,
+    ObservationState, OutcomeClass, PipelineState, ReportState, UnknownValue, VerificationOutcome,
+    WorkUnitStatus, status_enum,
 };
 
-/// Which of a scanner's two output streams a log line came from (§9.2
-/// `log.line`).
-///
-/// A closed two-variant enum rather than free text: the adapter reads exactly
-/// the child process's `stdout` and `stderr` (§7.4), so an unknown value here
-/// would mean the pipe plumbing is wrong and should be a hard parse error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LogStream {
-    /// The tool's standard output.
-    Stdout,
-    /// The tool's standard error.
-    Stderr,
+status_enum! {
+    /// Which of a scanner's two output streams a log line came from (§9.2
+    /// `log.line`).
+    ///
+    /// A closed two-variant enum rather than free text: the adapter reads
+    /// exactly the child process's `stdout` and `stderr` (§7.4), so an unknown
+    /// value here would mean the pipe plumbing is wrong and should be a hard
+    /// parse error. Declared like the [`crate::state`] enums, so its wire form
+    /// is its `as_str` and a renamed variant cannot silently rename the value.
+    LogStream {
+        /// The tool's standard output.
+        Stdout => "stdout",
+        /// The tool's standard error.
+        Stderr => "stderr",
+    }
 }
 
 /// A finding's severity as the scanner reported it (§6.3 `findings.severity`).

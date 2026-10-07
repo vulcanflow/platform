@@ -126,6 +126,10 @@ macro_rules! status_enum {
     };
 }
 
+// Also used by `crate::events` for `LogStream`, the one closed wire enum that
+// is not a §A4 status column, so it gets the same single spelling.
+pub(crate) use status_enum;
+
 status_enum! {
     /// The state of one submitted graph (§8.2, `pipeline_runs.status`).
     ///
