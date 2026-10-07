@@ -9,3 +9,5 @@
 //! `ArtifactStore`/`WakeBus` adapters that implement the §A6.1 ports.
 //!
 //! Crate owner: Fred. Module `adapters` is owned by Jorge (task F3).
+
+pub mod adapters;
