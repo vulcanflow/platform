@@ -444,7 +444,7 @@ fn illegal_transition_serializes_from_attempted_and_admitted_as_wire_strings() {
 #[test]
 fn illegal_transition_from_domain_error_fills_admitted_from_the_state_machine() {
     let domain_error = IllegalTransition {
-        from: ObservationState::Acknowledged,
+        from: ObservationState::FixPending,
         event: ObservationEvent::StartFix,
     };
     let problem: Problem = domain_error.into();
@@ -453,11 +453,18 @@ fn illegal_transition_from_domain_error_fills_admitted_from_the_state_machine() 
         Problem::IllegalTransition { detail, hints, .. } => {
             assert_eq!(
                 detail,
-                "illegal observation transition: start_fix is not admitted from acknowledged"
+                "illegal observation transition: start_fix is not admitted from fix_pending"
             );
-            assert_eq!(hints.from, ObservationState::Acknowledged);
+            assert_eq!(hints.from, ObservationState::FixPending);
             assert_eq!(hints.attempted, ObservationEvent::StartFix);
-            assert_eq!(hints.admitted, vec![ObservationEvent::RequestVerification]);
+            assert_eq!(
+                hints.admitted,
+                vec![
+                    ObservationEvent::DecideFalsePositive,
+                    ObservationEvent::AcceptRisk,
+                    ObservationEvent::RequestVerification,
+                ]
+            );
         }
         other => panic!("expected IllegalTransition, got {other:?}"),
     }
