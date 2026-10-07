@@ -5,6 +5,10 @@
 #
 # Triggers adds its own labels as well (triggers.tekton.dev/eventlistener,
 # .../trigger, .../triggers-eventid).
+#
+# The delivery label is a convenience index only: GitHub's HMAC covers the
+# body, not the X-GitHub-Delivery header, so a replayed delivery can carry any
+# id. The trustworthy identifier is Tekton's own triggers-eventid label.
 apiVersion: triggers.tekton.dev/v1beta1
 kind: TriggerTemplate
 metadata:

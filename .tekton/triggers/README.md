@@ -43,23 +43,27 @@ kubectl apply -k 'https://github.com/vulcanflow/platform//.tekton/triggers?ref=<
 
 ## 2. Webhook secret
 
-One value, used in the cluster Secret and in the GitHub webhook. It never goes
-on a command line, into this repository or into issue text. GitHub compares
-the exact bytes, so the file must not end in a newline.
+One value, used in the cluster Secret `vf-ci/vf-ci-webhook` (key `secret`)
+and in the GitHub webhook. It never goes on a command line, into this
+repository or into issue text. GitHub compares the exact bytes, so the file
+must not end in a newline.
 
 ```sh
-umask 077
-secret_file=$(mktemp)
+secret_file=$(mktemp)    # mode 0600
 openssl rand -hex 32 | tr -d '\n' > "$secret_file"
-kubectl -n vf-ci create secret generic vf-ci-github-webhook \
+kubectl -n vf-ci create secret generic vf-ci-webhook \
   --from-file=secret="$secret_file"
-# Paste the file's contents into the webhook's Secret field (step 4), then
-# keep the value in Paperclip's secret store as
-# ci/tekton/vulcanflow-platform/github-webhook-secret for rotation.
-rm -f "$secret_file"
-
 kubectl -n vf-ci rollout status deploy/el-vf-platform
 ```
+
+Keep `$secret_file` until the webhook is registered in step 4; that step reads
+and then deletes it. The Secret can be created before step 1 if `vf-ci` is
+created first (`kubectl create namespace vf-ci`); step 1 then adopts the
+namespace, and the `rollout status` check runs after step 1.
+
+If the file is lost, rotate rather than decoding the value back out of the
+cluster Secret: generate a new value, replace the Secret, and put the new value
+in the webhook's Secret field.
 
 ## 3. Route
 
@@ -98,10 +102,18 @@ On `vulcanflow/platform`, Settings, Webhooks, Add webhook:
 | --- | --- |
 | Payload URL | `https://zozotk.go.ro/vulcanflow/platform` |
 | Content type | `application/json` (the filters and bindings read a JSON body) |
-| Secret | the value from step 2 |
+| Secret | the contents of `$secret_file` from step 2 (`cat "$secret_file"`) |
 | SSL verification | **Disable** (see below) |
 | Events | Let me select individual events: Pull requests, Pushes |
 | Active | on |
+
+Once GitHub has saved the webhook, keep the value in Paperclip's secret store
+as `ci/tekton/vulcanflow-platform/github-webhook-secret` for rotation, then
+delete the file:
+
+```sh
+rm -f "$secret_file"
+```
 
 GitHub sends a `ping` first. Both triggers drop it on event type, so the
 delivery succeeds and nothing runs.

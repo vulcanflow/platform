@@ -1,13 +1,14 @@
 # Receives the GitHub webhook for vulcanflow/platform.
 #
 # Every trigger runs the `github` ClusterInterceptor first. It checks the
-# X-Hub-Signature-256 HMAC against the Secret vf-ci/vf-ci-github-webhook (key
-# `secret`) and the X-GitHub-Event type; a request that is unsigned, wrongly
-# signed or of another event type stops there and creates nothing. The `cel`
-# interceptor that follows only narrows which signed events start a run.
+# X-Hub-Signature / X-Hub-Signature-256 HMAC against the Secret
+# vf-ci/vf-ci-webhook (key `secret`) and the X-GitHub-Event type; a request
+# that is unsigned, wrongly signed or of another event type stops there and
+# creates nothing. The `cel` interceptor that follows only narrows which signed
+# events start a run.
 #
-# The Secret is not in this directory. It is created in the cluster when the
-# webhook is registered, from a value generated at that moment; see README.md.
+# The Secret is not in this directory. The owner creates it in the cluster
+# from a value generated for the webhook; see README.md.
 apiVersion: triggers.tekton.dev/v1beta1
 kind: EventListener
 metadata:
@@ -27,7 +28,7 @@ spec:
           params:
             - name: secretRef
               value:
-                secretName: vf-ci-github-webhook
+                secretName: vf-ci-webhook
                 secretKey: secret
             - name: eventTypes
               value: ["pull_request"]
@@ -53,7 +54,7 @@ spec:
           params:
             - name: secretRef
               value:
-                secretName: vf-ci-github-webhook
+                secretName: vf-ci-webhook
                 secretKey: secret
             - name: eventTypes
               value: ["push"]
