@@ -14,6 +14,14 @@
 //! test never calls (bytes, floats, tuple/struct variants) fail loudly rather
 //! than guess, so a future variant that needs one is a visible test failure
 //! here, not a silent gap.
+//!
+//! Each of `ids.rs`, `problem.rs` and `state_enums.rs` pulls this module in
+//! via `mod support;` and compiles it as part of its own test binary, using
+//! only the subset of `Value`/serializer/deserializer items that pack needs.
+//! `#![allow(dead_code)]` keeps `cargo clippy --all-targets -- -D warnings`
+//! from flagging the items a given binary doesn't touch as unused; `#[expect]`
+//! can't be used in its place because some other binary does use them.
+#![allow(dead_code)]
 
 use std::fmt;
 
