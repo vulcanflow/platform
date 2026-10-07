@@ -6,9 +6,8 @@
 # signed or of another event type stops there and creates nothing. The `cel`
 # interceptor that follows only narrows which signed events start a run.
 #
-# The Secret is not in this directory. Its value is held in Paperclip
-# (ci/tekton/vulcanflow-platform/github-webhook-secret) and is created in the
-# cluster from there; see README.md.
+# The Secret is not in this directory. It is created in the cluster when the
+# webhook is registered, from a value generated at that moment; see README.md.
 apiVersion: triggers.tekton.dev/v1beta1
 kind: EventListener
 metadata:

@@ -7,3 +7,4 @@ resources:
   - trigger-bindings.yaml
   - trigger-template.yaml
   - event-listener.yaml
+  - route.yaml
