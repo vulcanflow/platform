@@ -8,7 +8,7 @@
 //! With all four satisfied, the final state follows from the units' outcome
 //! classes per the table in `pipeline_outcome`'s doc comment.
 
-use vf_core::state::{pipeline_outcome, OutcomeClass, PipelineState, UnitSummary, WorkUnitStatus};
+use vf_core::state::{OutcomeClass, PipelineState, UnitSummary, WorkUnitStatus, pipeline_outcome};
 
 fn success() -> UnitSummary {
     UnitSummary::terminal(WorkUnitStatus::Terminal, OutcomeClass::Success)
@@ -46,7 +46,11 @@ fn none_while_any_unit_is_not_terminal() {
         WorkUnitStatus::Running,
     ] {
         let units = [success(), UnitSummary::in_flight(status)];
-        assert_eq!(pipeline_outcome(&units, true, 0), None, "status: {status:?}");
+        assert_eq!(
+            pipeline_outcome(&units, true, 0),
+            None,
+            "status: {status:?}"
+        );
     }
 }
 
@@ -76,13 +80,19 @@ fn none_while_a_terminal_unit_has_no_recorded_outcome_class() {
 
 #[test]
 fn empty_slice_is_completed_with_no_output() {
-    assert_eq!(pipeline_outcome(&[], true, 0), Some(PipelineState::Completed));
+    assert_eq!(
+        pipeline_outcome(&[], true, 0),
+        Some(PipelineState::Completed)
+    );
 }
 
 #[test]
 fn all_success_is_completed() {
     let units = [success(), success(), success()];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::Completed));
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::Completed)
+    );
 }
 
 #[test]
@@ -110,8 +120,14 @@ fn one_success_among_many_failures_is_still_partially_completed() {
 
 #[test]
 fn no_success_and_any_cancelled_is_cancelled() {
-    let units = [terminal(OutcomeClass::Cancelled), terminal(OutcomeClass::Target)];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::Cancelled));
+    let units = [
+        terminal(OutcomeClass::Cancelled),
+        terminal(OutcomeClass::Target),
+    ];
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::Cancelled)
+    );
 }
 
 #[test]
@@ -122,19 +138,31 @@ fn cancelled_outranks_platform_and_target_together() {
         terminal(OutcomeClass::Target),
         terminal(OutcomeClass::Tool),
     ];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::Cancelled));
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::Cancelled)
+    );
 }
 
 #[test]
 fn no_success_no_cancelled_and_any_platform_is_platform_failed() {
-    let units = [terminal(OutcomeClass::Platform), terminal(OutcomeClass::Target)];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::PlatformFailed));
+    let units = [
+        terminal(OutcomeClass::Platform),
+        terminal(OutcomeClass::Target),
+    ];
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::PlatformFailed)
+    );
 }
 
 #[test]
 fn tool_outcome_also_maps_to_platform_failed() {
     let units = [terminal(OutcomeClass::Tool), terminal(OutcomeClass::Target)];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::PlatformFailed));
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::PlatformFailed)
+    );
 }
 
 #[test]
@@ -144,31 +172,49 @@ fn platform_and_tool_outrank_target() {
         terminal(OutcomeClass::Platform),
         terminal(OutcomeClass::Tool),
     ];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::PlatformFailed));
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::PlatformFailed)
+    );
 }
 
 #[test]
 fn no_success_no_cancelled_no_platform_no_tool_and_any_target_is_target_failed() {
-    let units = [terminal(OutcomeClass::Target), terminal(OutcomeClass::Scope)];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::TargetFailed));
+    let units = [
+        terminal(OutcomeClass::Target),
+        terminal(OutcomeClass::Scope),
+    ];
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::TargetFailed)
+    );
 }
 
 #[test]
 fn scope_and_limit_skips_alone_are_completed_with_no_platform_or_target_failure() {
     let units = [terminal(OutcomeClass::Scope), terminal(OutcomeClass::Limit)];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::Completed));
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::Completed)
+    );
 }
 
 #[test]
 fn scope_only_is_completed() {
     let units = [terminal(OutcomeClass::Scope)];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::Completed));
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::Completed)
+    );
 }
 
 #[test]
 fn limit_only_is_completed() {
     let units = [terminal(OutcomeClass::Limit)];
-    assert_eq!(pipeline_outcome(&units, true, 0), Some(PipelineState::Completed));
+    assert_eq!(
+        pipeline_outcome(&units, true, 0),
+        Some(PipelineState::Completed)
+    );
 }
 
 #[test]
@@ -178,6 +224,9 @@ fn timed_out_is_never_derived_from_unit_records() {
     // produce it from any combination of `OutcomeClass`.
     for class in OutcomeClass::ALL {
         let units = [terminal(*class)];
-        assert_ne!(pipeline_outcome(&units, true, 0), Some(PipelineState::TimedOut));
+        assert_ne!(
+            pipeline_outcome(&units, true, 0),
+            Some(PipelineState::TimedOut)
+        );
     }
 }

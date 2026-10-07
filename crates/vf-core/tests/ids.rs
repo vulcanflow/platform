@@ -21,12 +21,12 @@
 
 mod support;
 
+use uuid::Uuid;
 use vf_core::ids::{
     AuthorizationBasisId, BillingPeriodId, CandidateKey, FindingId, FpDecisionId, IdParseError,
-    NodeId, OutboxId, PipelineRunId, ProjectId, RequestKey, ReportId, ScanFingerprint, ScanId,
+    NodeId, OutboxId, PipelineRunId, ProjectId, ReportId, RequestKey, ScanFingerprint, ScanId,
     ScheduleId, TargetId, TenantId, UserId, VerificationRunId, WorkUnitId,
 };
-use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // UUID identities
@@ -107,8 +107,9 @@ macro_rules! uuid_id_tests {
 
             #[test]
             fn distinct_values_are_not_equal() {
-                let other: $ty =
-                    <$ty>::from_uuid(Uuid::parse_str("00000000-0000-7000-8000-000000000000").unwrap());
+                let other: $ty = <$ty>::from_uuid(
+                    Uuid::parse_str("00000000-0000-7000-8000-000000000000").unwrap(),
+                );
                 assert_ne!(sample(), other);
             }
         }

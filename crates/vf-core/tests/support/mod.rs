@@ -103,7 +103,10 @@ impl Value {
     #[must_use]
     pub fn has_keys_in_order(&self, keys: &[&str]) -> bool {
         match self.as_map() {
-            Some(entries) => entries.iter().map(|(k, _)| k.as_str()).eq(keys.iter().copied()),
+            Some(entries) => entries
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .eq(keys.iter().copied()),
             None => false,
         }
     }
@@ -267,7 +270,10 @@ impl Serializer for ValueSerializer {
         variant: &'static str,
         value: &T,
     ) -> Result<Value, Error> {
-        Ok(Value::Map(vec![(variant.to_owned(), value.serialize(self)?)]))
+        Ok(Value::Map(vec![(
+            variant.to_owned(),
+            value.serialize(self)?,
+        )]))
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<SeqSerializer, Error> {
@@ -302,11 +308,7 @@ impl Serializer for ValueSerializer {
         Ok(MapSerializer::new())
     }
 
-    fn serialize_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<MapSerializer, Error> {
+    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<MapSerializer, Error> {
         Ok(MapSerializer::new())
     }
 
@@ -474,7 +476,9 @@ impl<'de> SeqAccess<'de> for SeqDeserializer<'de> {
         seed: T,
     ) -> Result<Option<T::Value>, Error> {
         match self.items.next() {
-            Some(item) => seed.deserialize(ValueDeserializer { value: item }).map(Some),
+            Some(item) => seed
+                .deserialize(ValueDeserializer { value: item })
+                .map(Some),
             None => Ok(None),
         }
     }
@@ -522,7 +526,9 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
             Value::Bool(b) => visitor.visit_bool(*b),
             Value::U64(n) => visitor.visit_u64(*n),
             Value::None => visitor.visit_none(),
-            Value::Seq(items) => visitor.visit_seq(SeqDeserializer { items: items.iter() }),
+            Value::Seq(items) => visitor.visit_seq(SeqDeserializer {
+                items: items.iter(),
+            }),
             Value::Map(entries) => visitor.visit_map(MapDeserializer {
                 entries: entries.iter(),
                 value: None,

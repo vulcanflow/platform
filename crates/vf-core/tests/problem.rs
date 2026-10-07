@@ -22,8 +22,8 @@ mod support;
 
 use vf_core::ids::TargetId;
 use vf_core::problem::{
-    AllowanceHints, ChallengeHints, ForbiddenHints, GraphError, NextAction, NotFoundHints,
-    Problem, RateLimitHints, TrackHints, TransitionHints, ERROR_TYPE_BASE,
+    AllowanceHints, ChallengeHints, ERROR_TYPE_BASE, ForbiddenHints, GraphError, NextAction,
+    NotFoundHints, Problem, RateLimitHints, TrackHints, TransitionHints,
 };
 use vf_core::state::{IllegalTransition, ObservationEvent, ObservationState};
 
@@ -210,7 +210,10 @@ fn all_variants() -> Vec<Problem> {
 #[test]
 fn authorization_required_type_title_status() {
     let p = authorization_required_full();
-    assert_eq!(p.type_uri(), "https://vulcanflow.io/errors/authorization-required");
+    assert_eq!(
+        p.type_uri(),
+        "https://vulcanflow.io/errors/authorization-required"
+    );
     assert_eq!(p.title(), "Target is not authorized for scanning");
     assert_eq!(p.status(), 403);
 }
@@ -218,7 +221,10 @@ fn authorization_required_type_title_status() {
 #[test]
 fn target_allowance_exceeded_type_title_status() {
     let p = target_allowance_exceeded();
-    assert_eq!(p.type_uri(), "https://vulcanflow.io/errors/target-allowance-exceeded");
+    assert_eq!(
+        p.type_uri(),
+        "https://vulcanflow.io/errors/target-allowance-exceeded"
+    );
     assert_eq!(p.title(), "Target allowance exceeded");
     assert_eq!(p.status(), 403);
 }
@@ -234,7 +240,10 @@ fn graph_invalid_type_title_status() {
 #[test]
 fn idempotency_conflict_type_title_status() {
     let p = idempotency_conflict();
-    assert_eq!(p.type_uri(), "https://vulcanflow.io/errors/idempotency-conflict");
+    assert_eq!(
+        p.type_uri(),
+        "https://vulcanflow.io/errors/idempotency-conflict"
+    );
     assert_eq!(p.title(), "Idempotency key reused with different content");
     assert_eq!(p.status(), 409);
 }
@@ -242,7 +251,10 @@ fn idempotency_conflict_type_title_status() {
 #[test]
 fn illegal_transition_type_title_status() {
     let p = illegal_transition();
-    assert_eq!(p.type_uri(), "https://vulcanflow.io/errors/illegal-transition");
+    assert_eq!(
+        p.type_uri(),
+        "https://vulcanflow.io/errors/illegal-transition"
+    );
     assert_eq!(p.title(), "Observation state transition is not allowed");
     assert_eq!(p.status(), 409);
 }
@@ -250,7 +262,10 @@ fn illegal_transition_type_title_status() {
 #[test]
 fn challenge_failed_type_title_status() {
     let p = challenge_failed();
-    assert_eq!(p.type_uri(), "https://vulcanflow.io/errors/challenge-failed");
+    assert_eq!(
+        p.type_uri(),
+        "https://vulcanflow.io/errors/challenge-failed"
+    );
     assert_eq!(p.title(), "Authorization challenge failed");
     assert_eq!(p.status(), 422);
 }
@@ -274,7 +289,10 @@ fn forbidden_type_title_status() {
 #[test]
 fn tenant_suspended_type_title_status() {
     let p = tenant_suspended_with_reason();
-    assert_eq!(p.type_uri(), "https://vulcanflow.io/errors/tenant-suspended");
+    assert_eq!(
+        p.type_uri(),
+        "https://vulcanflow.io/errors/tenant-suspended"
+    );
     assert_eq!(p.title(), "Account is suspended");
     assert_eq!(p.status(), 403);
 }
@@ -320,12 +338,21 @@ fn authorization_required_serializes_target_id_and_flattens_track_hints() {
     );
     assert_eq!(vf.get("track_a_available").unwrap().as_bool(), Some(true));
     assert_eq!(vf.get("track_b_available").unwrap().as_bool(), Some(false));
-    assert_eq!(vf.get("track_b_reason").unwrap().as_str(), Some("kyc_incomplete"));
+    assert_eq!(
+        vf.get("track_b_reason").unwrap().as_str(),
+        Some("kyc_incomplete")
+    );
 
     let actions = vf.get("next_actions").unwrap().as_seq().unwrap();
     assert_eq!(actions.len(), 1);
-    assert_eq!(actions[0].get("action").unwrap().as_str(), Some("verify_ownership"));
-    assert_eq!(actions[0].get("href").unwrap().as_str(), Some("/v1/targets/verify"));
+    assert_eq!(
+        actions[0].get("action").unwrap().as_str(),
+        Some("verify_ownership")
+    );
+    assert_eq!(
+        actions[0].get("href").unwrap().as_str(),
+        Some("/v1/targets/verify")
+    );
 }
 
 #[test]
@@ -346,7 +373,10 @@ fn target_allowance_exceeded_serializes_the_allowance_hints() {
     assert_eq!(vf.get("current").unwrap().as_u64(), Some(10));
     assert_eq!(vf.get("limit").unwrap().as_u64(), Some(10));
     assert_eq!(vf.get("package").unwrap().as_str(), Some("starter"));
-    assert_eq!(vf.get("upgrade_href").unwrap().as_str(), Some("/v1/billing/upgrade"));
+    assert_eq!(
+        vf.get("upgrade_href").unwrap().as_str(),
+        Some("/v1/billing/upgrade")
+    );
 }
 
 #[test]
@@ -358,7 +388,10 @@ fn graph_invalid_serializes_every_error_and_omits_absent_node_id() {
 
     assert_eq!(errors[0].get("code").unwrap().as_str(), Some("cycle"));
     assert_eq!(errors[0].get("node_id").unwrap().as_str(), Some("n2"));
-    assert_eq!(errors[0].get("message").unwrap().as_str(), Some("n2 participates in a cycle"));
+    assert_eq!(
+        errors[0].get("message").unwrap().as_str(),
+        Some("n2 participates in a cycle")
+    );
 
     assert_eq!(errors[1].get("code").unwrap().as_str(), Some("empty_graph"));
     assert!(errors[1].get("node_id").is_none());
@@ -369,7 +402,10 @@ fn idempotency_conflict_serializes_the_request_key() {
     let value = support::to_value(&idempotency_conflict());
     let vf = value.get("vf").unwrap();
     assert!(vf.has_keys_in_order(&["request_key"]));
-    assert_eq!(vf.get("request_key").unwrap().as_str(), Some("client-key-123"));
+    assert_eq!(
+        vf.get("request_key").unwrap().as_str(),
+        Some("client-key-123")
+    );
 }
 
 #[test]
@@ -392,14 +428,20 @@ fn illegal_transition_from_domain_error_fills_admitted_from_the_state_machine() 
 
     match &problem {
         Problem::IllegalTransition { detail, hints, .. } => {
-            assert_eq!(detail, "illegal observation transition: start_fix is not admitted from acknowledged");
+            assert_eq!(
+                detail,
+                "illegal observation transition: start_fix is not admitted from acknowledged"
+            );
             assert_eq!(hints.from, ObservationState::Acknowledged);
             assert_eq!(hints.attempted, ObservationEvent::StartFix);
             assert_eq!(hints.admitted, vec![ObservationEvent::RequestVerification]);
         }
         other => panic!("expected IllegalTransition, got {other:?}"),
     }
-    assert_eq!(problem.type_uri(), "https://vulcanflow.io/errors/illegal-transition");
+    assert_eq!(
+        problem.type_uri(),
+        "https://vulcanflow.io/errors/illegal-transition"
+    );
     assert_eq!(problem.status(), 409);
 }
 
@@ -425,7 +467,10 @@ fn forbidden_serializes_the_required_action() {
     let value = support::to_value(&forbidden());
     let vf = value.get("vf").unwrap();
     assert!(vf.has_keys_in_order(&["required_action"]));
-    assert_eq!(vf.get("required_action").unwrap().as_str(), Some("member_manage"));
+    assert_eq!(
+        vf.get("required_action").unwrap().as_str(),
+        Some("member_manage")
+    );
 }
 
 #[test]
@@ -463,7 +508,9 @@ fn internal_never_serializes_caller_facing_detail_only_a_trace_id() {
     let value = support::to_value(&p);
     assert_eq!(
         value.get("detail").unwrap().as_str(),
-        Some("An internal error occurred. The failure has been logged with the trace identifier in this response.")
+        Some(
+            "An internal error occurred. The failure has been logged with the trace identifier in this response."
+        )
     );
     let vf = value.get("vf").unwrap();
     assert!(vf.has_keys_in_order(&["trace_id"]));
@@ -510,7 +557,10 @@ fn with_instance_sets_the_envelope_instance_and_nothing_else() {
 #[test]
 fn display_is_title_colon_detail() {
     for problem in all_variants() {
-        assert_eq!(problem.to_string(), format!("{}: {}", problem.title(), problem.detail()));
+        assert_eq!(
+            problem.to_string(),
+            format!("{}: {}", problem.title(), problem.detail())
+        );
     }
 }
 
@@ -522,10 +572,19 @@ fn every_variant_serializes_the_six_member_envelope_in_order() {
             value.has_keys_in_order(ENVELOPE_KEYS),
             "envelope shape mismatch for {problem:?}"
         );
-        assert_eq!(value.get("type").unwrap().as_str(), Some(problem.type_uri()));
+        assert_eq!(
+            value.get("type").unwrap().as_str(),
+            Some(problem.type_uri())
+        );
         assert_eq!(value.get("title").unwrap().as_str(), Some(problem.title()));
-        assert_eq!(value.get("status").unwrap().as_u64(), Some(u64::from(problem.status())));
-        assert_eq!(value.get("detail").unwrap().as_str(), Some(problem.detail()));
+        assert_eq!(
+            value.get("status").unwrap().as_u64(),
+            Some(u64::from(problem.status()))
+        );
+        assert_eq!(
+            value.get("detail").unwrap().as_str(),
+            Some(problem.detail())
+        );
     }
 }
 

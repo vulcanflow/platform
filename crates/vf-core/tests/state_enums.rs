@@ -20,9 +20,9 @@
 mod support;
 
 use vf_core::state::{
-    apply_verification, observation_transition, outcome_consumes, Action, IllegalTransition,
-    ObservationEvent, ObservationState, OutcomeClass, PipelineState, ReportState,
-    ReservationState, Role, UnknownValue, VerificationOutcome, WorkUnitStatus,
+    Action, IllegalTransition, ObservationEvent, ObservationState, OutcomeClass, PipelineState,
+    ReportState, ReservationState, Role, UnknownValue, VerificationOutcome, WorkUnitStatus,
+    apply_verification, observation_transition, outcome_consumes,
 };
 
 /// Generates the shared round-trip and unknown-value tests for one
@@ -158,10 +158,21 @@ fn admitted_events_is_derived_from_observation_transition() {
 
     assert_eq!(
         S::New.admitted_events(),
-        vec![E::Acknowledge, E::StartFix, E::DecideFalsePositive, E::RequestVerification]
+        vec![
+            E::Acknowledge,
+            E::StartFix,
+            E::DecideFalsePositive,
+            E::RequestVerification
+        ]
     );
-    assert_eq!(S::Acknowledged.admitted_events(), vec![E::RequestVerification]);
-    assert_eq!(S::FixPending.admitted_events(), vec![E::RequestVerification]);
+    assert_eq!(
+        S::Acknowledged.admitted_events(),
+        vec![E::RequestVerification]
+    );
+    assert_eq!(
+        S::FixPending.admitted_events(),
+        vec![E::RequestVerification]
+    );
     assert_eq!(S::Verifying.admitted_events(), Vec::new());
     assert_eq!(S::Fixed.admitted_events(), Vec::new());
     assert_eq!(S::FalsePositive.admitted_events(), Vec::new());

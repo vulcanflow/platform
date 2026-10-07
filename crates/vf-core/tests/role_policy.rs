@@ -24,7 +24,7 @@
 //! `viewer` is GA-absent (§4.2): [`Role::ALL`] must list only `admin` and
 //! `member`, so no policy cell for it can exist to test.
 
-use vf_core::state::{allowed, Action, Role};
+use vf_core::state::{Action, Role, allowed};
 
 #[test]
 fn only_admin_and_member_are_ga_roles() {
@@ -100,9 +100,16 @@ fn only_admin_cancels_another_members_run() {
 
 #[test]
 fn findings_and_fixes_are_identical_for_both_roles() {
-    for action in [Action::FindingRead, Action::FindingTriage, Action::FindingVerify] {
+    for action in [
+        Action::FindingRead,
+        Action::FindingTriage,
+        Action::FindingVerify,
+    ] {
         assert!(allowed(Role::Admin, action), "admin should have {action:?}");
-        assert!(allowed(Role::Member, action), "member should have {action:?}");
+        assert!(
+            allowed(Role::Member, action),
+            "member should have {action:?}"
+        );
     }
 }
 
