@@ -94,9 +94,15 @@ curl -sk https://zozotk.go.ro/vulcanflow/platform
 # {"eventListener":"vf-platform","namespace":"vf-ci",...}
 ```
 
+An answer naming `aether-ci` means the rule is not in effect yet. Fix that
+before step 4 and before the checks below: until then deliveries and test
+requests go to the aether-ci listener.
+
 ## 4. Register the webhook
 
-On `vulcanflow/platform`, Settings, Webhooks, Add webhook:
+On `vulcanflow/platform`, Settings, Webhooks, Add webhook. Register it on the
+repository, not the organization: an organization webhook also sends the
+private repositories' events, over the unverified TLS described below.
 
 | Field | Value |
 | --- | --- |
@@ -116,7 +122,10 @@ rm -f "$secret_file"
 ```
 
 GitHub sends a `ping` first. Both triggers drop it on event type, so the
-delivery succeeds and nothing runs.
+delivery succeeds and nothing runs. GitHub marks it successful whichever
+listener answers, so open the delivery's Response tab: the body must name
+`"eventListener":"vf-platform"`. `aether-ci` there means step 3 is not in
+effect.
 
 **Why SSL verification is off.** `zozotk.go.ro` is a dynamic-DNS name, so no
 certificate can be issued for it; the Gateway presents the `zozoo.io`
