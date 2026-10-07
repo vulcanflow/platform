@@ -74,6 +74,23 @@ fn none_while_a_terminal_unit_has_no_recorded_outcome_class() {
     assert_eq!(pipeline_outcome(&[incomplete], true, 0), None);
 }
 
+#[test]
+fn a_skipped_unit_with_incomplete_required_ingestion_does_not_block_completion() {
+    // LOW-10 (`e26a786`): a `Skipped` unit never executed, so it has no
+    // artifact of its own to wait for, whatever its
+    // `required_ingestion_complete` flag says. Unlike the `Terminal` case
+    // above, this must derive a state rather than stay `None`.
+    let skipped = UnitSummary {
+        status: WorkUnitStatus::Skipped,
+        outcome_class: Some(OutcomeClass::Limit),
+        required_ingestion_complete: false,
+    };
+    assert_eq!(
+        pipeline_outcome(&[success(), skipped], true, 0),
+        Some(PipelineState::PartiallyCompleted)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // With all four preconditions satisfied
 // ---------------------------------------------------------------------------

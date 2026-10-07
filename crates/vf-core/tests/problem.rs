@@ -183,10 +183,29 @@ fn internal() -> Problem {
     Problem::internal("trace-abc-123")
 }
 
+/// Exhaustive over every `Problem` variant, with no wildcard arm (LOW-7):
+/// adding a variant to `vf_core::problem::Problem` fails this file to
+/// compile until [`all_variants`] is updated to cover it too.
+fn assert_every_problem_variant_is_covered(p: &Problem) {
+    match p {
+        Problem::AuthorizationRequired { .. }
+        | Problem::TargetAllowanceExceeded { .. }
+        | Problem::GraphInvalid { .. }
+        | Problem::IdempotencyConflict { .. }
+        | Problem::IllegalTransition { .. }
+        | Problem::ChallengeFailed { .. }
+        | Problem::NotFound { .. }
+        | Problem::Forbidden { .. }
+        | Problem::TenantSuspended { .. }
+        | Problem::RateLimited { .. }
+        | Problem::Internal { .. } => {}
+    }
+}
+
 /// Every variant, each with distinct shapes where relevant, for the
 /// cross-cutting consistency test.
 fn all_variants() -> Vec<Problem> {
-    vec![
+    let variants = vec![
         authorization_required_full(),
         authorization_required_minimal(),
         target_allowance_exceeded(),
@@ -200,7 +219,11 @@ fn all_variants() -> Vec<Problem> {
         tenant_suspended_no_reason(),
         rate_limited(),
         internal(),
-    ]
+    ];
+    for variant in &variants {
+        assert_every_problem_variant_is_covered(variant);
+    }
+    variants
 }
 
 // ---------------------------------------------------------------------------

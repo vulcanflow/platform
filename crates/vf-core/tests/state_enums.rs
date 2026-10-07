@@ -16,6 +16,13 @@
 //! * [`outcome_consumes`] is true only for [`OutcomeClass::Success`].
 //! * [`WorkUnitStatus::is_terminal`] is true only for `Skipped` and
 //!   `Terminal`.
+//! * Every `vf_core::state` enum's `VALUES` is pinned against a literal
+//!   quoted from the contract (VFL-236, VFL-233 MEDIUM-2), independently of
+//!   the type's own `as_str()` — the round-trip tests above all derive their
+//!   expectation from `as_str()`/`VALUES` and so would stay green through a
+//!   wire-string rename. `Action` has no such assertion: §4.2 and
+//!   architecture §A3.2 give it only a non-exhaustive illustrative comment,
+//!   not a complete ordered variant list or any wire string to quote.
 
 mod support;
 
@@ -111,6 +118,140 @@ status_enum_tests!(report_state, ReportState, "ReportState");
 status_enum_tests!(role, Role, "Role");
 status_enum_tests!(action, Action, "Action");
 status_enum_tests!(observation_event, ObservationEvent, "ObservationEvent");
+
+// ---------------------------------------------------------------------------
+// Literal wire values, pinned from the contract (VFL-236, VFL-233 MEDIUM-2)
+// ---------------------------------------------------------------------------
+//
+// Each assertion quotes a literal from TDD v2.3 or the architecture
+// document rather than deriving its expectation from `vf_core::state`
+// itself, so a rename of a wire value (for example `partially_completed` to
+// `partiallyCompleted`) fails here even though every round-trip test above
+// stays green.
+//
+// Two enums have no §6.3/§15.4/§16.8/§17.3 `CHECK` list naming their wire
+// strings: `PipelineState` (`pipeline_runs.status text NOT NULL`, no
+// `CHECK`) and `WorkUnitStatus` (`scan_work_units.status text NOT NULL`, no
+// `CHECK`). For both, architecture §A3.2 gives a complete, ordered Rust
+// enum declaration with no illustrative `/* e.g. ... */` qualifier — "Names
+// are binding" (§A3.2 preamble) — and every other enum below confirms,
+// byte-for-byte against its own `CHECK` list, that this codebase's one wire
+// convention is the snake_case form of that binding name. `PipelineState`'s
+// order and names are also confirmed by the §8.2 prose list.
+
+#[test]
+fn pipeline_state_values_are_pinned_to_the_contract() {
+    assert_eq!(
+        PipelineState::VALUES,
+        &[
+            "validating",
+            "refused",
+            "dispatching",
+            "running",
+            "completed",
+            "partially_completed",
+            "target_failed",
+            "platform_failed",
+            "cancelled",
+            "timed_out",
+        ]
+    );
+}
+
+#[test]
+fn work_unit_status_values_are_pinned_to_the_contract() {
+    assert_eq!(
+        WorkUnitStatus::VALUES,
+        &[
+            "registered",
+            "reserved",
+            "skipped",
+            "admitted",
+            "running",
+            "terminal",
+        ]
+    );
+}
+
+#[test]
+fn outcome_class_values_are_pinned_to_the_contract() {
+    // TDD §6.3 `scan_work_units.outcome_class` comment, quoted verbatim:
+    // "success|target|platform|tool|scope|limit|cancelled".
+    assert_eq!(
+        OutcomeClass::VALUES,
+        &[
+            "success", "target", "platform", "tool", "scope", "limit", "cancelled",
+        ]
+    );
+}
+
+#[test]
+fn observation_state_values_are_pinned_to_the_contract() {
+    // TDD §6.3 `finding_states.state` CHECK list, quoted verbatim.
+    assert_eq!(
+        ObservationState::VALUES,
+        &[
+            "new",
+            "acknowledged",
+            "fix_pending",
+            "verifying",
+            "fixed",
+            "false_positive",
+            "accepted_risk",
+        ]
+    );
+}
+
+#[test]
+fn verification_outcome_values_are_pinned_to_the_contract() {
+    // TDD §15.4 `verification_runs.outcome` CHECK list, quoted verbatim.
+    assert_eq!(
+        VerificationOutcome::VALUES,
+        &["not_detected", "still_present", "inconclusive"]
+    );
+}
+
+#[test]
+fn reservation_state_values_are_pinned_to_the_contract() {
+    // TDD §17.3 `scan_usage_reservations.state` CHECK list, quoted
+    // verbatim.
+    assert_eq!(
+        ReservationState::VALUES,
+        &["reserved", "consumed", "released"]
+    );
+}
+
+#[test]
+fn report_state_values_are_pinned_to_the_contract() {
+    // TDD §16.8 `reports.status` CHECK list, quoted verbatim.
+    assert_eq!(
+        ReportState::VALUES,
+        &["queued", "assembling", "rendering", "ready", "failed"]
+    );
+}
+
+#[test]
+fn role_values_are_pinned_to_the_contract() {
+    // TDD §4.2: "GA ships `admin` and `member`"; the role matrix's two
+    // columns use the same two literals in the same order.
+    assert_eq!(Role::VALUES, &["admin", "member"]);
+}
+
+#[test]
+fn observation_event_values_are_pinned_to_the_current_four() {
+    // Per VFL-236: pin the current four §15.1 caller-requested events.
+    // Cortana's VFL-235 ruling may add a fifth; that ruling is what
+    // authorizes changing this assertion, not this test pack.
+    assert_eq!(
+        ObservationEvent::VALUES,
+        &[
+            "acknowledge",
+            "start_fix",
+            "decide_false_positive",
+            "request_verification",
+        ]
+    );
+}
 
 // ---------------------------------------------------------------------------
 // `observation_transition` — exactly the six §15.1 edges
