@@ -133,7 +133,7 @@ db-migrate:
     src=crates/vf-db/migrations
     if [ ! -d "$src" ] || [ -z "$(find "$src" -maxdepth 1 -name '*.sql' -print -quit)" ]; then
       echo "==> no migrations: ${src} is absent or holds no .sql file."
-      echo "    Task C1 owns the control schema and the tenant template, so until it"
+      echo "    Task C3 owns the control schema and the tenant template, so until it"
       echo "    lands the migration set is empty and applying it is a no-op."
       exit 0
     fi
@@ -194,7 +194,7 @@ db-template:
       echo "==> applying ${src}"
       sqlx migrate run --source "$src" --database-url "$template_url"
     else
-      echo "==> no migrations yet (task C1); the template is an empty database"
+      echo "==> no migrations yet (task C3); the template is an empty database"
     fi
 
     echo "==> regenerating .sqlx/"
