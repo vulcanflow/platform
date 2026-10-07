@@ -490,6 +490,16 @@ pub fn observation_transition(
 ///
 /// Total function, so there is no error case: §15.1 draws an edge for all three
 /// outcomes.
+///
+/// **Caller obligation.** `prior` must be a state that
+/// [`observation_transition`] can leave by
+/// [`ObservationEvent::RequestVerification`] — that is, one of the states in
+/// which a verification can have been requested. The function does not check
+/// this: it trusts `verification_runs.prior_observation_state`, which only that
+/// transition writes. Passing any other state, for example
+/// [`ObservationState::FalsePositive`], would let a `NotDetected` outcome
+/// overwrite a recorded false-positive decision with
+/// [`ObservationState::Fixed`].
 #[must_use]
 pub fn apply_verification(
     prior: ObservationState,
@@ -536,7 +546,10 @@ pub struct UnitSummary {
     pub outcome_class: Option<OutcomeClass>,
     /// Whether the artifact ingestion this unit requires has completed (§8.2
     /// "required artifact ingestion complete"). A unit that produces no
-    /// artifact — a skip, for instance — sets this `true`.
+    /// artifact sets this `true`. [`pipeline_outcome`] ignores it for a
+    /// [`WorkUnitStatus::Skipped`] unit, which never executed and so has no
+    /// artifact to wait for; a summary built with `false` for a skip cannot
+    /// hold the run open.
     pub required_ingestion_complete: bool,
 }
 
@@ -559,6 +572,14 @@ impl UnitSummary {
             outcome_class: Some(outcome_class),
             required_ingestion_complete: true,
         }
+    }
+
+    /// Whether this unit leaves no artifact ingestion outstanding.
+    ///
+    /// A skipped unit never executed, so it has nothing to ingest whatever its
+    /// flag says (§8.2: a skipped branch is terminal with a recorded reason).
+    const fn ingestion_settled(&self) -> bool {
+        matches!(self.status, WorkUnitStatus::Skipped) || self.required_ingestion_complete
     }
 }
 
@@ -619,7 +640,7 @@ pub fn pipeline_outcome(
     if units.iter().any(|unit| !unit.status.is_terminal()) {
         return None;
     }
-    if units.iter().any(|unit| !unit.required_ingestion_complete) {
+    if units.iter().any(|unit| !unit.ingestion_settled()) {
         return None;
     }
     // A terminal unit with no recorded outcome class is an incomplete durable
@@ -628,9 +649,12 @@ pub fn pipeline_outcome(
         return None;
     }
 
+    // Compared directly rather than through `outcome_consumes`: §8.2 state
+    // derivation must not move if a §17.3 allowance ruling ever changes which
+    // classes consume.
     let successes = units
         .iter()
-        .filter(|unit| unit.outcome_class.is_some_and(outcome_consumes))
+        .filter(|unit| unit.outcome_class == Some(OutcomeClass::Success))
         .count();
     if successes == units.len() {
         // Covers the empty slice: a graph that emitted no candidate is

@@ -43,11 +43,21 @@ use serde::ser::{SerializeStruct, Serializer};
 use crate::ids::TargetId;
 use crate::state::{IllegalTransition, ObservationEvent, ObservationState};
 
+/// Expands to the full `type` URI for one slug, at compile time.
+///
+/// The namespace literal is written here and nowhere else, so
+/// [`ERROR_TYPE_BASE`] and every [`Problem::type_uri`] arm cannot drift apart.
+macro_rules! error_type {
+    ($slug:literal) => {
+        concat!("https://vulcanflow.io/errors/", $slug)
+    };
+}
+
 /// The namespace every `type` URI in this catalogue lives under (§A3.8).
 ///
 /// The URIs are **stable identifiers, not fetchable documentation**: clients
 /// match on them, so a value here may never change once released.
-pub const ERROR_TYPE_BASE: &str = "https://vulcanflow.io/errors/";
+pub const ERROR_TYPE_BASE: &str = error_type!("");
 
 /// The fixed `detail` of [`Problem::Internal`].
 ///
@@ -343,27 +353,23 @@ pub enum Problem {
 impl Problem {
     /// The stable `type` URI of this variant (§A3.8).
     ///
-    /// Always `[ERROR_TYPE_BASE]` followed by the variant's slug. These strings
-    /// are part of the public API contract: clients match on them, so changing
-    /// one is a breaking change.
+    /// Always [`ERROR_TYPE_BASE`] followed by the variant's slug, built from the
+    /// same literal. These strings are part of the public API contract: clients
+    /// match on them, so changing one is a breaking change.
     #[must_use]
     pub const fn type_uri(&self) -> &'static str {
         match self {
-            Self::AuthorizationRequired { .. } => {
-                "https://vulcanflow.io/errors/authorization-required"
-            }
-            Self::TargetAllowanceExceeded { .. } => {
-                "https://vulcanflow.io/errors/target-allowance-exceeded"
-            }
-            Self::GraphInvalid { .. } => "https://vulcanflow.io/errors/graph-invalid",
-            Self::IdempotencyConflict { .. } => "https://vulcanflow.io/errors/idempotency-conflict",
-            Self::IllegalTransition { .. } => "https://vulcanflow.io/errors/illegal-transition",
-            Self::ChallengeFailed { .. } => "https://vulcanflow.io/errors/challenge-failed",
-            Self::NotFound { .. } => "https://vulcanflow.io/errors/not-found",
-            Self::Forbidden { .. } => "https://vulcanflow.io/errors/forbidden",
-            Self::TenantSuspended { .. } => "https://vulcanflow.io/errors/tenant-suspended",
-            Self::RateLimited { .. } => "https://vulcanflow.io/errors/rate-limited",
-            Self::Internal { .. } => "https://vulcanflow.io/errors/internal",
+            Self::AuthorizationRequired { .. } => error_type!("authorization-required"),
+            Self::TargetAllowanceExceeded { .. } => error_type!("target-allowance-exceeded"),
+            Self::GraphInvalid { .. } => error_type!("graph-invalid"),
+            Self::IdempotencyConflict { .. } => error_type!("idempotency-conflict"),
+            Self::IllegalTransition { .. } => error_type!("illegal-transition"),
+            Self::ChallengeFailed { .. } => error_type!("challenge-failed"),
+            Self::NotFound { .. } => error_type!("not-found"),
+            Self::Forbidden { .. } => error_type!("forbidden"),
+            Self::TenantSuspended { .. } => error_type!("tenant-suspended"),
+            Self::RateLimited { .. } => error_type!("rate-limited"),
+            Self::Internal { .. } => error_type!("internal"),
         }
     }
 
