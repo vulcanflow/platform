@@ -197,7 +197,13 @@ fn outcome_class_values_are_pinned_to_the_contract() {
     assert_eq!(
         OutcomeClass::VALUES,
         &[
-            "success", "target", "platform", "tool", "scope", "limit", "cancelled",
+            "success",
+            "target",
+            "platform",
+            "tool",
+            "scope",
+            "limit",
+            "cancelled",
         ]
     );
 }
@@ -277,7 +283,12 @@ fn requested_observation_state_values_are_pinned_to_the_a3_8_request_body() {
     // VFL-235 ruling: `state: acknowledged|fix_pending|accepted_risk|false_positive`.
     assert_eq!(
         RequestedObservationState::VALUES,
-        &["acknowledged", "fix_pending", "accepted_risk", "false_positive"]
+        &[
+            "acknowledged",
+            "fix_pending",
+            "accepted_risk",
+            "false_positive",
+        ]
     );
 }
 
@@ -294,7 +305,10 @@ fn requested_observation_state_maps_to_the_ruled_observation_event() {
     assert_eq!(ObservationEvent::from(R::Acknowledged), E::Acknowledge);
     assert_eq!(ObservationEvent::from(R::FixPending), E::StartFix);
     assert_eq!(ObservationEvent::from(R::AcceptedRisk), E::AcceptRisk);
-    assert_eq!(ObservationEvent::from(R::FalsePositive), E::DecideFalsePositive);
+    assert_eq!(
+        ObservationEvent::from(R::FalsePositive),
+        E::DecideFalsePositive
+    );
 }
 
 #[test]
@@ -372,7 +386,7 @@ fn admitted_events_is_derived_from_observation_transition() {
             E::StartFix,
             E::DecideFalsePositive,
             E::AcceptRisk,
-            E::RequestVerification
+            E::RequestVerification,
         ]
     );
     assert_eq!(
@@ -381,12 +395,16 @@ fn admitted_events_is_derived_from_observation_transition() {
             E::StartFix,
             E::DecideFalsePositive,
             E::AcceptRisk,
-            E::RequestVerification
+            E::RequestVerification,
         ]
     );
     assert_eq!(
         S::FixPending.admitted_events(),
-        vec![E::DecideFalsePositive, E::AcceptRisk, E::RequestVerification]
+        vec![
+            E::DecideFalsePositive,
+            E::AcceptRisk,
+            E::RequestVerification,
+        ]
     );
     assert_eq!(S::Verifying.admitted_events(), Vec::new());
     assert_eq!(S::Fixed.admitted_events(), Vec::new());
