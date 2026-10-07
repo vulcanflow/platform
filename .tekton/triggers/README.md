@@ -39,31 +39,55 @@ Apply the reviewed revision, not a working copy:
 
 ```sh
 kubectl apply -k 'https://github.com/vulcanflow/platform//.tekton/triggers?ref=<commit>'
+kubectl -n vf-ci rollout status deploy/el-vf-platform
 ```
 
 ## 2. Webhook secret
 
 One value, used in the cluster Secret `vf-ci/vf-ci-webhook` (key `secret`)
 and in the GitHub webhook. It never goes on a command line, into this
-repository or into issue text. GitHub compares the exact bytes, so the file
+repository or into issue text. GitHub compares the exact bytes, so the value
 must not end in a newline.
 
+First check whether the Secret already exists. `describe` shows key names and
+sizes, never the value:
+
 ```sh
-secret_file=$(mktemp)    # mode 0600
+kubectl -n vf-ci describe secret vf-ci-webhook
+```
+
+**It exists.** Do not generate a new value; the webhook must carry the value
+the Secret already holds. Under `Data`, key `secret` must show `64 bytes`
+(the length of `openssl rand -hex 32`). No `secret` key, or `65 bytes` (a
+trailing newline), means no signature can ever match: rotate (below). Otherwise go on to step 3, and in step 4 enter the value the
+Secret was created from.
+
+**It does not exist** (`NotFound`). Generate the value and create the Secret.
+If step 1 has not run yet, create the namespace first
+(`kubectl create namespace vf-ci`); step 1 then adopts it.
+
+```sh
+secret_file=$(mktemp "${TMPDIR:-/tmp}/vf-ci-webhook.XXXXXX")    # mode 0600
 openssl rand -hex 32 | tr -d '\n' > "$secret_file"
 kubectl -n vf-ci create secret generic vf-ci-webhook \
   --from-file=secret="$secret_file"
-kubectl -n vf-ci rollout status deploy/el-vf-platform
 ```
 
 Keep `$secret_file` until the webhook is registered in step 4; that step reads
-and then deletes it. The Secret can be created before step 1 if `vf-ci` is
-created first (`kubectl create namespace vf-ci`); step 1 then adopts the
-namespace, and the `rollout status` check runs after step 1.
+and then deletes it. If the shell is lost before then, the variable is gone but
+the file is not: rotate, and delete the leftover `vf-ci-webhook.*` file.
 
-If the file is lost, rotate rather than decoding the value back out of the
-cluster Secret: generate a new value, replace the Secret, and put the new value
-in the webhook's Secret field.
+**Rotate** when the value is lost, the key or size is wrong, or the value may
+have leaked. Do not decode the value back out of the cluster Secret. Generate a
+new `$secret_file` as above, replace the Secret in place, then do step 4 with
+the new value (edit the existing webhook's Secret field rather than adding a
+webhook):
+
+```sh
+kubectl -n vf-ci create secret generic vf-ci-webhook \
+  --from-file=secret="$secret_file" --dry-run=client -o yaml |
+  kubectl -n vf-ci replace -f -
+```
 
 ## 3. Route
 
@@ -86,8 +110,8 @@ The longer prefix wins over `/`, so aether-ci keeps all its other traffic.
 The EventListener accepts events on any path, so no rewrite is needed. The
 backend is in another namespace; `route.yaml` is the grant that allows it.
 
-Check it from anywhere (a GET has no body, so the listener answers 400 and
-names itself):
+Check it from anywhere (a GET has no body, so the listener answers with an
+error that names it):
 
 ```sh
 curl -sk https://zozotk.go.ro/vulcanflow/platform
@@ -104,11 +128,17 @@ On `vulcanflow/platform`, Settings, Webhooks, Add webhook. Register it on the
 repository, not the organization: an organization webhook also sends the
 private repositories' events, over the unverified TLS described below.
 
+Exactly one webhook may post to this URL. If the organization already has one
+for it (Organization settings, Webhooks), delete that one when you add the
+repository webhook. Left in place, it keeps sending the private repositories'
+events, and with the same secret every `vulcanflow/platform` event arrives
+twice and starts two runs.
+
 | Field | Value |
 | --- | --- |
 | Payload URL | `https://zozotk.go.ro/vulcanflow/platform` |
 | Content type | `application/json` (the filters and bindings read a JSON body) |
-| Secret | the contents of `$secret_file` from step 2 (`cat "$secret_file"`) |
+| Secret | the value in the cluster Secret: the contents of `$secret_file` from step 2 (`cat "$secret_file"`), or, if the Secret already existed, the value it was created from |
 | SSL verification | **Disable** (see below) |
 | Events | Let me select individual events: Pull requests, Pushes |
 | Active | on |
@@ -126,6 +156,16 @@ delivery succeeds and nothing runs. GitHub marks it successful whichever
 listener answers, so open the delivery's Response tab: the body must name
 `"eventListener":"vf-platform"`. `aether-ci` there means step 3 is not in
 effect.
+
+The listener answers 202 to every delivery it accepts, including one whose
+signature does not match, so neither GitHub nor the response body shows a
+wrong secret. After the first push or pull-request delivery, check the
+listener log; a match logged for that delivery means the webhook and the Secret
+hold different values, or the key is wrong (step 2):
+
+```sh
+kubectl -n vf-ci logs deploy/el-vf-platform | grep -iE 'signature|secret'
+```
 
 **Why SSL verification is off.** `zozotk.go.ro` is a dynamic-DNS name, so no
 certificate can be issued for it; the Gateway presents the `zozoo.io`
@@ -157,7 +197,8 @@ kubectl -n vf-ci get pipelineruns
 
 ## Roll back
 
-Delete the webhook on `vulcanflow/platform`, remove the rule from the
+Delete the webhook on `vulcanflow/platform` (and any organization webhook that
+posts to `https://zozotk.go.ro/vulcanflow/platform`), remove the rule from the
 aether-ci HTTPRoute, then
 
 ```sh

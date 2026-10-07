@@ -7,8 +7,8 @@
 # creates nothing. The `cel` interceptor that follows only narrows which signed
 # events start a run.
 #
-# The Secret is not in this directory. The owner creates it in the cluster
-# from a value generated for the webhook; see README.md.
+# The Secret is not in this directory. The owner creates it in the cluster, or
+# has already created it, from the value set on the webhook; see README.md.
 apiVersion: triggers.tekton.dev/v1beta1
 kind: EventListener
 metadata:
