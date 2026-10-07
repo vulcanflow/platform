@@ -143,7 +143,9 @@ pub struct TransitionHints {
     /// The refused event.
     pub attempted: ObservationEvent,
     /// Every event §15.1 admits from `from`. Empty for a terminal state, which
-    /// tells the caller to stop rather than to retry differently.
+    /// tells the caller to stop rather than to retry differently, and for
+    /// `verifying`, where only the running verification can move the
+    /// observation on.
     pub admitted: Vec<ObservationEvent>,
 }
 

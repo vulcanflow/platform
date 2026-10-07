@@ -9,9 +9,11 @@
 //!    which is why serde goes through the same two functions rather than a
 //!    second `rename_all` derive that could drift from them.
 //! 2. **Transitions are total functions and a transition absent from the TDD is
-//!    unrepresentable** (§A3.2). [`observation_transition`] has one arm per edge
-//!    of the §15.1 diagram and no catch-all that would admit a new edge by
-//!    accident.
+//!    unrepresentable** (§A3.2). Each edge of the §15.1 diagram is encoded
+//!    exactly once: the six caller-requested edges in
+//!    [`observation_transition`], the three exits from `Verifying` in
+//!    [`apply_verification`]. Neither has a catch-all that would admit a new
+//!    edge by accident.
 //! 3. **The policy is one exhaustive `match` with no wildcard arm** (§4.2), so
 //!    adding a [`Role`] or an [`Action`] fails compilation until the policy
 //!    decides the new cells.
@@ -243,8 +245,10 @@ status_enum! {
         FalsePositive => "false_positive",
         /// The risk was accepted. §6.3 lists this value and §A3.8's
         /// `POST /v1/findings/{id}/state` accepts it, but the §15.1 diagram
-        /// draws no edge to it, so [`observation_transition`] admits none. See
-        /// the module note on the open contract gap.
+        /// draws no edge to it, so neither [`observation_transition`] nor
+        /// [`apply_verification`] can reach it. That is an open contract gap
+        /// between §6.3 and §15.1; adding the edge is a TDD change, not a code
+        /// one.
         AcceptedRisk => "accepted_risk",
     }
 }
@@ -394,13 +398,16 @@ impl ObservationState {
 }
 
 status_enum! {
-    /// What happened to an observation, as one edge label of the §15.1 diagram.
+    /// A caller-requested change to an observation, as one edge label of the
+    /// §15.1 diagram.
     ///
-    /// There is deliberately no `Inconclusive` event: §15.1 calls inconclusive a
-    /// verification outcome whose effect is to retain the *previous* state,
-    /// which [`observation_transition`] cannot know from `from` alone — it is
-    /// always [`ObservationState::Verifying`] by then. That restoration is
-    /// [`apply_verification`]'s job.
+    /// Verification results are deliberately **not** events. The three exits
+    /// from [`ObservationState::Verifying`] are [`VerificationOutcome`]s that
+    /// only a completed verification run produces, and
+    /// [`apply_verification`] is their single encoding. Keeping them out of
+    /// this enum means no request body can deserialize into "mark this fixed",
+    /// and the admitted alternatives returned with a 409 never offer a caller
+    /// an event it is not allowed to send.
     ObservationEvent {
         /// §15.1 "acknowledge this observation".
         Acknowledge => "acknowledge",
@@ -410,12 +417,6 @@ status_enum! {
         DecideFalsePositive => "decide_false_positive",
         /// §15.1 "request verification".
         RequestVerification => "request_verification",
-        /// §15.1 "eligible check completed; issue not detected", i.e.
-        /// [`VerificationOutcome::NotDetected`].
-        VerifiedNotDetected => "verified_not_detected",
-        /// §15.1 "issue still present", i.e.
-        /// [`VerificationOutcome::StillPresent`].
-        VerifiedStillPresent => "verified_still_present",
     }
 }
 
@@ -433,21 +434,24 @@ pub struct IllegalTransition {
     pub event: ObservationEvent,
 }
 
-/// Applies one §15.1 edge to one observation.
+/// Applies one caller-requested §15.1 edge to one observation.
 ///
-/// The single encoding of the §15.1 diagram, and a total function: every
-/// `(from, event)` pair either names an edge of the diagram or is an
-/// [`IllegalTransition`]. There is **no wildcard arm** — every non-terminal
-/// state matches exhaustively over [`ObservationEvent`], so adding an event
-/// variant fails compilation until the diagram says where it leads from each
-/// state. The three terminal states admit nothing by construction: §15.1 ends
-/// there and a later scan produces a fresh observation rather than reviving
-/// this one.
+/// The single encoding of the six §15.1 edges a caller can ask for, and a total
+/// function: every `(from, event)` pair either names one of those edges or is
+/// an [`IllegalTransition`]. There is **no wildcard arm** — every state that
+/// admits an event matches exhaustively over [`ObservationEvent`], so adding an
+/// event variant fails compilation until the diagram says where it leads from
+/// each state.
+///
+/// [`ObservationState::Verifying`] admits no event: only a completed
+/// verification run moves it on, through [`apply_verification`]. The three
+/// terminal states admit nothing either, because §15.1 ends there and a later
+/// scan produces a fresh observation rather than reviving this one.
 ///
 /// # Errors
 ///
-/// [`IllegalTransition`] when §15.1 draws no edge for the pair. §A3.8 maps that
-/// to HTTP 409 and
+/// [`IllegalTransition`] when §15.1 draws no caller-requested edge for the
+/// pair. §A3.8 maps that to HTTP 409 and
 /// [`Problem::IllegalTransition`](crate::problem::Problem::IllegalTransition).
 pub fn observation_transition(
     from: ObservationState,
@@ -463,28 +467,20 @@ pub fn observation_transition(
             E::StartFix => Ok(S::FixPending),
             E::DecideFalsePositive => Ok(S::FalsePositive),
             E::RequestVerification => Ok(S::Verifying),
-            E::VerifiedNotDetected | E::VerifiedStillPresent => illegal,
         },
         S::Acknowledged | S::FixPending => match event {
             E::RequestVerification => Ok(S::Verifying),
-            E::Acknowledge
-            | E::StartFix
-            | E::DecideFalsePositive
-            | E::VerifiedNotDetected
-            | E::VerifiedStillPresent => illegal,
+            E::Acknowledge | E::StartFix | E::DecideFalsePositive => illegal,
         },
-        S::Verifying => match event {
-            E::VerifiedNotDetected => Ok(S::Fixed),
-            E::VerifiedStillPresent => Ok(S::New),
-            E::Acknowledge | E::StartFix | E::DecideFalsePositive | E::RequestVerification => {
-                illegal
-            }
-        },
-        S::Fixed | S::FalsePositive | S::AcceptedRisk => illegal,
+        S::Verifying | S::Fixed | S::FalsePositive | S::AcceptedRisk => illegal,
     }
 }
 
 /// Resolves a completed verification run into an observation state (§15.1).
+///
+/// The single encoding of the three §15.1 exits from
+/// [`ObservationState::Verifying`]; [`observation_transition`] admits none of
+/// them, so no caller-supplied event can reach [`ObservationState::Fixed`].
 ///
 /// `prior` is the state the observation held **before** it entered
 /// [`ObservationState::Verifying`] — §A4 persists it as
