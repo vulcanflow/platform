@@ -12,6 +12,14 @@
 //!   template CRUD own; report generate; billing read; no member
 //!   management.
 //!
+//! Two cells are not from §4.2 directly: `Action::AuthorizationManualReview`
+//! and `Action::AuthorizationRevoke` are §A3.8 admin-only authorization
+//! writes, added by the architect ruling on
+//! [VFL-235](/VFL/issues/VFL-235#document-decision) §3. Revocation cancels
+//! every pending and active run on the target (§A3.8), and §4.2 gives
+//! `member` only "cancel own", so the ruling derives `member: false` for
+//! both from that rather than stating the cell itself.
+//!
 //! Two cells are this test's own reading of "admin has full control of the
 //! tenant" (the [`Role::Admin`] doc comment) rather than a cell §4.2 spells
 //! out verbatim, and are called out the way the skeleton calls out its own
@@ -70,6 +78,11 @@ fn expected(role: Role, action: Action) -> bool {
 
         (R::Admin, A::MemberManage) => true,
         (R::Member, A::MemberManage) => false,
+
+        (R::Admin, A::AuthorizationManualReview) => true,
+        (R::Member, A::AuthorizationManualReview) => false,
+        (R::Admin, A::AuthorizationRevoke) => true,
+        (R::Member, A::AuthorizationRevoke) => false,
     }
 }
 
@@ -140,4 +153,20 @@ fn billing_is_full_for_admin_and_read_only_for_member() {
 fn only_admin_manages_members() {
     assert!(allowed(Role::Admin, Action::MemberManage));
     assert!(!allowed(Role::Member, Action::MemberManage));
+}
+
+#[test]
+fn only_admin_does_manual_review_and_authorization_revocation() {
+    // Wire values quoted from the VFL-235 ruling §3, independently of
+    // `Action::as_str`.
+    assert_eq!(
+        Action::AuthorizationManualReview.as_str(),
+        "authorization_manual_review"
+    );
+    assert_eq!(Action::AuthorizationRevoke.as_str(), "authorization_revoke");
+
+    assert!(allowed(Role::Admin, Action::AuthorizationManualReview));
+    assert!(!allowed(Role::Member, Action::AuthorizationManualReview));
+    assert!(allowed(Role::Admin, Action::AuthorizationRevoke));
+    assert!(!allowed(Role::Member, Action::AuthorizationRevoke));
 }

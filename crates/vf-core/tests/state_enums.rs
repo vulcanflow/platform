@@ -1,7 +1,12 @@
-//! T1a (VFL-112, covers C1 / VFL-14): status enums and the §15.1 observation
-//! state machine of `vf-core::state`.
+//! T1a (VFL-112, covers C1 / VFL-14): status enums and the observation state
+//! machine of `vf-core::state`.
 //!
-//! Architecture §A3.2, TDD §6.3 / §8.2 / §15.1 (VFL-8#document-architecture).
+//! Architecture §A3.2 (VFL-8#document-architecture), TDD §6.3 / §8.2 / §10.4
+//! / §15.1, and the architect ruling on
+//! [VFL-235](/VFL/issues/VFL-235#document-decision), which corrects the
+//! §15.1 diagram's edge set against §10.4, §6.3 and §A3.8 and is the
+//! recorded decision that authorizes the edge-set and `Action` changes
+//! below.
 //!
 //! * Every `status_enum!` type: `as_str`/`from_str` round-trip over every
 //!   declared variant, serde agrees with `as_str` (via `tests/support`, since
@@ -9,8 +14,9 @@
 //!   pull request), and an unknown string is a hard [`UnknownValue`] error
 //!   naming the enum and listing every accepted value — never a silent
 //!   default (§6.3).
-//! * [`observation_transition`] admits exactly the six edges the §15.1
-//!   diagram draws and rejects every other `(state, event)` pair.
+//! * [`observation_transition`] admits exactly the twelve edges ruled on
+//!   VFL-235 and rejects every other `(state, event)` pair. The §15.1
+//!   diagram is corrected by that ruling, not narrowed by it.
 //! * [`apply_verification`] resolves a verification outcome against every
 //!   possible prior state.
 //! * [`outcome_consumes`] is true only for [`OutcomeClass::Success`].
@@ -23,13 +29,19 @@
 //!   wire-string rename. `Action` has no such assertion: §4.2 and
 //!   architecture §A3.2 give it only a non-exhaustive illustrative comment,
 //!   not a complete ordered variant list or any wire string to quote.
+//! * [`RequestedObservationState`] round-trips the same way and is pinned to
+//!   its four §A3.8 request-body literals; its `From` conversion to
+//!   [`ObservationEvent`] matches the VFL-235 four-way mapping, and
+//!   `from_str` rejects `new`, `verifying` and `fixed` because no request
+//!   body can name an event-only or exit-only state.
 
 mod support;
 
 use vf_core::state::{
     Action, IllegalTransition, ObservationEvent, ObservationState, OutcomeClass, PipelineState,
-    ReportState, ReservationState, Role, UnknownValue, VerificationOutcome, WorkUnitStatus,
-    apply_verification, observation_transition, outcome_consumes,
+    ReportState, RequestedObservationState, ReservationState, Role, UnknownValue,
+    VerificationOutcome, WorkUnitStatus, apply_verification, observation_transition,
+    outcome_consumes,
 };
 
 /// Generates the shared round-trip and unknown-value tests for one
@@ -118,6 +130,11 @@ status_enum_tests!(report_state, ReportState, "ReportState");
 status_enum_tests!(role, Role, "Role");
 status_enum_tests!(action, Action, "Action");
 status_enum_tests!(observation_event, ObservationEvent, "ObservationEvent");
+status_enum_tests!(
+    requested_observation_state,
+    RequestedObservationState,
+    "RequestedObservationState"
+);
 
 // ---------------------------------------------------------------------------
 // Literal wire values, pinned from the contract (VFL-236, VFL-233 MEDIUM-2)
@@ -238,26 +255,70 @@ fn role_values_are_pinned_to_the_contract() {
 }
 
 #[test]
-fn observation_event_values_are_pinned_to_the_current_four() {
-    // Per VFL-236: pin the current four §15.1 caller-requested events.
-    // Cortana's VFL-235 ruling may add a fifth; that ruling is what
-    // authorizes changing this assertion, not this test pack.
+fn observation_event_values_are_pinned_to_the_ruled_five() {
+    // Per the VFL-235 ruling: `AcceptRisk` ("accept_risk") is a fifth
+    // caller-requested event, inserted before `RequestVerification` in the
+    // ruled `ObservationEvent::ALL` order.
     assert_eq!(
         ObservationEvent::VALUES,
         &[
             "acknowledge",
             "start_fix",
             "decide_false_positive",
+            "accept_risk",
             "request_verification",
         ]
     );
 }
 
+#[test]
+fn requested_observation_state_values_are_pinned_to_the_a3_8_request_body() {
+    // §A3.8 `POST /v1/findings/{id}/state` body, quoted verbatim in the
+    // VFL-235 ruling: `state: acknowledged|fix_pending|accepted_risk|false_positive`.
+    assert_eq!(
+        RequestedObservationState::VALUES,
+        &["acknowledged", "fix_pending", "accepted_risk", "false_positive"]
+    );
+}
+
 // ---------------------------------------------------------------------------
-// `observation_transition` — exactly the six §15.1 edges
+// `From<RequestedObservationState> for ObservationEvent` — the VFL-235
+// four-way mapping
 // ---------------------------------------------------------------------------
 
-/// The complete §15.1 edge set, as the acceptance criteria name it.
+#[test]
+fn requested_observation_state_maps_to_the_ruled_observation_event() {
+    use ObservationEvent as E;
+    use RequestedObservationState as R;
+
+    assert_eq!(ObservationEvent::from(R::Acknowledged), E::Acknowledge);
+    assert_eq!(ObservationEvent::from(R::FixPending), E::StartFix);
+    assert_eq!(ObservationEvent::from(R::AcceptedRisk), E::AcceptRisk);
+    assert_eq!(ObservationEvent::from(R::FalsePositive), E::DecideFalsePositive);
+}
+
+#[test]
+fn requested_observation_state_from_str_rejects_new_verifying_and_fixed() {
+    // §A3.8's request body can only name a caller-requested target state;
+    // `new`, `verifying` and `fixed` are an `ObservationState`'s own
+    // event-only or exit-only values and no request body can name them
+    // (VFL-235 ruling §2). `RequestVerification` is reachable only through
+    // `POST /v1/findings/{id}/verify`, never through this enum.
+    for value in ["new", "verifying", "fixed"] {
+        let err = value.parse::<RequestedObservationState>().unwrap_err();
+        assert_eq!(err.enum_name, "RequestedObservationState");
+        assert_eq!(err.value, value);
+        assert_eq!(err.expected, RequestedObservationState::VALUES);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `observation_transition` — exactly the twelve edges ruled on VFL-235
+// ---------------------------------------------------------------------------
+
+/// The complete ruled edge set (VFL-235 decision, table in §1): the §15.1
+/// diagram's six edges plus the six `accepted_risk`/backfilled edges that
+/// ruling adds against §10.4, §6.3 and §A3.8.
 fn admitted_edges() -> Vec<(ObservationState, ObservationEvent, ObservationState)> {
     use ObservationEvent as E;
     use ObservationState as S;
@@ -265,15 +326,22 @@ fn admitted_edges() -> Vec<(ObservationState, ObservationEvent, ObservationState
         (S::New, E::Acknowledge, S::Acknowledged),
         (S::New, E::StartFix, S::FixPending),
         (S::New, E::DecideFalsePositive, S::FalsePositive),
+        (S::New, E::AcceptRisk, S::AcceptedRisk),
         (S::New, E::RequestVerification, S::Verifying),
+        (S::Acknowledged, E::StartFix, S::FixPending),
+        (S::Acknowledged, E::DecideFalsePositive, S::FalsePositive),
+        (S::Acknowledged, E::AcceptRisk, S::AcceptedRisk),
         (S::Acknowledged, E::RequestVerification, S::Verifying),
+        (S::FixPending, E::DecideFalsePositive, S::FalsePositive),
+        (S::FixPending, E::AcceptRisk, S::AcceptedRisk),
         (S::FixPending, E::RequestVerification, S::Verifying),
     ]
 }
 
 #[test]
-fn observation_transition_admits_exactly_the_six_diagram_edges() {
+fn observation_transition_admits_exactly_the_twelve_ruled_edges() {
     let edges = admitted_edges();
+    assert_eq!(edges.len(), 12, "VFL-235 rules exactly twelve edges");
 
     for (from, event, to) in &edges {
         assert_eq!(observation_transition(*from, *event), Ok(*to));
@@ -303,16 +371,22 @@ fn admitted_events_is_derived_from_observation_transition() {
             E::Acknowledge,
             E::StartFix,
             E::DecideFalsePositive,
+            E::AcceptRisk,
             E::RequestVerification
         ]
     );
     assert_eq!(
         S::Acknowledged.admitted_events(),
-        vec![E::RequestVerification]
+        vec![
+            E::StartFix,
+            E::DecideFalsePositive,
+            E::AcceptRisk,
+            E::RequestVerification
+        ]
     );
     assert_eq!(
         S::FixPending.admitted_events(),
-        vec![E::RequestVerification]
+        vec![E::DecideFalsePositive, E::AcceptRisk, E::RequestVerification]
     );
     assert_eq!(S::Verifying.admitted_events(), Vec::new());
     assert_eq!(S::Fixed.admitted_events(), Vec::new());
