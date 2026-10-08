@@ -172,12 +172,21 @@ kubectl -n vf-ci logs deploy/el-vf-platform | grep -iE 'signature|secret'
 
 **Why SSL verification is off.** The Gateway presents its `*.zozoo.io`
 certificate, which does not cover `zozotk.go.ro`, so GitHub cannot verify the
-connection. Deliveries still travel over TLS, and the HMAC signature still
-authenticates each one. With verification off, someone who can intercept
-traffic between GitHub and the cluster can read deliveries (the repository is
-public, so they hold nothing secret) and replay a captured delivery. A replay
-re-runs CI for a commit that already exists; without the secret nobody can
-forge a new delivery.
+connection. The owner chose to keep verification off on 2026-10-08 (VFL-124),
+knowing the two ways to turn it on below. Deliveries still travel over TLS, and
+the HMAC signature still authenticates each one. With verification off, someone
+who can intercept traffic between GitHub and the cluster can read deliveries
+(the repository is public, so they hold nothing secret) and replay a captured
+delivery. A replay re-runs CI for a commit that already exists; without the
+secret nobody can forge a delivery or alter one.
+
+To turn verification on, the Payload URL needs a name that the presented
+certificate covers: a name under `zozoo.io` (a CNAME to `zozotk.go.ro`, which
+the existing wildcard certificate matches), or a certificate issued for
+`zozotk.go.ro` itself (for example Let's Encrypt HTTP-01 on port 80). Either
+one changes shared DNS or Gateway configuration, and the route from step 3
+must accept the new name. Then edit the webhook: the new Payload URL, SSL
+verification **Enable**. The Secret and the listener stay as they are.
 
 ## Check
 
