@@ -245,9 +245,20 @@ fn wake_bus_error_is_recoverable_is_true_only_for_lagged() {
     // L6 (VFL-428): every other variant is also non-recoverable, not just
     // `Closed` — `is_recoverable` must name `Lagged` specifically rather
     // than some broader "not a hard failure" rule.
-    assert!(!WakeBusError::InvalidTopic { reason: "empty".to_owned() }.is_recoverable());
-    assert!(!WakeBusError::InvalidBucketKey { reason: "empty".to_owned() }.is_recoverable());
-    assert!(!WakeBusError::InvalidQuota { reason: "zero rate".to_owned() }.is_recoverable());
+    let invalid_topic = WakeBusError::InvalidTopic {
+        reason: "empty".to_owned(),
+    };
+    assert!(!invalid_topic.is_recoverable());
+
+    let invalid_bucket_key = WakeBusError::InvalidBucketKey {
+        reason: "empty".to_owned(),
+    };
+    assert!(!invalid_bucket_key.is_recoverable());
+
+    let invalid_quota = WakeBusError::InvalidQuota {
+        reason: "zero rate".to_owned(),
+    };
+    assert!(!invalid_quota.is_recoverable());
 
     let payload_too_large = WakeBusError::PayloadTooLarge {
         size: MAX_WAKE_PAYLOAD_BYTES + 1,
@@ -255,7 +266,11 @@ fn wake_bus_error_is_recoverable_is_true_only_for_lagged() {
     };
     assert!(!payload_too_large.is_recoverable());
 
-    assert!(!WakeBusError::Backend { message: "connection refused".to_owned() }.is_recoverable());
+    let backend = WakeBusError::Backend {
+        message: "connection refused".to_owned(),
+    };
+    assert!(!backend.is_recoverable());
+
     assert!(!WakeBusError::Unsupported { operation: "recv" }.is_recoverable());
 }
 

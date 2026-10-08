@@ -373,7 +373,7 @@ fn artifact_key_accepts_exactly_the_byte_cap() {
         "a".repeat(255),
         "a".repeat(255),
         "a".repeat(254),
-        "a".repeat(1),
+        "a",
     );
     assert_eq!(raw.len(), MAX_ARTIFACT_KEY_BYTES);
     assert!(ArtifactKey::parse(&raw).is_ok());
@@ -403,10 +403,16 @@ fn artifact_key_rejects_one_byte_over_the_cap_via_legal_segments() {
         "a".repeat(2),
     );
     assert_eq!(raw.len(), MAX_ARTIFACT_KEY_BYTES + 1);
-    assert!(matches!(
-        ArtifactKey::parse(&raw),
-        Err(ArtifactStoreError::InvalidKey { .. })
-    ));
+    // L7 (VFL-428): the reason names the whole-key bound specifically, not
+    // just "a bound", so a future regression that reports the wrong limit
+    // still fails this test.
+    let err = ArtifactKey::parse(&raw).expect_err("a 1025-byte key must be refused");
+    match err {
+        ArtifactStoreError::InvalidKey { reason } => {
+            assert_eq!(reason, "longer than 1024 bytes");
+        }
+        other => panic!("expected InvalidKey, got {other:?}"),
+    }
 }
 
 #[test]
@@ -431,9 +437,7 @@ fn artifact_key_rejects_a_256_byte_segment_with_reason_not_echoing_segment() {
     // the rustdoc on the `_ if segment.len() > ...` arm in `ArtifactKey::parse`).
     let segment = "a".repeat(256);
     let raw = format!("tenant-a/{segment}");
-    let err = ArtifactKey::parse(&raw)
-        .err()
-        .expect("a 256-byte segment must be refused");
+    let err = ArtifactKey::parse(&raw).expect_err("a 256-byte segment must be refused");
     match err {
         ArtifactStoreError::InvalidKey { reason } => {
             assert_eq!(reason, "segment longer than 255 bytes");
