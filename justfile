@@ -335,9 +335,13 @@ clippy:
 # root `deny.toml` — §A5 extends there too (VFL-202 ruling). `--config` is
 # explicit so the policy is the root file regardless of how cargo-deny would
 # otherwise locate a default: one licence and advisory policy, not two.
+# `--manifest-path`, `--locked` and `--config` are top-level cargo-deny options
+# in the pinned 0.20, so they go before `check`, which rejects all three. A
+# relative `--config` resolves against the working directory, which is this
+# file's directory, not `fuzz/`.
 deny:
     cargo deny check
-    cargo deny --manifest-path fuzz/Cargo.toml --locked check --config deny.toml
+    cargo deny --manifest-path fuzz/Cargo.toml --locked --config deny.toml check
 
 audit:
     #!/usr/bin/env bash
