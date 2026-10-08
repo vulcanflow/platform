@@ -32,18 +32,15 @@
 //!   `sampled` and `dropped` so a consumer can tell a quiet node from a
 //!   throttled one (§9.3).
 
-use core::fmt;
-use core::str::FromStr;
-
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{
     BillingPeriodId, FindingId, FpDecisionId, NodeId, PipelineRunId, ReportId, ScanFingerprint,
     VerificationRunId, WorkUnitId,
 };
 use crate::state::{
-    ObservationState, OutcomeClass, PipelineState, ReportState, UnknownValue, VerificationOutcome,
+    ObservationState, OutcomeClass, PipelineState, ReportState, VerificationOutcome,
     WorkUnitStatus, status_enum,
 };
 

@@ -28,10 +28,7 @@
 //! `consumed`, `released`, `success|target|platform|tool|scope|limit|cancelled`)
 //! and §A3.3's typed event fields.
 
-use core::fmt;
-use core::str::FromStr;
-
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 /// A status string that is not a member of the enum it was parsed into.
 ///
@@ -56,6 +53,12 @@ pub struct UnknownValue {
 /// with `rename_all`, so the wire form and the database form cannot drift apart
 /// and the round-trip property of the acceptance criteria holds by construction
 /// rather than by a test that happens to cover both.
+///
+/// Every path in the body is absolute (`$crate::`, `::core::`, `::std::`,
+/// `::serde::`). `macro_rules!` resolves a bare name at the invocation site, so
+/// this keeps an expansion independent of the caller's imports: a module that
+/// invokes the macro needs no `use` for it, and a same-named type in that
+/// module cannot take the place of [`UnknownValue`].
 macro_rules! status_enum {
     (
         $(#[$meta:meta])*
@@ -68,8 +71,9 @@ macro_rules! status_enum {
         }
 
         impl $name {
-            /// The enum's name, used in [`UnknownValue`] and in log fields.
-            pub const TYPE_NAME: &'static str = stringify!($name);
+            /// The enum's name, used in
+            /// [`UnknownValue`](crate::state::UnknownValue) and in log fields.
+            pub const TYPE_NAME: &'static str = ::core::stringify!($name);
 
             /// Every variant, in declaration order.
             ///
@@ -90,19 +94,19 @@ macro_rules! status_enum {
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl ::core::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 f.write_str(self.as_str())
             }
         }
 
-        impl FromStr for $name {
-            type Err = UnknownValue;
+        impl ::core::str::FromStr for $name {
+            type Err = $crate::state::UnknownValue;
 
-            fn from_str(s: &str) -> Result<Self, Self::Err> {
+            fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
                 match s {
                     $($text => Ok(Self::$variant),)+
-                    other => Err(UnknownValue {
+                    other => Err($crate::state::UnknownValue {
                         enum_name: Self::TYPE_NAME,
                         value: other.to_owned(),
                         expected: Self::VALUES,
@@ -111,16 +115,24 @@ macro_rules! status_enum {
             }
         }
 
-        impl Serialize for $name {
-            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        impl ::serde::Serialize for $name {
+            fn serialize<S: ::serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> ::core::result::Result<S::Ok, S::Error> {
                 serializer.serialize_str(self.as_str())
             }
         }
 
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                let raw = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-                raw.parse().map_err(serde::de::Error::custom)
+        impl<'de> ::serde::Deserialize<'de> for $name {
+            fn deserialize<D: ::serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> ::core::result::Result<Self, D::Error> {
+                let raw =
+                    <::std::borrow::Cow<'de, str> as ::serde::Deserialize<'de>>::deserialize(
+                        deserializer,
+                    )?;
+                raw.parse().map_err(<D::Error as ::serde::de::Error>::custom)
             }
         }
     };
