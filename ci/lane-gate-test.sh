@@ -880,5 +880,86 @@ printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - u
 commit add-workflow-unpinned-root-gitattributes-binary
 check "unpinned UTF-8 workflow refused when *.yml binary makes git grep report it as binary" pins fail
 
+#   The cases below (102-109) are regression fixtures for VFL-122 review round 5
+#   (6cac319, CodeRabbit VFL-540 HIGH / Opus Reviewer VFL-541 M5): ls-tree
+#   C-quotes a path holding a byte above 0x7f, a double quote, a backslash or
+#   a control character. A quoted path starts with `"`, missed the
+#   .github/workflows/* pattern below, and its blob was never read, so a
+#   UTF-16 or UTF-32 workflow at such a path passed with an unpinned uses: on
+#   6cac319. 0068b1c reads both ls-tree listings with -z so every path
+#   matches as stored, whatever bytes it holds; none of these fixtures sets
+#   core.quotePath, so git's default (quoting on) stands.
+
+# --- 102. pins: a UTF-16 unpinned workflow at a non-ASCII filename (M5 reproduction): refused --
+setup
+mkdir -p .github/workflows
+F=$'.github/workflows/\xc3\xa9.yml'
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-16 > "$F"
+commit add-workflow-utf16-nonascii-filename
+check "UTF-16 unpinned workflow at a non-ASCII filename (M5 reproduction)" pins fail
+
+# --- 103. pins: a UTF-16 unpinned workflow at a filename holding a double quote: refused --
+setup
+mkdir -p .github/workflows
+F='.github/workflows/a"b.yml'
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-16 > "$F"
+commit add-workflow-utf16-quote-filename
+check "UTF-16 unpinned workflow at a filename holding a double quote" pins fail
+
+# --- 104. pins: a UTF-16 unpinned workflow under a non-ASCII directory: refused --
+setup
+D=$'.github/workflows/d\xc3\xa9'
+mkdir -p "$D"
+F="$D/ci.yml"
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-16 > "$F"
+commit add-workflow-utf16-nonascii-directory
+check "UTF-16 unpinned workflow under a non-ASCII directory" pins fail
+
+# --- 105. pins: a pinned UTF-8 workflow at a non-ASCII filename still passes: allowed --
+# Guards against a fix that refuses every quoted path instead of reading its blob.
+setup
+mkdir -p .github/workflows
+F=$'.github/workflows/\xc3\xa9.yml'
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > "$F"
+commit add-workflow-pinned-nonascii-filename
+check "pinned UTF-8 workflow at a non-ASCII filename passes" pins pass
+
+#   The cases below (106-109) are discretionary extras for the same review
+#   round (6cac319/0068b1c, M5): further encodings and quoted-byte variants
+#   the fix commit's own probe list called out, plus a pass-side boundary
+#   check pairing with case 103.
+
+# --- 106. pins: a UTF-32 unpinned workflow at a non-ASCII filename: refused --
+setup
+mkdir -p .github/workflows
+F=$'.github/workflows/\xc3\xa9.yml'
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-32 > "$F"
+commit add-workflow-utf32-nonascii-filename
+check "UTF-32 unpinned workflow at a non-ASCII filename" pins fail
+
+# --- 107. pins: a UTF-16 unpinned workflow at a filename holding a backslash: refused --
+setup
+mkdir -p .github/workflows
+F='.github/workflows/a\b.yml'
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-16 > "$F"
+commit add-workflow-utf16-backslash-filename
+check "UTF-16 unpinned workflow at a filename holding a backslash" pins fail
+
+# --- 108. pins: a UTF-16 unpinned workflow at a filename holding a tab: refused --
+setup
+mkdir -p .github/workflows
+F=$'.github/workflows/a\tb.yml'
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-16 > "$F"
+commit add-workflow-utf16-tab-filename
+check "UTF-16 unpinned workflow at a filename holding a tab" pins fail
+
+# --- 109. pins: a pinned UTF-8 workflow at a filename holding a double quote still passes: allowed --
+setup
+mkdir -p .github/workflows
+F='.github/workflows/a"b.yml'
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > "$F"
+commit add-workflow-pinned-quote-filename
+check "pinned UTF-8 workflow at a filename holding a double quote passes" pins pass
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
