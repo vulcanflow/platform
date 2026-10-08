@@ -144,13 +144,23 @@ pub fn list(prefix: &str) -> Result<Vec<String>> {
 /// The lexical half of the confinement in the module header. `.` segments
 /// are refused too — not because they escape, but because a name is meant to
 /// be the path a reader can open, and `./a` and `a` being one fixture under
-/// two names helps nobody.
+/// two names helps nobody. Empty segments (`a//b`, a trailing `/`) are
+/// refused for the same reason.
+///
+/// The segments are checked as written, split on `/`, because
+/// `Path::components` normalises `a/./b` and `a//b` to `a/b` and so cannot
+/// see either. The empty name is the tree itself: [`list`] passes it for the
+/// whole corpus, and [`load`] refuses it before it gets here.
 fn resolve(name: &str) -> Result<PathBuf> {
+    let as_written = name.is_empty()
+        || name
+            .split('/')
+            .all(|segment| !matches!(segment, "" | "." | ".."));
     let relative = Path::new(name);
-    if !relative
+    let normal = relative
         .components()
-        .all(|c| matches!(c, Component::Normal(_)))
-    {
+        .all(|c| matches!(c, Component::Normal(_)));
+    if !(as_written && normal) {
         return Err(Error::FixtureEscape(name.to_owned()));
     }
     Ok(root().join(relative))

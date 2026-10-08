@@ -1,6 +1,7 @@
-# Informational only. No task depends on this workflow: the authoritative gate
-# is `just gate` on a developer machine, and nothing is pushed on the strength
-# of a green run here.
+# Not the authoritative gate — `just gate` on a developer machine is, and it is
+# what has to pass before a push. This workflow is still merge-gating, though:
+# a red run blocks the merge and comes back to the author to fix, never a re-run
+# and never a bypass.
 #
 # It exists for one reason — the project is architecture agnostic, so the build
 # is run on amd64 and arm64 runners in parallel and a difference between them
@@ -32,7 +33,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # rust-toolchain.toml pins the channel, the components and the targets,
       # so there is nothing to configure here.
@@ -42,12 +43,33 @@ jobs:
           cargo --version
           rustup target list --installed
 
-      - uses: Swatinem/rust-cache@v2
+      # Both advisory roots ride in this cache: cargo-deny clones under
+      # `advisory-dbs` (deny.toml `db-path`), cargo-audit into `advisory-db`.
+      # Neither recipe runs offline, so each tool still fetches its clone forward
+      # on a hit; the cache saves the clone, never the advisory set. An exact key
+      # hit is not re-saved, so the restored copy ages until Cargo.lock or the
+      # toolchain moves the key, and the fetch covers the gap.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.arch }}
+          cache-directories: |
+            ~/.cargo/advisory-dbs
+            ~/.cargo/advisory-db
+
+      # What the cache brought back, before the tools fetch it forward: the
+      # commit each clone was restored at, or "not restored" on a miss.
+      - name: Show restored advisory databases
+        run: |
+          for db in ~/.cargo/advisory-db ~/.cargo/advisory-dbs/*/; do
+            if [ -d "$db/.git" ]; then
+              echo "$db: $(git -C "$db" log -1 --format='%h %cI')"
+            else
+              echo "$db: not restored"
+            fi
+          done
 
       - name: Install just, cargo-deny, cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2.87.25
         with:
           tool: just,cargo-deny@0.20.2,cargo-audit@0.22.2
 

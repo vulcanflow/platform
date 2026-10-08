@@ -16,7 +16,15 @@ serde = { workspace = true }
 idna = { workspace = true }
 url = { workspace = true }
 psl = { workspace = true }
+ipnet = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+
+# The test lane only; the pins themselves are reviewed once, in the workspace
+# manifest (§A5). `crates/vf-core/tests/scope_match.rs` (pack T2) carries the
+# property tests the C2 acceptance criteria ask for, and the test lane may not
+# edit a production manifest, so the wiring lands here.
+[dev-dependencies]
+proptest = { workspace = true }
 

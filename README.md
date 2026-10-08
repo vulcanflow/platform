@@ -214,10 +214,17 @@ committed. Crates do not declare versions of their own; they take
 table first and to this workspace second.
 
 There are no open deviations from the §A5 table: every row this workspace
-carries is the ratified one (§A5 revision 4). Where a pin's feature set is not
+carries is the ratified one (§A5 revision 5). Where a pin's feature set is not
 self-explanatory — the four TLS-bearing rows, and `testcontainers` — the reason
 it reads the way it does is recorded in a comment next to the pin, because the
 one-line edits that would undo it are not obviously wrong on sight.
+
+Every `uses:` in `.github/workflows/**` carries a full 40-character commit SHA,
+with the tag it resolved to as a trailing comment. A tag is mutable, so a
+re-point would silently change what CI executes. Resolve a new one with
+`git ls-remote <repo> 'refs/tags/<tag>^{}'`, falling back to `refs/tags/<tag>`
+when that is empty because the tag is lightweight, and keep the comment in step
+with the SHA.
 
 ## Deferred
 

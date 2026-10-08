@@ -120,7 +120,7 @@ pub enum Error {
 
     /// The `vf-db` migrations did not apply.
     ///
-    /// Until task C1 lands there are no migration files and the migration step
+    /// Until task C3 lands there are no migration files and the migration step
     /// applies an empty set, so this variant is unreachable today. It is
     /// declared now because the signatures it belongs to are already public.
     #[error("migrations: {0}")]
