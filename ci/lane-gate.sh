@@ -278,7 +278,7 @@ split_hit() {
 cmd_pins() {
   # Bytes, not characters, for git grep and for bash's own matching alike.
   local -x LC_ALL=C
-  local top tree path oid nul n=0 bad=() line rest ref found
+  local top listed path shown oid nul n=0 bad=() line rest ref found
   # Read from the tree at HEAD_REF, as inline-tests does, so the verdict is the
   # commit's and not the working copy's, and from the repository root, so the
   # pathspec does not shrink to nothing when run from a subdirectory.
@@ -338,33 +338,42 @@ cmd_pins() {
 
   # git grep skips a symlink and a submodule, so neither may stand on the way to
   # .github/workflows/ or under it, and split_hit cannot split a path holding a
-  # colon. ls-tree prints <mode> <type> <object>\t<path>, the same paths git
-  # grep searched; a colon is never quoted away.
+  # colon. ls-tree -z prints <mode> <type> <object>\t<path>\0, the same paths
+  # git grep searched, each as stored. Without -z git C-quotes a path holding a
+  # byte above 0x7f, a double quote, a backslash or a control character, and a
+  # quoted path misses the .github/workflows/ pattern below, so its blob would
+  # go unread; core.quotePath=false still quotes all but the first. The last
+  # record, end, holds no tab, so no ls-tree record can pass for it; without it,
+  # a listing failed. A path is reported %q-quoted, never raw.
   # A workflow is text when its blob holds no NUL byte. YAML may also be UTF-16
   # or UTF-32, where every ASCII character, `uses` included, carries a NUL, and
   # where the line passes above match nothing. The blob decides, not git grep -I
   # or git's binary heuristic: both follow the diff attribute, which a
   # .gitattributes in the tree under check can set.
-  tree="$(git -C "$top" ls-tree "$HEAD_REF" -- .github)"
-  tree+=$'\n'"$(git -C "$top" ls-tree -r -t "$HEAD_REF" -- .github/workflows)"
-  while IFS= read -r line; do
+  listed=0
+  while IFS= read -r -d '' line; do
+    if [ "$line" = end ]; then listed=1; continue; fi
     path="${line#*$'\t'}"
+    printf -v shown '%q' "$path"
     case "$path" in
-      *:*) bad+=("$path: <a path holding a colon>") ;;
+      *:*) bad+=("$shown: <a path holding a colon>") ;;
     esac
     case "$line" in
-      ''|'040000 '*) ;;
+      '040000 '*) ;;
       '100644 '*|'100755 '*)
         case "$path" in
           .github/workflows/*)
             oid="${line%%$'\t'*}"; oid="${oid##* }"
             nul="$(git -C "$top" cat-file blob "$oid" | tr -dc '\000' | wc -c)" ||
-              fail "pins: could not read $path at $HEAD_REF."
-            [ "$nul" -eq 0 ] || bad+=("$path: <not a text file>") ;;
+              fail "pins: could not read $shown at $HEAD_REF."
+            [ "$nul" -eq 0 ] || bad+=("$shown: <not a text file>") ;;
         esac ;;
-      *) bad+=("$path: <a symlink or submodule>") ;;
+      *) bad+=("$shown: <a symlink or submodule>") ;;
     esac
-  done <<< "$tree"
+  done < <(git -C "$top" ls-tree -z "$HEAD_REF" -- .github &&
+           git -C "$top" ls-tree -z -r -t "$HEAD_REF" -- .github/workflows &&
+           printf 'end\0')
+  [ "$listed" -eq 1 ] || fail "pins: could not list .github/ at $HEAD_REF."
 
   if [ ${#bad[@]} -gt 0 ]; then
     printf '\n  uses: references not pinned to a commit SHA, or not readable by this check:\n' >&2
