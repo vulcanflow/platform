@@ -260,6 +260,12 @@ fn wake_bus_error_is_recoverable_is_true_only_for_lagged() {
     };
     assert!(!invalid_quota.is_recoverable());
 
+    // VFL-504 §4 (F3d LOW-3): `OutsideTenantNamespace` is also non-recoverable.
+    let outside_tenant_namespace = WakeBusError::OutsideTenantNamespace {
+        namespace: "tenant:00000000-0000-0000-0000-000000000001:".to_owned(),
+    };
+    assert!(!outside_tenant_namespace.is_recoverable());
+
     let payload_too_large = WakeBusError::PayloadTooLarge {
         size: MAX_WAKE_PAYLOAD_BYTES + 1,
         limit: MAX_WAKE_PAYLOAD_BYTES,
