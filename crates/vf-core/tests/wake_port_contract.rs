@@ -208,6 +208,90 @@ fn max_wake_name_bytes_is_255() {
 }
 
 // ---------------------------------------------------------------------------
+// Debug redaction (S4): a wake payload never reaches a log line
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wake_message_debug_prints_payload_len_never_the_payload() {
+    let topic = Topic::parse("scan.completed").unwrap();
+    let message = WakeMessage {
+        topic: topic.clone(),
+        payload: b"snitch".to_vec(),
+    };
+
+    assert_eq!(
+        format!("{message:?}"),
+        format!("WakeMessage {{ topic: {topic:?}, payload_len: 6 }}")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Optional additions per Cortana's VFL-394 decision §3-§4
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wake_bus_error_is_recoverable_is_true_only_for_lagged() {
+    let lagged = WakeBusError::Lagged {
+        topic: Topic::parse("scan.completed").unwrap(),
+        skipped: 3,
+    };
+    assert!(lagged.is_recoverable());
+
+    let closed = WakeBusError::Closed {
+        topic: Topic::parse("scan.completed").unwrap(),
+    };
+    assert!(!closed.is_recoverable());
+
+    // L6 (VFL-428): every other variant is also non-recoverable, not just
+    // `Closed` — `is_recoverable` must name `Lagged` specifically rather
+    // than some broader "not a hard failure" rule.
+    let invalid_topic = WakeBusError::InvalidTopic {
+        reason: "empty".to_owned(),
+    };
+    assert!(!invalid_topic.is_recoverable());
+
+    let invalid_bucket_key = WakeBusError::InvalidBucketKey {
+        reason: "empty".to_owned(),
+    };
+    assert!(!invalid_bucket_key.is_recoverable());
+
+    let invalid_quota = WakeBusError::InvalidQuota {
+        reason: "zero rate".to_owned(),
+    };
+    assert!(!invalid_quota.is_recoverable());
+
+    // VFL-504 §4 (F3d LOW-3): `OutsideTenantNamespace` is also non-recoverable.
+    let outside_tenant_namespace = WakeBusError::OutsideTenantNamespace {
+        namespace: "tenant:00000000-0000-0000-0000-000000000001:".to_owned(),
+    };
+    assert!(!outside_tenant_namespace.is_recoverable());
+
+    let payload_too_large = WakeBusError::PayloadTooLarge {
+        size: MAX_WAKE_PAYLOAD_BYTES + 1,
+        limit: MAX_WAKE_PAYLOAD_BYTES,
+    };
+    assert!(!payload_too_large.is_recoverable());
+
+    let backend = WakeBusError::Backend {
+        message: "connection refused".to_owned(),
+    };
+    assert!(!backend.is_recoverable());
+
+    assert!(!WakeBusError::Unsupported { operation: "recv" }.is_recoverable());
+}
+
+#[test]
+fn permit_is_granted_is_true_only_for_granted() {
+    assert!(Permit::Granted { remaining: 1 }.is_granted());
+    assert!(
+        !Permit::Denied {
+            retry_after: Duration::from_secs(1)
+        }
+        .is_granted()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test doubles (TenantWakeBus)
 // ---------------------------------------------------------------------------
 

@@ -363,7 +363,19 @@ fn artifact_key_rejects_empty() {
 
 #[test]
 fn artifact_key_accepts_exactly_the_byte_cap() {
-    let raw = "a".repeat(MAX_ARTIFACT_KEY_BYTES);
+    // Each segment is capped at 255 bytes (S3, VFL-402), so four segments of
+    // at most 255 bytes cannot reach the 1024-byte whole-key cap: five are
+    // needed. 255 + 255 + 255 + 254 + 1 bytes of segment plus four `/`
+    // separators is exactly `MAX_ARTIFACT_KEY_BYTES`.
+    let raw = format!(
+        "{}/{}/{}/{}/{}",
+        "a".repeat(255),
+        "a".repeat(255),
+        "a".repeat(255),
+        "a".repeat(254),
+        "a",
+    );
+    assert_eq!(raw.len(), MAX_ARTIFACT_KEY_BYTES);
     assert!(ArtifactKey::parse(&raw).is_ok());
 }
 
@@ -374,6 +386,65 @@ fn artifact_key_rejects_one_byte_over_the_cap() {
         ArtifactKey::parse(&raw),
         Err(ArtifactStoreError::InvalidKey { .. })
     ));
+}
+
+#[test]
+fn artifact_key_rejects_one_byte_over_the_cap_via_legal_segments() {
+    // L4 (VFL-428): the key above is a single 1025-byte segment, which the
+    // per-segment cap (255 bytes, S3) would also refuse, so it cannot show
+    // the whole-key bound is what fired. Every segment here is legal on its
+    // own (<=255 bytes), isolating the 1024-byte whole-key bound.
+    let raw = format!(
+        "{}/{}/{}/{}/{}",
+        "a".repeat(255),
+        "a".repeat(255),
+        "a".repeat(255),
+        "a".repeat(254),
+        "a".repeat(2),
+    );
+    assert_eq!(raw.len(), MAX_ARTIFACT_KEY_BYTES + 1);
+    // L7 (VFL-428): the reason names the whole-key bound specifically, not
+    // just "a bound", so a future regression that reports the wrong limit
+    // still fails this test.
+    let err = ArtifactKey::parse(&raw).expect_err("a 1025-byte key must be refused");
+    match err {
+        ArtifactStoreError::InvalidKey { reason } => {
+            assert_eq!(reason, "longer than 1024 bytes");
+        }
+        other => panic!("expected InvalidKey, got {other:?}"),
+    }
+}
+
+#[test]
+fn artifact_key_accepts_a_255_byte_segment() {
+    let raw = format!("tenant-a/{}", "a".repeat(255));
+    assert!(ArtifactKey::parse(&raw).is_ok());
+}
+
+#[test]
+fn artifact_key_rejects_a_256_byte_segment() {
+    let raw = format!("tenant-a/{}", "a".repeat(256));
+    assert!(matches!(
+        ArtifactKey::parse(&raw),
+        Err(ArtifactStoreError::InvalidKey { .. })
+    ));
+}
+
+#[test]
+fn artifact_key_rejects_a_256_byte_segment_with_reason_not_echoing_segment() {
+    // L5 (VFL-428): the refusal reason names the rule, not the segment,
+    // because the segment is attacker-influenced on the ingest path (see
+    // the rustdoc on the `_ if segment.len() > ...` arm in `ArtifactKey::parse`).
+    let segment = "a".repeat(256);
+    let raw = format!("tenant-a/{segment}");
+    let err = ArtifactKey::parse(&raw).expect_err("a 256-byte segment must be refused");
+    match err {
+        ArtifactStoreError::InvalidKey { reason } => {
+            assert_eq!(reason, "segment longer than 255 bytes");
+            assert!(!reason.contains(segment.as_str()));
+        }
+        other => panic!("expected InvalidKey, got {other:?}"),
+    }
 }
 
 #[test]
@@ -597,4 +668,100 @@ fn sha256_digest_try_from_string_uses_digest_parse_error() {
         Sha256Digest::try_from("too-short".to_string()),
         Err(DigestParseError::Length { len: 9 })
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Debug redaction (S4): scanner-output bytes never reach a log line
+// ---------------------------------------------------------------------------
+
+/// An `ArtifactReader` carrying a chunk `Debug` must never print, so a test
+/// that asserts the chunk is absent from the formatted output cannot pass by
+/// accident of the chunk being empty.
+struct SecretReader {
+    meta: ArtifactMeta,
+    secret_chunk: Vec<u8>,
+}
+
+impl ArtifactReader for SecretReader {
+    fn meta(&self) -> &ArtifactMeta {
+        &self.meta
+    }
+
+    fn next_chunk(&mut self) -> PortFuture<'_, Result<Option<Vec<u8>>, ArtifactStoreError>> {
+        let chunk = std::mem::take(&mut self.secret_chunk);
+        Box::pin(std::future::ready(Ok((!chunk.is_empty()).then_some(chunk))))
+    }
+}
+
+#[test]
+fn dyn_artifact_reader_debug_prints_meta_only_never_the_bytes() {
+    let key = ArtifactKey::parse("tenant-a/findings.json").unwrap();
+    let reader: Box<dyn ArtifactReader> = Box::new(SecretReader {
+        meta: ArtifactMeta {
+            key: key.clone(),
+            size: 6,
+            last_modified: None,
+            e_tag: None,
+        },
+        secret_chunk: b"snitch".to_vec(),
+    });
+
+    let debug = format!("{reader:?}");
+
+    assert!(
+        debug.starts_with("ArtifactReader { meta:") && debug.ends_with(".. }"),
+        "debug output should be the redacted struct shape, meta plus a \
+         non-exhaustive marker: {debug}"
+    );
+    assert!(
+        debug.contains(key.as_str()),
+        "debug output should still show the meta: {debug}"
+    );
+    assert!(
+        !debug.contains("snitch"),
+        "debug output must never print the reader's bytes: {debug}"
+    );
+}
+
+#[test]
+fn artifact_body_debug_on_bytes_prints_len_never_the_bytes() {
+    let body = ArtifactBody::bytes(b"snitch".to_vec());
+    assert_eq!(format!("{body:?}"), "ArtifactBody::Bytes { len: 6 }");
+}
+
+#[test]
+fn artifact_body_debug_on_stream_prints_size_hint_never_the_source() {
+    struct FixedHint;
+
+    impl ArtifactSource for FixedHint {
+        fn next_chunk(&mut self) -> PortFuture<'_, Result<Option<Vec<u8>>, ArtifactStoreError>> {
+            panic!("ArtifactBody::Debug must never poll the source to format it");
+        }
+
+        fn size_hint(&self) -> Option<u64> {
+            Some(42)
+        }
+    }
+
+    let body = ArtifactBody::stream(FixedHint);
+    assert_eq!(
+        format!("{body:?}"),
+        "ArtifactBody::Stream { size_hint: Some(42) }"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Optional additions per Cortana's VFL-394 decision §3-§4
+// ---------------------------------------------------------------------------
+
+#[test]
+fn forwarded_get_stream_readers_meta_names_the_requested_key() {
+    let tenant_id = Uuid::from_u128(1);
+    let (_inner, store) = tenant_store(tenant_id);
+    let key = store.key("findings.json").unwrap();
+
+    let result = support::block_on(store.get_stream(&key));
+
+    let reader = result.expect("an in-tenant get_stream must succeed");
+    assert_eq!(reader.meta().key, key);
 }
