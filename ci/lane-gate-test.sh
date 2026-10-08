@@ -162,5 +162,135 @@ check "first test in a previously bare tree" erosion pass
 setup
 check "empty diff" partition pass
 
+# --- 16. pins: a commit SHA with a trailing tag comment: allowed ---------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n' > .github/workflows/ci.yml
+commit add-workflow-pinned
+check "uses: pinned to a SHA with a tag comment" pins pass
+
+# --- 17. pins: a tag instead of a SHA: refused ----------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n' > .github/workflows/ci.yml
+commit add-workflow-tag
+check "uses: pinned to a tag (@v4)" pins fail
+
+# --- 18. pins: a branch instead of a SHA: refused -------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@main\n' > .github/workflows/ci.yml
+commit add-workflow-branch
+check "uses: pinned to a branch (@main)" pins fail
+
+# --- 19. pins: a 39-character SHA (too short): refused --------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af67726\n' > .github/workflows/ci.yml
+commit add-workflow-short-sha
+check "uses: SHA is 39 hex characters" pins fail
+
+# --- 20. pins: a 41-character SHA (too long): refused ----------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af6772622\n' > .github/workflows/ci.yml
+commit add-workflow-long-sha
+check "uses: SHA is 41 hex characters" pins fail
+
+# --- 21. pins: an uppercase SHA: refused -----------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11D5960A326750D5838078E36CF38B85AF677262\n' > .github/workflows/ci.yml
+commit add-workflow-upper-sha
+check "uses: SHA is uppercase hex" pins fail
+
+# --- 22. pins: no @ref at all: refused -------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout\n' > .github/workflows/ci.yml
+commit add-workflow-no-ref
+check "uses: has no @ref" pins fail
+
+# --- 23. pins: a local ./ action: refused -----------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: ./.github/actions/my-action\n' > .github/workflows/ci.yml
+commit add-workflow-local-action
+check "uses: a local ./ action" pins fail
+
+# --- 24. pins: a docker:// image: refused -----------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: docker://alpine:3.18\n' > .github/workflows/ci.yml
+commit add-workflow-docker-image
+check "uses: a docker:// image" pins fail
+
+# --- 25. pins: an empty value: refused --------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses:\n' > .github/workflows/ci.yml
+commit add-workflow-empty-value
+check "uses: has an empty value" pins fail
+
+# --- 26. pins: a block-scalar value: refused --------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: >-\n          actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-block-scalar
+check "uses: a block-scalar (>-) value" pins fail
+
+# --- 27. pins: a commented-out uses: line is ignored: allowed --------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      # - uses: actions/checkout@v4\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-commented-and-pinned
+check "commented-out uses: line is ignored" pins pass
+
+# --- 28. pins: a quoted key/value in a flow mapping: allowed ---------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - { "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" }\n' > .github/workflows/ci.yml
+commit add-workflow-quoted-flow-mapping
+check "quoted uses: in a flow mapping" pins pass
+
+# --- 29. pins: a workflow with no uses: key at all: allowed ----------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - run: echo hi\n' > .github/workflows/ci.yml
+commit add-workflow-no-uses-key
+check "workflow with no uses: key" pins pass
+
+# --- 30. pins: a tree with no .github/workflows/ at all: allowed -----------
+# Regression: setup() creates no .github/workflows/ today, so this is the
+# ordinary state before any workflow lands, and git grep's no-match exit (1)
+# must not be mistaken for a read failure.
+setup
+check "no .github/workflows/ anywhere in the tree" pins pass
+
+# --- 31. all: an unpinned uses: fails the suite even though the other -----
+#          three checks on this diff would pass on their own ---------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n' > .github/workflows/ci.yml
+commit add-workflow-tag-via-all
+check "all: unpinned uses: fails the combined run" all fail
+
+# --- 32. pins: an unresolvable head-ref: refused ----------------------------
+# check() always compares baseline against HEAD, so this case calls the gate
+# directly with a ref that cannot be resolved.
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-for-bad-head-ref
+out="$(./ci/lane-gate.sh pins baseline does-not-exist-ref 2>&1)"; rc=$?
+name="unresolvable head-ref"
+if [ $rc -ne 0 ]; then
+  printf 'ok    %-46s %s=%s\n' "$name" pins fail; pass_count=$((pass_count+1))
+else
+  printf 'NOT OK %-45s %s: expected fail got pass\n' "$name" pins
+  printf '%s\n' "$out" | sed 's/^/        | /'
+  fail_count=$((fail_count+1))
+fi
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
