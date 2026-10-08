@@ -1,26 +1,45 @@
 //! Port-contract tests for `vf_core::ports::wake` — VFL-314 and its rev2
-//! follow-up VFL-355, the F3a slices of T4 (VFL-44) for F3a (VFL-310).
+//! follow-up VFL-355 (the F3a slices of T4 (VFL-44) for F3a (VFL-310)), plus
+//! VFL-420 (the F3d slice of T4 for F3d (VFL-346)).
 //!
-//! Rebased onto `426b848` on `jorge/f3a-ports`; see
-//! `artifact_port_contract.rs`'s header for the revision and split note
-//! shared by both files in this pack. F3a rev2's changes to this module are
-//! rustdoc only (sticky terminal `recv` errors, `retry_after` rounding, the
-//! pending-tenant-scope note); nothing here needed a test change.
+//! Rebased onto `5ca5dc3` on `jorge/f3d-tenant-wake-bus` (one commit on
+//! `a8ad7ae`, F3a, not pushed); see `artifact_port_contract.rs`'s header for
+//! the revision and split note shared by both files in this pack. F3d adds
+//! `tenant_wake_namespace`, `Topic`/`BucketKey::for_tenant`, `TenantWakeBus`
+//! and `WakeBusError::OutsideTenantNamespace`, resolving the pending-
+//! tenant-scope note F3a rev2 left in this module's rustdoc.
 //!
-//! Scope is VFL-310's criterion 2 for the wake side: topic, bucket-key and
-//! rate validation behave as their rustdoc states, and the two wake-only
-//! byte caps the criterion names (`MAX_WAKE_NAME_BYTES`,
-//! `MAX_WAKE_PAYLOAD_BYTES`) hold the values their rustdoc states. There is
-//! no concrete `WakeBus` yet — that is F3c (VFL-312) — so delivery semantics
-//! (publish/subscribe, `Lagged` vs `Closed`, token accounting against a real
-//! bucket) need a real adapter and are out of scope here; they belong to
-//! that slice's conformance pack. Nothing here needs an async driver: every
-//! type under test is a synchronous validator.
+//! Scope through the `TokenRate validation` section is unchanged: VFL-310's
+//! criterion 2 for the wake side (topic, bucket-key and rate validation; the
+//! two wake-only byte caps). The `TenantWakeBus` section below is VFL-346's
+//! criteria: (1) `publish`, `subscribe` and `token_bucket` refuse a topic or
+//! key outside the tenant namespace before any I/O, against an inner bus
+//! that panics if touched, and forward an in-namespace call; (2) the guard
+//! is exact at the `tenant:{id}:` boundary; (3) `for_tenant` values pass
+//! `Topic::parse`/`BucketKey::parse`, are accepted by their own tenant's
+//! guard and refused by another's, and the 255-byte cap applies to the whole
+//! name; (4) the refusal never echoes the refused name. There is still no
+//! concrete `WakeBus` adapter — that is F3c (VFL-312) — so delivery
+//! semantics (publish/subscribe, `Lagged` vs `Closed`, token accounting
+//! against a real bucket) remain out of scope here and belong to that
+//! slice's conformance pack; the `TenantWakeBus` tests use a hand-written
+//! inner double, the same technique `artifact_port_contract.rs` uses for
+//! `TenantArtifactStore`.
+//!
+//! `vf-core` carries no async runtime (§A1.3): `support::block_on` drives
+//! the `PortFuture`s `TenantWakeBus` returns by polling once, as
+//! `artifact_port_contract.rs`'s header describes.
 
+mod support;
+
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use uuid::Uuid;
 use vf_core::ports::{
-    BucketKey, MAX_WAKE_NAME_BYTES, MAX_WAKE_PAYLOAD_BYTES, TokenRate, Topic, WakeBusError,
+    BucketKey, MAX_WAKE_NAME_BYTES, MAX_WAKE_PAYLOAD_BYTES, Permit, PortFuture, TenantWakeBus,
+    TokenRate, Topic, WakeBus, WakeBusError, WakeMessage, WakeStream, WakeSubscription,
+    tenant_wake_namespace,
 };
 
 // ---------------------------------------------------------------------------
@@ -186,4 +205,428 @@ fn max_wake_payload_bytes_is_four_kibibytes() {
 #[test]
 fn max_wake_name_bytes_is_255() {
     assert_eq!(MAX_WAKE_NAME_BYTES, 255);
+}
+
+// ---------------------------------------------------------------------------
+// Test doubles (TenantWakeBus)
+// ---------------------------------------------------------------------------
+
+/// A stream that panics if `recv` is ever polled.
+///
+/// Stands in for the subscription a successful `subscribe` must return;
+/// nothing in this pack calls `recv`, so a panic there would mean a test
+/// reached further than intended, not that the double is missing a feature.
+struct PanicIfPolledStream;
+
+impl WakeStream for PanicIfPolledStream {
+    fn recv(&mut self) -> PortFuture<'_, Result<WakeMessage, WakeBusError>> {
+        panic!("PanicIfPolledStream::recv must never be polled in this pack");
+    }
+}
+
+/// An inner `WakeBus` that records every call it receives and answers with a
+/// canned success.
+///
+/// `TenantWakeBus`'s rustdoc promises refusal "before any I/O", and every one
+/// of its three methods also has a forwarding path under test (unlike
+/// `PanicUnlessListed` in `artifact_port_contract.rs`, where most methods
+/// only need a refusal test and can panic unconditionally). So here an empty
+/// call list after a refused call is what proves the inner bus was never
+/// touched, the same technique that file uses for `list` and `get_stream`.
+#[derive(Default)]
+struct RecordingWakeBus {
+    publish_calls: Mutex<Vec<(Topic, Vec<u8>)>>,
+    subscribe_calls: Mutex<Vec<Topic>>,
+    token_bucket_calls: Mutex<Vec<(BucketKey, TokenRate, u32)>>,
+}
+
+impl WakeBus for RecordingWakeBus {
+    fn publish(&self, topic: &Topic, payload: &[u8]) -> PortFuture<'_, Result<(), WakeBusError>> {
+        self.publish_calls
+            .lock()
+            .unwrap()
+            .push((topic.clone(), payload.to_vec()));
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn subscribe(&self, topic: &Topic) -> PortFuture<'_, Result<WakeSubscription, WakeBusError>> {
+        self.subscribe_calls.lock().unwrap().push(topic.clone());
+        let subscription = WakeSubscription::new(topic.clone(), PanicIfPolledStream);
+        Box::pin(std::future::ready(Ok(subscription)))
+    }
+
+    fn token_bucket(
+        &self,
+        key: &BucketKey,
+        rate: TokenRate,
+        burst: u32,
+    ) -> PortFuture<'_, Result<Permit, WakeBusError>> {
+        self.token_bucket_calls
+            .lock()
+            .unwrap()
+            .push((key.clone(), rate, burst));
+        Box::pin(std::future::ready(Ok(Permit::Granted {
+            remaining: burst.saturating_sub(1),
+        })))
+    }
+}
+
+fn tenant_bus(tenant_id: Uuid) -> (Arc<RecordingWakeBus>, TenantWakeBus) {
+    let inner = Arc::new(RecordingWakeBus::default());
+    let bus = TenantWakeBus::new(Arc::clone(&inner) as Arc<dyn WakeBus>, tenant_id);
+    (inner, bus)
+}
+
+// ---------------------------------------------------------------------------
+// TenantWakeBus: refusal before any I/O, in-namespace forwarding (criterion 1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn refuses_publish_outside_its_namespace_before_touching_the_inner_bus() {
+    let tenant_id = Uuid::from_u128(1);
+    let other_tenant_id = Uuid::from_u128(2);
+    let (inner, bus) = tenant_bus(tenant_id);
+    let foreign_topic = Topic::for_tenant(other_tenant_id, "scan.completed").unwrap();
+
+    let result = support::block_on(bus.publish(&foreign_topic, b"payload"));
+
+    assert!(matches!(
+        result,
+        Err(WakeBusError::OutsideTenantNamespace { .. })
+    ));
+    assert!(
+        inner.publish_calls.lock().unwrap().is_empty(),
+        "a refused publish must never reach the inner bus"
+    );
+}
+
+#[test]
+fn refuses_subscribe_outside_its_namespace_before_touching_the_inner_bus() {
+    let tenant_id = Uuid::from_u128(1);
+    let other_tenant_id = Uuid::from_u128(2);
+    let (inner, bus) = tenant_bus(tenant_id);
+    let foreign_topic = Topic::for_tenant(other_tenant_id, "scan.completed").unwrap();
+
+    let result = support::block_on(bus.subscribe(&foreign_topic));
+
+    assert!(matches!(
+        result,
+        Err(WakeBusError::OutsideTenantNamespace { .. })
+    ));
+    assert!(
+        inner.subscribe_calls.lock().unwrap().is_empty(),
+        "a refused subscribe must never reach the inner bus"
+    );
+}
+
+#[test]
+fn refuses_token_bucket_outside_its_namespace_before_touching_the_inner_bus() {
+    let tenant_id = Uuid::from_u128(1);
+    let other_tenant_id = Uuid::from_u128(2);
+    let (inner, bus) = tenant_bus(tenant_id);
+    let foreign_key = BucketKey::for_tenant(other_tenant_id, "webhook-deliver").unwrap();
+    let rate = TokenRate::per_second(1).unwrap();
+
+    let result = support::block_on(bus.token_bucket(&foreign_key, rate, 1));
+
+    assert!(matches!(
+        result,
+        Err(WakeBusError::OutsideTenantNamespace { .. })
+    ));
+    assert!(
+        inner.token_bucket_calls.lock().unwrap().is_empty(),
+        "a refused token_bucket call must never reach the inner bus"
+    );
+}
+
+#[test]
+fn forwards_an_in_namespace_publish_to_the_inner_bus() {
+    let tenant_id = Uuid::from_u128(1);
+    let (inner, bus) = tenant_bus(tenant_id);
+    let topic = bus.topic("scan.completed").unwrap();
+
+    let result = support::block_on(bus.publish(&topic, b"payload"));
+
+    assert!(
+        result.is_ok(),
+        "an in-namespace publish must be forwarded, not refused: {result:?}"
+    );
+    assert_eq!(
+        inner.publish_calls.lock().unwrap().as_slice(),
+        &[(topic, b"payload".to_vec())]
+    );
+}
+
+#[test]
+fn forwards_an_in_namespace_subscribe_to_the_inner_bus() {
+    let tenant_id = Uuid::from_u128(1);
+    let (inner, bus) = tenant_bus(tenant_id);
+    let topic = bus.topic("scan.completed").unwrap();
+
+    let result = support::block_on(bus.subscribe(&topic));
+
+    assert!(
+        result.is_ok(),
+        "an in-namespace subscribe must be forwarded, not refused: {result:?}"
+    );
+    assert_eq!(
+        inner.subscribe_calls.lock().unwrap().as_slice(),
+        std::slice::from_ref(&topic)
+    );
+}
+
+#[test]
+fn forwards_an_in_namespace_token_bucket_call_to_the_inner_bus() {
+    let tenant_id = Uuid::from_u128(1);
+    let (inner, bus) = tenant_bus(tenant_id);
+    let key = bus.bucket_key("webhook-deliver").unwrap();
+    let rate = TokenRate::per_second(1).unwrap();
+
+    let result = support::block_on(bus.token_bucket(&key, rate, 1));
+
+    assert!(
+        result.is_ok(),
+        "an in-namespace token_bucket call must be forwarded, not refused: {result:?}"
+    );
+    assert_eq!(
+        inner.token_bucket_calls.lock().unwrap().as_slice(),
+        &[(key, rate, 1)]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TenantWakeBus: exact namespace boundary (criterion 2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn guard_is_exact_at_the_tenant_namespace_boundary() {
+    // Chosen to end in the same digits as the issue's own example (`…0001`)
+    // while also containing hex letters, so upper-casing it actually changes
+    // the string instead of being a no-op on an all-digit id.
+    let tenant_id = Uuid::from_u128(0xABCD_0001);
+    let other_tenant_id = Uuid::from_u128(0xABCD_0002);
+    let namespace = tenant_wake_namespace(tenant_id);
+    let bare_namespace = namespace.trim_end_matches(':').to_owned();
+    let (_inner, bus) = tenant_bus(tenant_id);
+
+    let cases: Vec<(String, bool)> = vec![
+        (format!("{namespace}scan.completed"), true),
+        (
+            format!("{}scan.completed", tenant_wake_namespace(other_tenant_id)),
+            false,
+        ),
+        (bare_namespace.clone(), false),
+        (namespace.clone(), false),
+        (format!("{bare_namespace}0:x"), false),
+        (
+            format!(
+                "tenant:{}:scan.completed",
+                tenant_id.as_hyphenated().to_string().to_uppercase()
+            ),
+            false,
+        ),
+        ("scan.completed".to_owned(), false),
+    ];
+
+    for (raw, expect_ok) in &cases {
+        let topic = Topic::parse(raw).unwrap_or_else(|error| {
+            panic!("case {raw:?} must itself be a well-formed Topic: {error:?}")
+        });
+
+        let result = support::block_on(bus.publish(&topic, b""));
+
+        assert_eq!(
+            result.is_ok(),
+            *expect_ok,
+            "publish({raw:?}) against namespace {namespace:?} expected ok={expect_ok}, got {result:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TenantWakeBus: `for_tenant` names (criterion 3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn for_tenant_topic_passes_parse_and_is_accepted_by_its_own_guard_and_refused_by_anothers() {
+    let tenant_id = Uuid::from_u128(1);
+    let other_tenant_id = Uuid::from_u128(2);
+    let topic = Topic::for_tenant(tenant_id, "scan.completed").unwrap();
+
+    assert!(Topic::parse(topic.as_str()).is_ok());
+
+    let (_own_inner, own_bus) = tenant_bus(tenant_id);
+    assert!(support::block_on(own_bus.publish(&topic, b"")).is_ok());
+
+    let (_other_inner, other_bus) = tenant_bus(other_tenant_id);
+    assert!(matches!(
+        support::block_on(other_bus.publish(&topic, b"")),
+        Err(WakeBusError::OutsideTenantNamespace { .. })
+    ));
+}
+
+#[test]
+fn for_tenant_bucket_key_passes_parse_and_is_accepted_by_its_own_guard_and_refused_by_anothers() {
+    let tenant_id = Uuid::from_u128(1);
+    let other_tenant_id = Uuid::from_u128(2);
+    let key = BucketKey::for_tenant(tenant_id, "webhook-deliver").unwrap();
+    let rate = TokenRate::per_second(1).unwrap();
+
+    assert!(BucketKey::parse(key.as_str()).is_ok());
+
+    let (_own_inner, own_bus) = tenant_bus(tenant_id);
+    assert!(support::block_on(own_bus.token_bucket(&key, rate, 1)).is_ok());
+
+    let (_other_inner, other_bus) = tenant_bus(other_tenant_id);
+    assert!(matches!(
+        support::block_on(other_bus.token_bucket(&key, rate, 1)),
+        Err(WakeBusError::OutsideTenantNamespace { .. })
+    ));
+}
+
+#[test]
+fn topic_for_tenant_name_cap_applies_to_the_whole_namespaced_name() {
+    let tenant_id = Uuid::from_u128(1);
+    let namespace_len = tenant_wake_namespace(tenant_id).len();
+    let exactly_at_cap = "a".repeat(MAX_WAKE_NAME_BYTES - namespace_len);
+    let one_over_cap = "a".repeat(MAX_WAKE_NAME_BYTES - namespace_len + 1);
+
+    assert!(Topic::for_tenant(tenant_id, &exactly_at_cap).is_ok());
+    assert!(matches!(
+        Topic::for_tenant(tenant_id, &one_over_cap),
+        Err(WakeBusError::InvalidTopic { .. })
+    ));
+}
+
+#[test]
+fn bucket_key_for_tenant_name_cap_applies_to_the_whole_namespaced_name() {
+    let tenant_id = Uuid::from_u128(1);
+    let namespace_len = tenant_wake_namespace(tenant_id).len();
+    let exactly_at_cap = "a".repeat(MAX_WAKE_NAME_BYTES - namespace_len);
+    let one_over_cap = "a".repeat(MAX_WAKE_NAME_BYTES - namespace_len + 1);
+
+    assert!(BucketKey::for_tenant(tenant_id, &exactly_at_cap).is_ok());
+    assert!(matches!(
+        BucketKey::for_tenant(tenant_id, &one_over_cap),
+        Err(WakeBusError::InvalidBucketKey { .. })
+    ));
+}
+
+#[test]
+fn topic_for_tenant_refuses_an_empty_name() {
+    assert!(matches!(
+        Topic::for_tenant(Uuid::from_u128(1), ""),
+        Err(WakeBusError::InvalidTopic { .. })
+    ));
+}
+
+#[test]
+fn bucket_key_for_tenant_refuses_an_empty_name() {
+    assert!(matches!(
+        BucketKey::for_tenant(Uuid::from_u128(1), ""),
+        Err(WakeBusError::InvalidBucketKey { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// TenantWakeBus: the refusal never echoes the refused name (criterion 4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn outside_tenant_namespace_error_never_echoes_the_refused_name() {
+    let tenant_id = Uuid::from_u128(1);
+    let (_inner, bus) = tenant_bus(tenant_id);
+    let secret_name = "tenant:00000000-0000-0000-0000-000000000002:leaked-topic-name";
+    let foreign_topic = Topic::parse(secret_name).unwrap();
+
+    let result = support::block_on(bus.publish(&foreign_topic, b""));
+    let error = result.expect_err("a foreign topic must be refused");
+
+    let display = error.to_string();
+    let debug = format!("{error:?}");
+
+    assert!(
+        !display.contains("leaked-topic-name") && !debug.contains("leaked-topic-name"),
+        "the refusal must never echo the refused name: display={display:?} debug={debug:?}"
+    );
+    assert!(
+        display.contains(bus.namespace()),
+        "the refusal should name the namespace it is scoped to: {display:?}"
+    );
+}
+
+#[test]
+fn outside_tenant_namespace_display_matches_its_documented_wording() {
+    let error = WakeBusError::OutsideTenantNamespace {
+        namespace: "tenant:00000000-0000-0000-0000-000000000001:".to_owned(),
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "wake topic or bucket key is outside the tenant namespace \
+         tenant:00000000-0000-0000-0000-000000000001:"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TenantWakeBus: accessors and builders (New API surface)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exposes_the_tenant_id_and_namespace_it_was_constructed_with() {
+    let tenant_id = Uuid::from_u128(7);
+    let (_inner, bus) = tenant_bus(tenant_id);
+
+    assert_eq!(bus.tenant_id(), tenant_id);
+    assert_eq!(bus.namespace(), tenant_wake_namespace(tenant_id));
+}
+
+#[test]
+fn topic_builds_a_topic_inside_its_own_namespace() {
+    let tenant_id = Uuid::from_u128(42);
+    let (_inner, bus) = tenant_bus(tenant_id);
+
+    let topic = bus.topic("scan.completed").unwrap();
+
+    assert_eq!(topic.as_str(), format!("{}scan.completed", bus.namespace()));
+}
+
+#[test]
+fn bucket_key_builds_a_key_inside_its_own_namespace() {
+    let tenant_id = Uuid::from_u128(42);
+    let (_inner, bus) = tenant_bus(tenant_id);
+
+    let key = bus.bucket_key("webhook-deliver").unwrap();
+
+    assert_eq!(key.as_str(), format!("{}webhook-deliver", bus.namespace()));
+}
+
+#[test]
+fn tenant_wake_bus_topic_refuses_an_empty_name() {
+    let (_inner, bus) = tenant_bus(Uuid::from_u128(42));
+
+    assert!(matches!(
+        bus.topic(""),
+        Err(WakeBusError::InvalidTopic { .. })
+    ));
+}
+
+#[test]
+fn tenant_wake_bus_bucket_key_refuses_an_empty_name() {
+    let (_inner, bus) = tenant_bus(Uuid::from_u128(42));
+
+    assert!(matches!(
+        bus.bucket_key(""),
+        Err(WakeBusError::InvalidBucketKey { .. })
+    ));
+}
+
+#[test]
+fn tenant_wake_namespace_is_tenant_colon_hyphenated_id_colon() {
+    let tenant_id = Uuid::from_u128(9);
+
+    assert_eq!(
+        tenant_wake_namespace(tenant_id),
+        format!("tenant:{}:", tenant_id.as_hyphenated())
+    );
 }
