@@ -19,13 +19,21 @@
 //! state: §19 rate limits must hold across every replica of `vf-api`, so they
 //! are evaluated in Valkey when it is configured and in-process otherwise.
 //!
+//! Tenant scope is a type, as §A7-7 requires: a tenant's topics and bucket
+//! keys live under [`tenant_wake_namespace`], and code serving one tenant
+//! holds a [`TenantWakeBus`], which refuses a name outside it before the call
+//! reaches an adapter. So tenants neither see each other's wake-ups nor share
+//! a §19 bucket.
+//!
 //! Implemented in `vf-db::adapters` (task F3): `RedisWakeBus`,
 //! `InProcessWakeBus`.
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::PortFuture;
 
@@ -67,6 +75,16 @@ pub enum WakeBusError {
     InvalidQuota {
         /// Why the quota was refused.
         reason: String,
+    },
+
+    /// The topic or bucket key is outside the tenant namespace the bus is
+    /// scoped to. Refused by [`TenantWakeBus`] before any I/O (§A7-7).
+    #[error("wake topic or bucket key is outside the tenant namespace {namespace}")]
+    OutsideTenantNamespace {
+        /// The namespace the bus is scoped to, `tenant:{tenant_id}:`, and
+        /// therefore not a secret. Never the refused name, which can be
+        /// attacker-influenced.
+        namespace: String,
     },
 
     /// The payload is over [`MAX_WAKE_PAYLOAD_BYTES`].
@@ -161,6 +179,48 @@ fn validate_name(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The wake namespace of one tenant: `tenant:{tenant_id}:`, with the tenant id
+/// as a hyphenated lowercase UUID.
+///
+/// This is the bus namespace `LocalTenantProvisioner` provisions for a tenant
+/// (§A6.1), and every topic and bucket key a [`TenantWakeBus`] accepts lies
+/// under it. The provisioner is to call this function rather than restate the
+/// format, so the two cannot drift. Takes a [`Uuid`] rather than the
+/// `vf-core::ids` `TenantId` of §A3.1, which task C1 has not published yet.
+///
+/// The trailing `:` is the boundary, for the same reason
+/// [`ArtifactPrefix`](super::ArtifactPrefix) ends in `/`: a name under
+/// `tenant:{a}:` can never be read as lying under a longer id that merely
+/// starts with `{a}`.
+#[must_use]
+pub fn tenant_wake_namespace(tenant_id: Uuid) -> String {
+    format!("tenant:{}:", tenant_id.as_hyphenated())
+}
+
+/// Builds `{namespace}{name}` and validates the whole name.
+///
+/// An empty `name` is refused: the bare namespace names no topic and no
+/// bucket, and [`TenantWakeBus`] refuses it too, so every name built here is
+/// one the guard accepts.
+fn tenant_name(tenant_id: Uuid, name: &str) -> Result<String, String> {
+    if name.is_empty() {
+        return Err("empty name inside the tenant namespace".to_owned());
+    }
+    let full = format!("{}{name}", tenant_wake_namespace(tenant_id));
+    validate_name(&full)?;
+    Ok(full)
+}
+
+/// Whether `name` lies strictly under `namespace`.
+///
+/// `namespace` always ends in `:`, so this is exact at the boundary: it never
+/// matches a sibling whose id merely starts with the same characters, nor the
+/// bare namespace itself. Comparison is byte-for-byte, so a name spelling the
+/// tenant id in upper case is outside the namespace: fail closed.
+fn in_namespace(namespace: &str, name: &str) -> bool {
+    name.len() > namespace.len() && name.starts_with(namespace)
+}
+
 /// A validated publish/subscribe topic.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -178,6 +238,19 @@ impl Topic {
         validate_name(raw)
             .map_err(|reason| WakeBusError::InvalidTopic { reason })
             .map(|()| Self(raw.to_owned()))
+    }
+
+    /// The topic `name` inside one tenant's namespace:
+    /// `tenant:{tenant_id}:{name}` (see [`tenant_wake_namespace`]).
+    ///
+    /// # Errors
+    ///
+    /// [`WakeBusError::InvalidTopic`] when `name` is empty, or when the whole
+    /// topic fails [`Self::parse`].
+    pub fn for_tenant(tenant_id: Uuid, name: &str) -> Result<Self, WakeBusError> {
+        tenant_name(tenant_id, name)
+            .map_err(|reason| WakeBusError::InvalidTopic { reason })
+            .map(Self)
     }
 
     /// The topic as a string.
@@ -203,6 +276,19 @@ impl BucketKey {
         validate_name(raw)
             .map_err(|reason| WakeBusError::InvalidBucketKey { reason })
             .map(|()| Self(raw.to_owned()))
+    }
+
+    /// The bucket key `name` inside one tenant's namespace:
+    /// `tenant:{tenant_id}:{name}` (see [`tenant_wake_namespace`]).
+    ///
+    /// # Errors
+    ///
+    /// [`WakeBusError::InvalidBucketKey`] when `name` is empty, or when the
+    /// whole key fails [`Self::parse`].
+    pub fn for_tenant(tenant_id: Uuid, name: &str) -> Result<Self, WakeBusError> {
+        tenant_name(tenant_id, name)
+            .map_err(|reason| WakeBusError::InvalidBucketKey { reason })
+            .map(Self)
     }
 
     /// The key as a string.
@@ -481,15 +567,11 @@ impl Permit {
 ///    `recv` returns the same error at once: it never hangs, panics or
 ///    resumes delivering.
 ///
-/// # Tenant scope is pending
+/// # Tenant scope
 ///
-/// [`Topic`] and [`BucketKey`] are not tenant-scoped yet. §A7-7 makes tenant
-/// context a type, and [`TenantArtifactStore`](super::TenantArtifactStore)
-/// does that for object storage; the bus counterpart, a `TenantWakeBus` that
-/// refuses a topic or bucket key outside the tenant's namespace before any
-/// I/O, is task F3d. Until it lands, a caller holding `Arc<dyn WakeBus>`
-/// builds every topic and bucket key from the tenant it is serving, so that
-/// tenants neither see each other's wake-ups nor share a §19 bucket.
+/// An adapter does not interpret names and enforces no tenant boundary. Code
+/// that serves one tenant holds a [`TenantWakeBus`], which refuses a topic or
+/// bucket key outside that tenant's [`tenant_wake_namespace`] before any I/O.
 pub trait WakeBus: Send + Sync + 'static {
     /// Publishes `payload` on `topic`.
     fn publish(&self, topic: &Topic, payload: &[u8]) -> PortFuture<'_, Result<(), WakeBusError>>;
@@ -507,4 +589,130 @@ pub trait WakeBus: Send + Sync + 'static {
         rate: TokenRate,
         burst: u32,
     ) -> PortFuture<'_, Result<Permit, WakeBusError>>;
+}
+
+// ---------------------------------------------------------------------------
+// Tenant scoping
+// ---------------------------------------------------------------------------
+
+/// A [`WakeBus`] that can only reach one tenant's namespace.
+///
+/// The bus counterpart of [`TenantArtifactStore`](super::TenantArtifactStore),
+/// for the same §A7-7 rule: a worker that holds a `TenantWakeBus` cannot
+/// subscribe to another tenant's topic, publish into it, or spend another
+/// tenant's §19 token bucket, even by accident. A topic or bucket key is
+/// accepted only when it lies strictly under [`tenant_wake_namespace`] for the
+/// tenant this bus is scoped to.
+///
+/// **Refusal happens before any I/O.** Every method validates first and
+/// returns an already-resolved future on refusal, so the inner bus's method
+/// is never called, no future that would do I/O is ever constructed, and the
+/// T4 pack can assert the refusal against an inner bus that panics if
+/// touched.
+pub struct TenantWakeBus {
+    inner: Arc<dyn WakeBus>,
+    tenant_id: Uuid,
+    namespace: String,
+}
+
+impl TenantWakeBus {
+    /// Scopes `inner` to `tenant:{tenant_id}:`.
+    ///
+    /// Takes a [`Uuid`] rather than the `vf-core::ids` `TenantId` of §A3.1,
+    /// which task C1 has not published yet.
+    #[must_use]
+    pub fn new(inner: Arc<dyn WakeBus>, tenant_id: Uuid) -> Self {
+        Self {
+            inner,
+            tenant_id,
+            namespace: tenant_wake_namespace(tenant_id),
+        }
+    }
+
+    /// The tenant this bus is scoped to.
+    #[must_use]
+    pub fn tenant_id(&self) -> Uuid {
+        self.tenant_id
+    }
+
+    /// The namespace this bus is scoped to: `tenant:{tenant_id}:`.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Builds a topic inside this tenant's namespace. The preferred way to
+    /// name one, because it cannot produce a topic the guard refuses.
+    ///
+    /// # Errors
+    ///
+    /// As [`Topic::for_tenant`].
+    pub fn topic(&self, name: &str) -> Result<Topic, WakeBusError> {
+        Topic::for_tenant(self.tenant_id, name)
+    }
+
+    /// Builds a bucket key inside this tenant's namespace. The preferred way
+    /// to name one, because it cannot produce a key the guard refuses.
+    ///
+    /// # Errors
+    ///
+    /// As [`BucketKey::for_tenant`].
+    pub fn bucket_key(&self, name: &str) -> Result<BucketKey, WakeBusError> {
+        BucketKey::for_tenant(self.tenant_id, name)
+    }
+
+    /// Refuses a topic or bucket key outside the tenant namespace.
+    fn guard(&self, name: &str) -> Result<(), WakeBusError> {
+        if in_namespace(&self.namespace, name) {
+            Ok(())
+        } else {
+            Err(WakeBusError::OutsideTenantNamespace {
+                namespace: self.namespace.clone(),
+            })
+        }
+    }
+}
+
+impl fmt::Debug for TenantWakeBus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TenantWakeBus")
+            .field("tenant_id", &self.tenant_id)
+            .field("namespace", &self.namespace)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An already-resolved refusal, so a rejected call never builds a future that
+/// could do I/O. The wake-bus twin of the helper behind
+/// [`TenantArtifactStore`](super::TenantArtifactStore).
+fn refuse<'a, T: Send + 'a>(error: WakeBusError) -> PortFuture<'a, Result<T, WakeBusError>> {
+    Box::pin(std::future::ready(Err(error)))
+}
+
+impl WakeBus for TenantWakeBus {
+    fn publish(&self, topic: &Topic, payload: &[u8]) -> PortFuture<'_, Result<(), WakeBusError>> {
+        if let Err(error) = self.guard(topic.as_str()) {
+            return refuse(error);
+        }
+        self.inner.publish(topic, payload)
+    }
+
+    fn subscribe(&self, topic: &Topic) -> PortFuture<'_, Result<WakeSubscription, WakeBusError>> {
+        if let Err(error) = self.guard(topic.as_str()) {
+            return refuse(error);
+        }
+        self.inner.subscribe(topic)
+    }
+
+    fn token_bucket(
+        &self,
+        key: &BucketKey,
+        rate: TokenRate,
+        burst: u32,
+    ) -> PortFuture<'_, Result<Permit, WakeBusError>> {
+        if let Err(error) = self.guard(key.as_str()) {
+            return refuse(error);
+        }
+        self.inner.token_bucket(key, rate, burst)
+    }
 }
