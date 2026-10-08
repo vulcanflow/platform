@@ -43,8 +43,8 @@ pub use artifact::{
     PutReceipt, Sha256Digest, TenantArtifactStore,
 };
 pub use wake::{
-    BucketKey, MAX_WAKE_NAME_BYTES, MAX_WAKE_PAYLOAD_BYTES, Permit, TokenRate, Topic, WakeBus,
-    WakeBusError, WakeMessage, WakeStream, WakeSubscription,
+    BucketKey, MAX_WAKE_NAME_BYTES, MAX_WAKE_PAYLOAD_BYTES, Permit, TenantWakeBus, TokenRate,
+    Topic, WakeBus, WakeBusError, WakeMessage, WakeStream, WakeSubscription, tenant_wake_namespace,
 };
 
 /// The return type of every asynchronous port method.
@@ -64,8 +64,9 @@ pub type PortFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait ScanRuntime: Send + Sync + 'static {}
 
 /// Tenant provisioning. Real: Kubernetes namespace plus schema plus bucket
-/// prefix. Local and test: schema, prefix and bus namespace, Kubernetes steps
-/// skipped. Implemented in `vf-operator` (task O2).
+/// prefix. Local and test: schema, prefix and bus namespace
+/// ([`tenant_wake_namespace`]), Kubernetes steps skipped. Implemented in
+/// `vf-operator` (task O2).
 pub trait TenantProvisioner: Send + Sync + 'static {}
 
 /// Track A challenge verification. Real: `hickory-resolver` and `reqwest`
