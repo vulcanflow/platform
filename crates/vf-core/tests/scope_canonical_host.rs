@@ -105,8 +105,7 @@ fn accepts_label_at_63_octets() {
 #[test]
 fn rejects_host_over_253_octets() {
     // 4 labels of 63 'a's joined by dots, plus ".com" comfortably exceeds 253.
-    let long = std::iter::repeat("a".repeat(63))
-        .take(4)
+    let long = std::iter::repeat_n("a".repeat(63), 4)
         .collect::<Vec<_>>()
         .join(".");
     rejected(&format!("{long}.com"));
