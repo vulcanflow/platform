@@ -787,5 +787,98 @@ printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - u
 commit add-workflow-run-echo-this-step-uses
 check "pinned step beside a run: echo line ending in the word uses" pins fail
 
+#   The cases below (92-98) are for the same VFL-122 review round (c1a46cf,
+#   M4): the non-text pass now decides from the blob, not from git's diff
+#   attribute, which a tracked .gitattributes in the tree under check can set.
+
+# --- 92. pins: a UTF-16 workflow is refused despite a root .gitattributes *.yml diff (H1): refused --
+setup
+mkdir -p .github/workflows
+printf '*.yml diff\n' > .gitattributes
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-16 > .github/workflows/ci.yml
+commit add-workflow-utf16-root-gitattributes-diff
+check "UTF-16 workflow refused despite root .gitattributes *.yml diff (H1)" pins fail
+
+# --- 93. pins: a UTF-16 workflow is refused despite .github/workflows/.gitattributes *.yml diff (H2): refused --
+setup
+mkdir -p .github/workflows
+printf '*.yml diff\n' > .github/workflows/.gitattributes
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-16 > .github/workflows/ci.yml
+commit add-workflow-utf16-workflows-gitattributes-diff
+check "UTF-16 workflow refused despite .github/workflows/.gitattributes *.yml diff (H2)" pins fail
+
+# --- 94. pins: a pinned UTF-16 workflow is refused too, the blob decides whatever the value says: refused --
+setup
+mkdir -p .github/workflows
+printf '*.yml diff\n' > .gitattributes
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' | iconv -f utf-8 -t utf-16 > .github/workflows/ci.yml
+commit add-workflow-utf16-pinned-root-gitattributes-diff
+check "pinned UTF-16 workflow refused by the blob NUL check regardless of the pinned value" pins fail
+
+# --- 95. pins: a pinned UTF-8 workflow is refused when a root .gitattributes *.yml -diff makes git grep see it as binary: refused --
+setup
+mkdir -p .github/workflows
+printf '*.yml -diff\n' > .gitattributes
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-pinned-root-gitattributes-nodiff
+check "pinned UTF-8 workflow refused when *.yml -diff makes git grep report it as binary" pins fail
+
+# --- 96. pins: an unrelated *.md text attribute leaves a pinned UTF-8 workflow passing: allowed --
+setup
+mkdir -p .github/workflows
+printf '*.md text\n' > .gitattributes
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-pinned-root-gitattributes-md-text
+check "unrelated .gitattributes (*.md text) leaves a pinned UTF-8 workflow passing" pins pass
+
+# --- 97. pins: a pinned UTF-8 workflow still passes with a root .gitattributes *.yml diff: allowed --
+setup
+mkdir -p .github/workflows
+printf '*.yml diff\n' > .gitattributes
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-pinned-root-gitattributes-diff
+check "pinned UTF-8 workflow still passes with root .gitattributes *.yml diff" pins pass
+
+# --- 98. pins: a NUL-holding .github/logo.png beside a pinned workflow is not read: allowed --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+printf 'a\0b' > .github/logo.png
+commit add-workflow-pinned-plus-logo-with-nul
+check "pinned workflow passes beside a NUL-holding .github/logo.png (outside workflows/)" pins pass
+
+#   The cases below (99-101) are discretionary extras for the same review
+#   round (c1a46cf, M4): further encodings and a boundary probe the architect
+#   called out as optional.
+
+# --- 99. pins: a UTF-32 workflow is refused despite a root .gitattributes *.yml diff: refused --
+setup
+mkdir -p .github/workflows
+printf '*.yml diff\n' > .gitattributes
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-32 > .github/workflows/ci.yml
+commit add-workflow-utf32-root-gitattributes-diff
+check "UTF-32 workflow refused despite root .gitattributes *.yml diff" pins fail
+
+# --- 100. pins: a pinned UTF-8 workflow with one NUL after byte 8000 is refused: refused --
+setup
+mkdir -p .github/workflows
+{
+  printf '# '
+  printf 'x%.0s' $(seq 1 8010)
+  printf '\n'
+  printf '\0'
+  printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n'
+} > .github/workflows/ci.yml
+commit add-workflow-pinned-nul-after-byte-8000
+check "pinned UTF-8 workflow with one NUL after byte 8000 is refused" pins fail
+
+# --- 101. pins: an unpinned UTF-8 workflow is refused when a root .gitattributes *.yml binary makes git grep see it as binary: refused --
+setup
+mkdir -p .github/workflows
+printf '*.yml binary\n' > .gitattributes
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-unpinned-root-gitattributes-binary
+check "unpinned UTF-8 workflow refused when *.yml binary makes git grep report it as binary" pins fail
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
