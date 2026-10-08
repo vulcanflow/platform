@@ -670,5 +670,122 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - uses:\tactions/checkout@1
 commit add-workflow-tab-after-uses-colon
 check "pinned uses: value separated by a literal TAB" pins pass
 
+#   The cases below (78-86) are regression fixtures for VFL-122 review round 3
+#   (c74e16e, M3): the scanner assumes a key and its colon share a line, which
+#   holds in block context but not in a flow mapping, where a line break or a
+#   comment may come between an implicit key and its colon.
+#   `steps: [ { name: checkout, uses` then `: evil/act@v4, with: { ref: main } } ]`
+#   on the next line gave PASS, exit 0, on ced2971, while GitHub's own
+#   @actions/workflow-parser read it as uses: evil/act@v4 with no errors.
+#   c74e16e refuses a literal, escaped or alias key whose colon sits on a
+#   later line, a double-quoted key continued by an escaped line break, and a
+#   backslash in a pinned path (which a double-quoted value would decode).
+
+# --- 78. pins: a flow step uses key, colon on a later line (M3 reproduction): refused --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { name: checkout, uses\n      : evil/act@v4, with: { ref: main } } ]\n' > .github/workflows/ci.yml
+commit add-workflow-flow-split-key-with-trailer
+check "flow step uses key with its colon on a later line (M3 reproduction)" pins fail
+
+# --- 79. pins: a quoted "uses" key, colon on a later line: refused ---------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { "uses"\n      : evil/act@v4 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-quoted-split-key
+check "quoted \"uses\" key with its colon on a later line" pins fail
+
+# --- 80. pins: a job-level uses key, colon on a later line: refused --------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs: { b: { uses\n  : evil/wf/.github/workflows/w.yml@main } }\n' > .github/workflows/ci.yml
+commit add-workflow-job-level-split-key
+check "job-level uses key with its colon on a later line" pins fail
+
+# --- 81. pins: a double-quoted key continued by an escaped line break: refused --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { "us\\\n      es": evil/act@v4 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-escaped-key-line-break
+check "double-quoted key continued by an escaped line break" pins fail
+
+# --- 82. pins: an escaped "uses" key, colon on a later line: refused ------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { "u\\x73es"\n      : evil/act@v4 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-escaped-key-colon-split
+check "escaped \"uses\" key with its colon on a later line" pins fail
+
+# --- 83. pins: a backslash in a pinned path: refused -----------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: "evil/act/p\\x40v4@11d5960a326750d5838078e36cf38b85af677262"\n' > .github/workflows/ci.yml
+commit add-workflow-backslash-in-pinned-path
+check "backslash in a pinned path (a double-quoted value would decode it)" pins fail
+
+# --- 84. pins: a pinned flow step, key colon and value on one line: allowed --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-flow-step-one-line-pinned
+check "pinned flow step, key, colon and value all on one line" pins pass
+
+# --- 85. pins: a flow step split across lines, key+colon+value together: allowed --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { name: a,\n      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-flow-step-split-colon-with-value
+check "flow step split across lines, with key, colon and value together" pins pass
+
+# --- 86. pins: a pinned step beside a run: printf holding an escaped quote: allowed --
+# Confirms the escaped-key and split-key rules do not reach into a run: block:
+# the closed, non-flow-key-position quote in printf "%s\n" a is not mistaken
+# for a key.
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - run: printf "%%s\\n" a\n' > .github/workflows/ci.yml
+commit add-workflow-run-printf-escaped-quote
+check "pinned step beside a run: printf holding an escaped quote" pins pass
+
+#   The cases below (87-91) are discretionary extras for the same review round
+#   (c74e16e, M3): boundary variants the architect called out as optional.
+
+# --- 87. pins: a split uses key followed by a comment on its own line: refused --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { uses # pick one\n      : evil/act@v4 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-split-key-comment-after
+check "split uses key followed by a comment before the colon" pins fail
+
+# --- 88. pins: a split uses key with a comment line between key and colon: refused --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { uses\n      # pick one\n      : evil/act@v4 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-split-key-comment-between
+check "split uses key with a comment line between the key and the colon" pins fail
+
+# --- 89. pins: a split uses key after an anchor: refused -------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { &a uses\n      : evil/act@v4 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-split-key-after-anchor
+check "split uses key after an anchor" pins fail
+
+# --- 90. pins: a job-level split key, CRLF line ends: refused --------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\r\njobs: { b: { uses\r\n  : evil/wf/.github/workflows/w.yml@main } }\r\n' > .github/workflows/ci.yml
+commit add-workflow-job-level-split-key-crlf
+check "job-level split key, CRLF line ends" pins fail
+
+# --- 91. pins: a pinned step beside a run: echo ending in the word uses: refused --
+# Accepted over-refusal (the same trade as case 86/L9): prose or shell that
+# ends a line in the word uses is refused too, even though it is not a key.
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - run: echo "this step uses"\n' > .github/workflows/ci.yml
+commit add-workflow-run-echo-this-step-uses
+check "pinned step beside a run: echo line ending in the word uses" pins fail
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
