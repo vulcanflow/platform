@@ -43,9 +43,30 @@ jobs:
           cargo --version
           rustup target list --installed
 
+      # Both advisory roots ride in this cache: cargo-deny clones under
+      # `advisory-dbs` (deny.toml `db-path`), cargo-audit into `advisory-db`.
+      # Neither recipe runs offline, so each tool still fetches its clone forward
+      # on a hit; the cache saves the clone, never the advisory set. An exact key
+      # hit is not re-saved, so the restored copy ages until Cargo.lock or the
+      # toolchain moves the key, and the fetch covers the gap.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.arch }}
+          cache-directories: |
+            ~/.cargo/advisory-dbs
+            ~/.cargo/advisory-db
+
+      # What the cache brought back, before the tools fetch it forward: the
+      # commit each clone was restored at, or "not restored" on a miss.
+      - name: Show restored advisory databases
+        run: |
+          for db in ~/.cargo/advisory-db ~/.cargo/advisory-dbs/*/; do
+            if [ -d "$db/.git" ]; then
+              echo "$db: $(git -C "$db" log -1 --format='%h %cI')"
+            else
+              echo "$db: not restored"
+            fi
+          done
 
       - name: Install just, cargo-deny, cargo-audit
         uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2.87.25
