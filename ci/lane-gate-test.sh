@@ -424,5 +424,156 @@ else
   fail_count=$((fail_count+1))
 fi
 
+#   The cases below (49-56) are regression fixtures for VFL-122 review round 2
+#   (1b91879): the line scanner only ever caught a `uses:` whose scope line
+#   held the literal word `uses` before a colon; each form below loads as
+#   `uses: evil/act@v4` in js-yaml 4.3.1 but never matched that scan, so it
+#   passed `pins` on 53f326e.
+
+# --- 49. pins: a lone CR after a comment hides a step: refused -------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      # c\r      - uses: evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-lone-cr-after-comment
+check "lone CR after a comment hides an unpinned uses:" pins fail
+
+# --- 50. pins: an explicit key spelled as a block scalar: refused ----------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - ? >-\n          uses\n        : evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-explicit-key-block-scalar
+check "explicit ? key spelled as a block scalar" pins fail
+
+# --- 51. pins: a double-quoted key holding a backslash escape: refused -----
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - "u\\x73es": evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-escaped-key
+check "double-quoted key holding a backslash escape" pins fail
+
+# --- 52. pins: an alias used as a key: refused ------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - x: &k uses\n      - *k : evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-alias-key
+check "alias (*k) used as a key" pins fail
+
+# --- 53. pins: a UTF-16 workflow file: refused ------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: evil/act@v4\n' | iconv -f utf-8 -t utf-16 > .github/workflows/ci.yml
+commit add-workflow-utf16
+check "UTF-16 workflow file (git sees it as binary)" pins fail
+
+# --- 54. pins: the workflow file is a symlink to content outside .github/: refused --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: evil/act@v4\n' > outside-workflow.yml
+ln -s ../../outside-workflow.yml .github/workflows/ci.yml
+commit add-workflow-symlink-to-outside-file
+check "workflow file is a symlink to a file outside .github/" pins fail
+
+# --- 55. pins: a CRLF workflow, pinned uses: plus a commented-out uses:: allowed --
+setup
+mkdir -p .github/workflows
+printf 'on: push\r\njobs:\r\n  build:\r\n    steps:\r\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\r\n      # - uses: x/y@v4\r\n' > .github/workflows/ci.yml
+commit add-workflow-crlf-pinned-and-commented
+check "CRLF workflow: pinned uses: plus a commented-out uses:" pins pass
+
+# --- 56. pins: a run: block holding *.rs, a ?) case arm and \n: allowed ----
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - run: |\n          ls *.rs\n          case $x in ?) ;; esac\n          printf "%%s\\n" "$x"\n' > .github/workflows/ci.yml
+commit add-workflow-run-block-shell-metachars
+check "run: block holding *.rs, a ?) case arm and a backslash escape" pins pass
+
+#   The cases below (57-67) are discretionary extras for the same VFL-122
+#   review round (1b91879): flow-form and symlink/submodule variants the
+#   architect called out as optional, plus a few boundary checks confirming
+#   the new refusals don't overreach onto lines that were always fine.
+
+# --- 57. pins: a NEL line break after a comment hides a step: refused ------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      # c\xc2\x85      - uses: evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-nel-after-comment
+check "NEL line break after a comment hides an unpinned uses:" pins fail
+
+# --- 58. pins: a LS line break after a comment hides a step: refused -------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      # c\xe2\x80\xa8      - uses: evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-ls-after-comment
+check "LS line break after a comment hides an unpinned uses:" pins fail
+
+# --- 59. pins: a flow explicit key, { ? uses : v }: refused ----------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - { ? uses : evil/act@v4 }\n' > .github/workflows/ci.yml
+commit add-workflow-flow-explicit-key
+check "flow explicit { ? uses : ... } key" pins fail
+
+# --- 60. pins: a double-quoted "uses" key with no escape, unpinned: refused --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - "uses": evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-quoted-uses-key-unpinned
+check "quoted \"uses\" key with no escape, unpinned value" pins fail
+
+# --- 61. pins: a flow alias used as a key, {*k : v}: refused ---------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - x: &k uses\n      - {*k : evil/act@v4}\n' > .github/workflows/ci.yml
+commit add-workflow-flow-alias-key
+check "flow {*k : ...} alias key" pins fail
+
+# --- 62. pins: .github itself is a symlink: refused -------------------------
+setup
+mkdir -p real-github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > real-github/workflows/ci.yml
+ln -s real-github .github
+commit add-github-dir-symlink
+check ".github itself is a symlink" pins fail
+
+# --- 63. pins: .github/workflows itself is a symlink: refused ---------------
+setup
+mkdir -p .github real-workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > real-workflows/ci.yml
+ln -s ../real-workflows .github/workflows
+commit add-workflows-dir-symlink
+check ".github/workflows itself is a symlink" pins fail
+
+# --- 64. pins: a gitlink (submodule) under .github/workflows/: refused -----
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+git add -A >/dev/null
+git update-index --add --cacheinfo 160000,11d5960a326750d5838078e36cf38b85af677262,.github/workflows/sub
+git commit -qm add-workflows-gitlink
+check "gitlink (submodule) under .github/workflows/" pins fail
+
+# --- 65. pins: a quote-less comment holding ?, * and : beside a pinned step: allowed --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      # what? yes, ? maybe *k : no\n' > .github/workflows/ci.yml
+commit add-workflow-quoteless-comment-with-triggers
+check "quote-less comment holding ?, * and : beside a pinned step" pins pass
+
+# --- 66. pins: an empty workflow file beside a pinned one: allowed ---------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+: > .github/workflows/empty.yml
+commit add-empty-workflow-file
+check "empty workflow file beside a pinned one" pins pass
+
+# --- 67. pins: an executable (100755) workflow file: allowed ---------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+chmod +x .github/workflows/ci.yml
+commit add-executable-workflow
+check "executable (100755) workflow file" pins pass
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
