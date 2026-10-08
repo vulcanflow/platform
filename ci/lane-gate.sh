@@ -200,7 +200,8 @@ cmd_inline_tests() {
 # string or a trailing comment is checked too, which can refuse a line but
 # never admit one. What the scanner cannot read is refused outright: a key
 # spelled without `uses` before a colon on one line, a line break git does not
-# split on, a file git does not treat as text, and a symlink or submodule.
+# split on, a file git does not treat as text, a symlink or submodule, and a
+# path holding a colon.
 # ---------------------------------------------------------------------------
 
 # `uses` as a whole word, then an optional closing quote and a colon, anywhere
@@ -241,7 +242,9 @@ wf_grep() {
 }
 
 # split_hit <line> — split one `git grep -n` line, <ref>:<path>:<n>:<text>, into
-# LOC (<path>:<n>) and TEXT.
+# LOC (<path>:<n>) and TEXT. It splits on the first two colons after <ref>, so
+# a colon in the path would move the rest of the path into TEXT, where a `#`
+# could pass for a comment. cmd_pins refuses such a path.
 split_hit() {
   local l="${1#"$HEAD_REF:"}"
   LOC="${l%%:*}"; l="${l#*:}"
@@ -273,6 +276,8 @@ cmd_pins() {
       fi
       [[ $ref =~ $PIN_RE ]] || bad+=("$LOC: ${ref:-<no value on this line>}")
     done
+    # Unreachable while git grep and bash agree on USES_SCOPE_RE; kept so that a
+    # disagreement between the two regex engines refuses the line.
     if [ "$found" -eq 0 ]; then
       n=$((n + 1)); bad+=("$LOC: <a uses: this check could not read>")
     fi
@@ -311,10 +316,15 @@ cmd_pins() {
   done <<< "$WF_OUT"
 
   # git grep skips a symlink and a submodule, so neither may stand on the way to
-  # .github/workflows/ or under it. ls-tree prints <mode> <type> <object>\t<path>.
+  # .github/workflows/ or under it, and split_hit cannot split a path holding a
+  # colon. ls-tree prints <mode> <type> <object>\t<path>, the same paths git
+  # grep searched; a colon is never quoted away.
   tree="$(git -C "$top" ls-tree "$HEAD_REF" -- .github)"
   tree+=$'\n'"$(git -C "$top" ls-tree -r -t "$HEAD_REF" -- .github/workflows)"
   while IFS= read -r line; do
+    case "${line#*$'\t'}" in
+      *:*) bad+=("${line#*$'\t'}: <a path holding a colon>") ;;
+    esac
     case "$line" in
       ''|'040000 '*|'100644 '*|'100755 '*) ;;
       *) bad+=("${line#*$'\t'}: <a symlink or submodule>") ;;
@@ -338,8 +348,9 @@ cmd_pins() {
 
   The check reads lines, not YAML, so it refuses what it cannot read: an
   explicit ? key, an alias used as a key, a double-quoted key holding an
-  escape, a line break other than LF or CRLF, a file that is not text, and a
-  symlink or submodule. No workflow needs these; write the key as plain uses:."
+  escape, a line break other than LF or CRLF, a file that is not text, a
+  symlink or submodule, and a path holding a colon. No workflow needs these;
+  write the key as plain uses: and name the file without a colon."
   fi
 
   if [ "$n" -eq 0 ]; then
