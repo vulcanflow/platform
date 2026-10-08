@@ -45,6 +45,9 @@ use super::PortFuture;
 pub const MAX_WAKE_PAYLOAD_BYTES: usize = 4 * 1024;
 
 /// Longest accepted [`Topic`] or [`BucketKey`], in bytes.
+///
+/// The cap applies to the whole name, so a tenant-scoped name spends 44 of
+/// these bytes on its [`tenant_wake_namespace`] and leaves 211 for the rest.
 pub const MAX_WAKE_NAME_BYTES: usize = 255;
 
 // ---------------------------------------------------------------------------
@@ -243,6 +246,10 @@ impl Topic {
     /// The topic `name` inside one tenant's namespace:
     /// `tenant:{tenant_id}:{name}` (see [`tenant_wake_namespace`]).
     ///
+    /// `name` is relative to the namespace and must not repeat it: a `name`
+    /// that already starts with `tenant:{tenant_id}:` is prefixed a second
+    /// time, and the result is a valid topic nobody listens on.
+    ///
     /// # Errors
     ///
     /// [`WakeBusError::InvalidTopic`] when `name` is empty, or when the whole
@@ -280,6 +287,9 @@ impl BucketKey {
 
     /// The bucket key `name` inside one tenant's namespace:
     /// `tenant:{tenant_id}:{name}` (see [`tenant_wake_namespace`]).
+    ///
+    /// `name` is relative to the namespace and must not repeat it, as for
+    /// [`Topic::for_tenant`].
     ///
     /// # Errors
     ///
@@ -572,6 +582,12 @@ impl Permit {
 /// An adapter does not interpret names and enforces no tenant boundary. Code
 /// that serves one tenant holds a [`TenantWakeBus`], which refuses a topic or
 /// bucket key outside that tenant's [`tenant_wake_namespace`] before any I/O.
+///
+/// Topics and bucket keys share that namespace, so one string such as
+/// `tenant:{id}:webhook-deliver` can be both a topic and a bucket key. They
+/// still name different things: an adapter keeps topics and bucket keys in
+/// separate keyspaces, as Redis does with channels and keys, so a topic never
+/// reaches the state of the bucket with the same name.
 pub trait WakeBus: Send + Sync + 'static {
     /// Publishes `payload` on `topic`.
     fn publish(&self, topic: &Topic, payload: &[u8]) -> PortFuture<'_, Result<(), WakeBusError>>;
@@ -642,7 +658,8 @@ impl TenantWakeBus {
     }
 
     /// Builds a topic inside this tenant's namespace. The preferred way to
-    /// name one, because it cannot produce a topic the guard refuses.
+    /// name one, because it cannot produce a topic the guard refuses. `name`
+    /// is relative to [`Self::namespace`] and must not repeat it.
     ///
     /// # Errors
     ///
@@ -652,7 +669,8 @@ impl TenantWakeBus {
     }
 
     /// Builds a bucket key inside this tenant's namespace. The preferred way
-    /// to name one, because it cannot produce a key the guard refuses.
+    /// to name one, because it cannot produce a key the guard refuses. `name`
+    /// is relative to [`Self::namespace`] and must not repeat it.
     ///
     /// # Errors
     ///
