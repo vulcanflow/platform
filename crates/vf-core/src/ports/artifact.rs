@@ -41,6 +41,10 @@ pub const MAX_ARTIFACT_KEY_BYTES: usize = 1024;
 
 /// Longest accepted [`ArtifactKey`] segment, in bytes: the per-segment bound
 /// the [`MAX_ARTIFACT_KEY_BYTES`] rustdoc states.
+///
+/// Public rustdoc cannot link to a private item, so three doc sites spell this
+/// value out as `255`: [`MAX_ARTIFACT_KEY_BYTES`], [`ArtifactKey`] and the
+/// `# Errors` section of [`ArtifactKey::parse`]. Change them with it.
 const MAX_ARTIFACT_KEY_SEGMENT_BYTES: usize = 255;
 
 // ---------------------------------------------------------------------------
@@ -524,9 +528,9 @@ impl From<Sha256Digest> for String {
 ///
 /// This exists so a 100 MiB findings artifact can be uploaded in parts
 /// without ever being whole in memory, which is what §A7-6's "size-bounded
-/// and streaming" requires on the write side; [`ArtifactReader`] is the
-/// read-side mirror. It is a trait with a boxed future rather than a
-/// `futures::Stream` because `vf-core` carries no async crate;
+/// and streaming" requires on the write side; [`ArtifactReader`] mirrors its
+/// chunked shape on the read side. It is a trait with a boxed future rather
+/// than a `futures::Stream` because `vf-core` carries no async crate;
 /// `vf-db::adapters` adapts it to `object_store`'s multipart writer.
 pub trait ArtifactSource: Send + 'static {
     /// The next chunk, or `Ok(None)` at end of stream.
