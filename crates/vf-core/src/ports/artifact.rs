@@ -30,10 +30,18 @@ use super::PortFuture;
 
 /// Longest accepted [`ArtifactKey`], in bytes.
 ///
-/// 1024 is the S3 object-key limit, so a key this crate accepts is storable on
-/// every backend in §A6.1 (Ceph RGW, RustFS, MinIO) and on a local filesystem
-/// under a short root.
+/// [`ArtifactKey::parse`] enforces two bounds: 1024 bytes for the whole key,
+/// which is the S3 object-key limit, and 255 bytes for each `/`-separated
+/// segment, which is `NAME_MAX` for one path component on ext4, xfs and btrfs.
+/// Together they make a key this crate accepts storable on every backend in
+/// §A6.1 (Ceph RGW, RustFS, MinIO) and on a local filesystem under a short
+/// root. The one filesystem divergence left is contract item 7 on
+/// [`ArtifactStore`].
 pub const MAX_ARTIFACT_KEY_BYTES: usize = 1024;
+
+/// Longest accepted [`ArtifactKey`] segment, in bytes: the per-segment bound
+/// the [`MAX_ARTIFACT_KEY_BYTES`] rustdoc states.
+const MAX_ARTIFACT_KEY_SEGMENT_BYTES: usize = 255;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -142,10 +150,10 @@ pub enum ArtifactStoreError {
 /// is the only way to make one. Each segment is drawn from the allow-list
 /// `[A-Za-z0-9._-]`, which every §A6.1 backend stores verbatim (no percent
 /// encoding, no case folding, no reserved filename characters), and a segment
-/// may not be empty, `.` or `..`. So a key cannot be absolute, cannot
-/// traverse, and cannot mean a different object on a different backend; that
-/// is what keeps [`ArtifactPrefix::contains`] a sound containment test rather
-/// than a string guess.
+/// may not be empty, `.`, `..` or longer than 255 bytes. So a key cannot be
+/// absolute, cannot traverse, and cannot mean a different object on a
+/// different backend; that is what keeps [`ArtifactPrefix::contains`] a sound
+/// containment test rather than a string guess.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ArtifactKey(String);
@@ -157,7 +165,8 @@ impl ArtifactKey {
     ///
     /// [`ArtifactStoreError::InvalidKey`] when `raw` is empty, longer than
     /// [`MAX_ARTIFACT_KEY_BYTES`], absolute, ends in `/`, has an empty, `.` or
-    /// `..` segment, or contains a byte outside `[A-Za-z0-9._/-]`.
+    /// `..` segment, has a segment longer than 255 bytes, or contains a byte
+    /// outside `[A-Za-z0-9._/-]`.
     pub fn parse(raw: &str) -> Result<Self, ArtifactStoreError> {
         let invalid = |reason: &str| ArtifactStoreError::InvalidKey {
             reason: reason.to_owned(),
@@ -190,6 +199,12 @@ impl ArtifactKey {
                 "" => return Err(invalid("contains an empty path segment")),
                 "." | ".." => {
                     return Err(invalid("contains a `.` or `..` path segment"));
+                }
+                // The rule, never the segment, as for the byte check above.
+                _ if segment.len() > MAX_ARTIFACT_KEY_SEGMENT_BYTES => {
+                    return Err(invalid(&format!(
+                        "segment longer than {MAX_ARTIFACT_KEY_SEGMENT_BYTES} bytes"
+                    )));
                 }
                 _ => {}
             }
@@ -629,16 +644,21 @@ pub struct ArtifactContent {
 /// One stored object, read in chunks: what [`ArtifactStore::get_stream`]
 /// returns.
 ///
-/// The read-side mirror of [`ArtifactSource`], so a §A3.6 `findings.json` at
-/// its 64 MiB bound is parsed as it arrives rather than held whole in memory
-/// per concurrent ingest (§A7-6, "size-bounded and streaming").
+/// The read-side mirror of [`ArtifactSource`]: a §A3.6 `findings.json` at its
+/// 64 MiB bound arrives in chunks, so the caller decides where the bytes go
+/// rather than receiving one whole buffer per concurrent ingest.
+///
+/// **Verify, then parse.** §A7-6 puts the checksum comparison before any
+/// parse, so a caller runs one pipeline in this order: it hashes each chunk
+/// as it reads it and keeps the bytes, within the read limit; at `Ok(None)` it
+/// compares the hash with the digest declared in the trusted work record
+/// (§A3.6); only on a match does it parse what it kept, and that parse is
+/// itself size-bounded and streaming (§A7-6). Nothing is parsed while the
+/// object is still arriving, and nothing from a reader that ended in an error.
 ///
 /// **No digest.** Unlike [`ArtifactContent`], a reader reports no SHA-256. A
-/// digest the adapter computed would be known only at end of stream, after
-/// the caller had consumed the bytes, and the digest that counts is the one
-/// declared in the trusted work record (§A3.6), not one the store reports. So
-/// the caller hashes what it reads and compares it with the declared digest,
-/// and §A7-6 puts that comparison before any parse.
+/// digest the adapter computed would be known only at end of stream, and the
+/// digest that counts is the declared one, not one the store reports.
 pub trait ArtifactReader: Send + 'static {
     /// What the backend reported about the object when the read was opened.
     fn meta(&self) -> &ArtifactMeta;
@@ -653,7 +673,9 @@ pub trait ArtifactReader: Send + 'static {
     ///
     /// [`ArtifactStoreError::TooLarge`] instead of a chunk that would carry
     /// the total past the adapter's read limit. [`ArtifactStoreError::Backend`]
-    /// when the transfer fails.
+    /// when the transfer fails, and instead of `Ok(None)` when the stream ends
+    /// with the total below the size the backend reported at open
+    /// ([`Self::meta`]; contract item 8 on [`ArtifactStore`]).
     fn next_chunk(&mut self) -> PortFuture<'_, Result<Option<Vec<u8>>, ArtifactStoreError>>;
 }
 
@@ -714,12 +736,15 @@ impl fmt::Debug for dyn ArtifactReader {
 /// 8. `get_stream` refuses before the first chunk: an absent key is
 ///    [`ArtifactStoreError::NotFound`], and an object whose reported size is
 ///    over the read limit `get` applies is [`ArtifactStoreError::TooLarge`],
-///    both from `get_stream` itself. The reader's
-///    [`ArtifactReader::meta`] names the key and size read, and it yields
-///    exactly the object's bytes, in order, then `Ok(None)`. It counts what it
-///    yields and returns `TooLarge` rather than a chunk that crosses the
-///    limit, so a backend that under-reports a size cannot widen the bound.
-///    It returns no digest; the caller verifies the declared one.
+///    both from `get_stream` itself. The reader's [`ArtifactReader::meta`]
+///    names the key and the size the backend reported at open, and the reader
+///    yields exactly the object's bytes, in order, then `Ok(None)`. It counts
+///    what it yields. It returns `TooLarge` rather than a chunk that crosses
+///    the limit, so a backend that under-reports a size cannot widen the
+///    bound. It returns [`ArtifactStoreError::Backend`] rather than `Ok(None)`
+///    when the total it yielded is below the size the backend reported at
+///    open, so a truncated body never reads as a complete one. It returns no
+///    digest; the caller verifies the declared one.
 /// 9. A finished reader stays finished. Once `next_chunk` returns `Ok(None)`
 ///    or an error, every later call returns the same value at once: it never
 ///    hangs, panics or resumes yielding bytes.
