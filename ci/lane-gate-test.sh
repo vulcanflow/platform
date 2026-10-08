@@ -575,5 +575,100 @@ chmod +x .github/workflows/ci.yml
 commit add-executable-workflow
 check "executable (100755) workflow file" pins pass
 
+#   The cases below (68-72) are regression fixtures for VFL-122 review round 2
+#   (c977082, M2): split_hit splits each `git grep -n` line on the first two
+#   colons after the ref, so a colon in the path moved the rest of the path
+#   into the line text, and when that tail began with `#` the line passed for
+#   a comment and was skipped. .github/workflows/a:b:#.yml holding
+#   `uses: evil/act@v4` gave `PASS pins: no uses: references`, exit 0, on
+#   c977082. 68f37be refuses any path under .github/workflows/ that holds a
+#   colon, and case 71 closes the PS (U+2029) fixture gap the same review (L8)
+#   found alongside it.
+
+# --- 68. pins: a workflow path holding a colon, unpinned uses: (M2 reproduction): refused --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: evil/act@v4\n' > ".github/workflows/a:b:#.yml"
+commit add-workflow-colon-path-unpinned
+check "workflow path holding a colon, unpinned uses: (M2 reproduction)" pins fail
+
+# --- 69. pins: same colon path, a correctly pinned uses:: refused by the path, by design --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > ".github/workflows/a:b:#.yml"
+commit add-workflow-colon-path-pinned
+check "workflow path holding a colon, correctly pinned uses: (refused by the path)" pins fail
+
+# --- 70. pins: a directory holding a colon under .github/workflows/: refused --
+setup
+mkdir -p ".github/workflows/d:x:#"
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: evil/act@v4\n' > ".github/workflows/d:x:#/w.yml"
+commit add-workflow-colon-dir
+check "directory holding a colon under .github/workflows/" pins fail
+
+# --- 71. pins: a PS (U+2029) line break after a comment hides a step: refused --
+# No existing fixture exercised PS; BREAK_RE already matches it (cases 49, 57
+# and 58 cover CR, NEL and LS), so this closes a coverage gap and is not a
+# claim that 68f37be changed this behaviour.
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      # c\xe2\x80\xa9      - uses: evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-ps-after-comment
+check "PS (U+2029) line break after a comment hides an unpinned uses:" pins fail
+
+# --- 72. pins: a quoted path holding a double quote but no colon: allowed --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      # comment\n' > '.github/workflows/q"x.yml'
+commit add-workflow-quoted-path-no-colon
+check "quoted path holding a double quote but no colon" pins pass
+
+#   The cases below (73-77) are discretionary extras for the same review round
+#   (VFL-472): path-colon boundary variants the task called out as optional.
+
+# --- 73. pins: a:b: #.yml (space before the hash) path, unpinned uses:: refused --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: evil/act@v4\n' > ".github/workflows/a:b: #.yml"
+commit add-workflow-colon-space-hash-path
+check "workflow path a:b: #.yml (space before the hash), unpinned uses:" pins fail
+
+# --- 74. pins: a colon-holding path is still refused when run from ci/ ----
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: evil/act@v4\n' > ".github/workflows/a:b:#.yml"
+commit add-workflow-colon-path-for-subdir-cwd
+out="$(cd ci && ./lane-gate.sh pins baseline HEAD 2>&1)"; rc=$?
+name="pins from ci/ subdirectory still refuses a colon-holding path"
+if [ $rc -ne 0 ]; then
+  printf 'ok    %-46s %s=%s\n' "$name" pins fail; pass_count=$((pass_count+1))
+else
+  printf 'NOT OK %-45s %s: expected fail got pass\n' "$name" pins
+  printf '%s\n' "$out" | sed 's/^/        | /'
+  fail_count=$((fail_count+1))
+fi
+
+# --- 75. pins: a colon-holding path with no uses: key at all: refused -----
+setup
+mkdir -p .github/workflows
+printf 'just plain text, no uses key here\n' > ".github/workflows/notes:x"
+commit add-workflow-colon-path-no-uses
+check "colon-holding workflow path with no uses: key at all" pins fail
+
+# --- 76. pins: a non-ASCII path (quoted by git), no colon: allowed --------
+setup
+mkdir -p .github/workflows
+F=$'.github/workflows/\xc3\xa9.yml'
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      # comment\n' > "$F"
+commit add-workflow-nonascii-path
+check "non-ASCII workflow path (quoted by git), no colon" pins pass
+
+# --- 77. pins: a pinned uses: value separated by a literal TAB: allowed ---
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses:\tactions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-tab-after-uses-colon
+check "pinned uses: value separated by a literal TAB" pins pass
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
