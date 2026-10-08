@@ -292,5 +292,137 @@ else
   fail_count=$((fail_count+1))
 fi
 
+#   The cases below (33-48) are regression fixtures for VFL-122 review M1
+#   (e0be0ce): `pins` used to test only the leftmost uses: on a line, so a
+#   pinned decoy earlier on the line let an unpinned ref after it pass.
+
+# --- 33. pins: a pinned decoy before an unpinned uses:, same line: refused --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps: [{uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262}, {uses: evil/act@v4}]\n' > .github/workflows/ci.yml
+commit add-workflow-pinned-decoy-first
+check "pinned decoy before an unpinned uses: (same line)" pins fail
+
+# --- 34. pins: same decoy, reversed order: refused --------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps: [{uses: evil/act@v4}, {uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262}]\n' > .github/workflows/ci.yml
+commit add-workflow-pinned-decoy-second
+check "pinned decoy after an unpinned uses: (same line)" pins fail
+
+# --- 35. pins: a uses: inside a quoted string masks the real key: refused ---
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - { name: "replaces uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262", uses: actions/checkout@v4 }\n' > .github/workflows/ci.yml
+commit add-workflow-uses-inside-string
+check "uses: text inside a quoted string, real key unpinned" pins fail
+
+# --- 36. pins: a plain value cut short by a comma (@<sha>,v4): refused ------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: evil/act@11d5960a326750d5838078e36cf38b85af677262,v4\n' > .github/workflows/ci.yml
+commit add-workflow-comma-suffix
+check "uses: value followed by ,v4 with no whitespace" pins fail
+
+# --- 37. pins: two valid uses: values on one line: allowed ------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps: [{ uses: a/b@11d5960a326750d5838078e36cf38b85af677262 }, { uses: "c/d@11d5960a326750d5838078e36cf38b85af677262" }]\n' > .github/workflows/ci.yml
+commit add-workflow-two-pinned-values
+check "two valid pinned uses: values on one line" pins pass
+
+# --- 38. pins: uses: inside a flow-sequence bracket: refused ----------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps: [uses: x/y@v4]\n' > .github/workflows/ci.yml
+commit add-workflow-bracket-key
+check "uses: key opening a flow-sequence bracket" pins fail
+
+# --- 39. pins: a !!str tag before the uses: key: refused --------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - !!str uses: x/y@v4\n' > .github/workflows/ci.yml
+commit add-workflow-tagged-key
+check "!!str tag before an unpinned uses: key" pins fail
+
+# --- 40. pins: an anchor (&k) before the uses: key: refused -----------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - &k uses: x/y@v4\n' > .github/workflows/ci.yml
+commit add-workflow-anchored-key
+check "anchor (&k) before an unpinned uses: key" pins fail
+
+# --- 41. pins: an explicit "? uses" key, value on the next line: refused ----
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - ? uses\n        : x/y@v4\n' > .github/workflows/ci.yml
+commit add-workflow-explicit-key
+check "explicit ? uses key with value on the next line" pins fail
+
+# --- 42. pins: a single-quoted value with a doubled '': refused ------------
+# The doubled '' is YAML's escape for a literal quote inside a single-quoted
+# scalar. SQ_VALUE_RE requires the character after the closing quote to be a
+# non-quote (or end of line), so it does not match here; the scanner falls
+# back to PLAIN_VALUE_RE, which cannot produce a value that satisfies PIN_RE.
+# This refuses a line it cannot parse rather than guessing at its value.
+setup
+mkdir -p .github/workflows
+printf "on: push\njobs:\n  build:\n    steps:\n      - uses: 'x/y@11d5960a326750d5838078e36cf38b85af677262''v4'\n" > .github/workflows/ci.yml
+commit add-workflow-doubled-single-quote
+check "single-quoted value with a doubled '' escape" pins fail
+
+# --- 43. pins: a local ./ action pinned to a SHA: refused -------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: ./.github/actions/x@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-local-action-pinned
+check "local ./ action pinned to a SHA" pins fail
+
+# --- 44. pins: a docker:// image pinned to a SHA: refused -------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: docker://alpine@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-docker-image-pinned
+check "docker:// image pinned to a SHA" pins fail
+
+# --- 45. pins: a comment line holding a quote character is not skipped -----
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      # - uses: "x/y@v4"\n' > .github/workflows/ci.yml
+commit add-workflow-commented-quoted-decoy
+check "# comment holding a quote is examined, not skipped" pins fail
+
+# --- 46. pins: an unpinned uses: under a nested workflows/sub/*.yaml -------
+setup
+mkdir -p .github/workflows/sub
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n' > .github/workflows/sub/ci.yaml
+commit add-workflow-nested-yaml-unpinned
+check "unpinned uses: under .github/workflows/sub/ci.yaml" pins fail
+
+# --- 47. pins: a job-level reusable workflow call pinned to a SHA: allowed --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    uses: o/r/.github/workflows/x.yml@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-reusable-pinned
+check "job-level reusable workflow call, pinned to a SHA" pins pass
+
+# --- 48. pins: an unpinned uses: is still found when run from ci/ ----------
+# Regression: `pins` now reads from the repository root (git rev-parse
+# --show-toplevel), so invoking it with cwd=ci/ must not vacuously pass by
+# looking for .github/workflows/ under ci/.github/workflows/ instead.
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n' > .github/workflows/ci.yml
+commit add-workflow-tag-for-subdir-cwd
+out="$(cd ci && ./lane-gate.sh pins baseline HEAD 2>&1)"; rc=$?
+name="pins from ci/ subdirectory still checks .github/workflows/"
+if [ $rc -ne 0 ]; then
+  printf 'ok    %-46s %s=%s\n' "$name" pins fail; pass_count=$((pass_count+1))
+else
+  printf 'NOT OK %-45s %s: expected fail got pass\n' "$name" pins
+  printf '%s\n' "$out" | sed 's/^/        | /'
+  fail_count=$((fail_count+1))
+fi
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
