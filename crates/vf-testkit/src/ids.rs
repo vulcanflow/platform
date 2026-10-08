@@ -19,11 +19,12 @@
 //! * ids from one generator are strictly increasing in byte order, so a test
 //!   that asserts on pagination order gets the same order as production.
 //!
-//! # Why the port implementation is empty
+//! # The port implementation
 //!
-//! As for [`crate::clock`]: `vf_core::ports::IdGen` has no methods until task
-//! C1 declares them. The empty `impl` records that this is the test adapter
-//! for the §A6.1 row; the inherent API below is what a test drives.
+//! As for [`crate::clock`]: task C1 declared `vf_core::ports::IdGen`'s one
+//! method, `new_uuid`, and the `impl` forwards it to [`SeqIdGen::next_id`], so
+//! the code under test draws from the same sequence as the handle the test
+//! kept. The inherent API below is what a test drives.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -128,6 +129,11 @@ impl SeqIdGen {
     }
 }
 
-/// Test adapter for the §A6.1 `IdGen` row. Empty until task C1 declares the
-/// trait's methods; see the module header.
-impl vf_core::ports::IdGen for SeqIdGen {}
+/// Test adapter for the §A6.1 `IdGen` row; see the module header.
+impl vf_core::ports::IdGen for SeqIdGen {
+    /// The next identifier in this generator's sequence:
+    /// [`SeqIdGen::next_id`].
+    fn new_uuid(&self) -> Uuid {
+        self.next_id()
+    }
+}
