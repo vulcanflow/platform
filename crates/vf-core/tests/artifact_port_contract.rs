@@ -389,6 +389,27 @@ fn artifact_key_rejects_one_byte_over_the_cap() {
 }
 
 #[test]
+fn artifact_key_rejects_one_byte_over_the_cap_via_legal_segments() {
+    // L4 (VFL-428): the key above is a single 1025-byte segment, which the
+    // per-segment cap (255 bytes, S3) would also refuse, so it cannot show
+    // the whole-key bound is what fired. Every segment here is legal on its
+    // own (<=255 bytes), isolating the 1024-byte whole-key bound.
+    let raw = format!(
+        "{}/{}/{}/{}/{}",
+        "a".repeat(255),
+        "a".repeat(255),
+        "a".repeat(255),
+        "a".repeat(254),
+        "a".repeat(2),
+    );
+    assert_eq!(raw.len(), MAX_ARTIFACT_KEY_BYTES + 1);
+    assert!(matches!(
+        ArtifactKey::parse(&raw),
+        Err(ArtifactStoreError::InvalidKey { .. })
+    ));
+}
+
+#[test]
 fn artifact_key_accepts_a_255_byte_segment() {
     let raw = format!("tenant-a/{}", "a".repeat(255));
     assert!(ArtifactKey::parse(&raw).is_ok());
@@ -401,6 +422,25 @@ fn artifact_key_rejects_a_256_byte_segment() {
         ArtifactKey::parse(&raw),
         Err(ArtifactStoreError::InvalidKey { .. })
     ));
+}
+
+#[test]
+fn artifact_key_rejects_a_256_byte_segment_with_reason_not_echoing_segment() {
+    // L5 (VFL-428): the refusal reason names the rule, not the segment,
+    // because the segment is attacker-influenced on the ingest path (see
+    // the rustdoc on the `_ if segment.len() > ...` arm in `ArtifactKey::parse`).
+    let segment = "a".repeat(256);
+    let raw = format!("tenant-a/{segment}");
+    let err = ArtifactKey::parse(&raw)
+        .err()
+        .expect("a 256-byte segment must be refused");
+    match err {
+        ArtifactStoreError::InvalidKey { reason } => {
+            assert_eq!(reason, "segment longer than 255 bytes");
+            assert!(!reason.contains(segment.as_str()));
+        }
+        other => panic!("expected InvalidKey, got {other:?}"),
+    }
 }
 
 #[test]
