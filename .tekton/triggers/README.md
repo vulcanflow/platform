@@ -35,10 +35,12 @@ until Tekton reports the same check names (VFL-126).
 
 ## 1. Apply
 
-Apply the reviewed revision, not a working copy:
+Apply the reviewed revision, not a working copy. Set `commit` to its full
+commit id first:
 
 ```sh
-kubectl apply -k 'https://github.com/vulcanflow/platform//.tekton/triggers?ref=<commit>'
+commit='full-commit-id-of-the-reviewed-revision'
+kubectl apply -k "https://github.com/vulcanflow/platform//.tekton/triggers?ref=$commit"
 kubectl -n vf-ci rollout status deploy/el-vf-platform
 ```
 
@@ -59,8 +61,9 @@ kubectl -n vf-ci describe secret vf-ci-webhook
 **It exists.** Do not generate a new value; the webhook must carry the value
 the Secret already holds. Under `Data`, key `secret` must show `64 bytes`
 (the length of `openssl rand -hex 32`). No `secret` key, or `65 bytes` (a
-trailing newline), means no signature can ever match: rotate (below). Otherwise go on to step 3, and in step 4 enter the value the
-Secret was created from.
+trailing newline), means no signature can ever match: rotate (below).
+Otherwise go on to step 3, and in step 4 enter the value the Secret was
+created from.
 
 **It does not exist** (`NotFound`). Generate the value and create the Secret.
 If step 1 has not run yet, create the namespace first
@@ -167,9 +170,9 @@ hold different values, or the key is wrong (step 2):
 kubectl -n vf-ci logs deploy/el-vf-platform | grep -iE 'signature|secret'
 ```
 
-**Why SSL verification is off.** `zozotk.go.ro` is a dynamic-DNS name, so no
-certificate can be issued for it; the Gateway presents the `zozoo.io`
-certificate. Deliveries still travel over TLS, and the HMAC signature still
+**Why SSL verification is off.** The Gateway presents its `*.zozoo.io`
+certificate, which does not cover `zozotk.go.ro`, so GitHub cannot verify the
+connection. Deliveries still travel over TLS, and the HMAC signature still
 authenticates each one. With verification off, someone who can intercept
 traffic between GitHub and the cluster can read deliveries (the repository is
 public, so they hold nothing secret) and replay a captured delivery. A replay
@@ -178,33 +181,68 @@ forge a new delivery.
 
 ## Check
 
-```sh
-# A pull request delivery became a run. <delivery-id> is GitHub's
-# X-GitHub-Delivery, shown under the webhook's Recent Deliveries.
-kubectl -n vf-ci get pipelineruns -l vulcanflow.io/github-delivery=<delivery-id> \
-  -L triggers.tekton.dev/triggers-eventid
-# EventListener lines for that delivery, by the event id from the run's label
-kubectl -n vf-ci logs deploy/el-vf-platform | grep <triggers-eventid>
+A pull request delivery became a run. Set `delivery_id` to GitHub's
+X-GitHub-Delivery, shown under the webhook's Recent Deliveries:
 
-# An unsigned POST is refused by the github interceptor and creates no run.
-# The response carries the listener's eventID; grep the log for it.
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -H 'X-GitHub-Event: pull_request' -d '{}' \
-  https://zozotk.go.ro/vulcanflow/platform
-kubectl -n vf-ci logs deploy/el-vf-platform | grep <eventID>
-kubectl -n vf-ci get pipelineruns
+```sh
+delivery_id='delivery-id-from-recent-deliveries'
+kubectl -n vf-ci get pipelineruns -l "vulcanflow.io/github-delivery=$delivery_id" \
+  -L triggers.tekton.dev/triggers-eventid
+# EventListener lines for that delivery, by the event id on the run's label
+event_id=$(kubectl -n vf-ci get pipelineruns \
+  -l "vulcanflow.io/github-delivery=$delivery_id" \
+  -o jsonpath='{.items[0].metadata.labels.triggers\.tekton\.dev/triggers-eventid}')
+kubectl -n vf-ci logs deploy/el-vf-platform |
+  grep -F "${event_id:?no run carries that delivery id}"
 ```
+
+An unsigned POST is refused by the github interceptor and creates no run. The
+response carries the listener's `eventID`; the log names it, and no run
+carries it:
+
+```sh
+event_id=$(curl -sk -X POST -H 'Content-Type: application/json' \
+  -H 'X-GitHub-Event: pull_request' -d '{}' \
+  https://zozotk.go.ro/vulcanflow/platform |
+  sed -n 's/.*"eventID":"\([^"]*\)".*/\1/p')
+kubectl -n vf-ci logs deploy/el-vf-platform |
+  grep -F "${event_id:?no eventID in the response}"
+kubectl -n vf-ci get pipelineruns -l "triggers.tekton.dev/triggers-eventid=$event_id"
+# No resources found in vf-ci namespace.
+```
+
+`${event_id:?...}` stops the command when the id is empty, where `grep -F ""`
+would match every line.
 
 ## Roll back
 
 Delete the webhook on `vulcanflow/platform` (and any organization webhook that
 posts to `https://zozotk.go.ro/vulcanflow/platform`), remove the rule from the
-aether-ci HTTPRoute, then
+aether-ci HTTPRoute, then delete this directory's objects by name, the runs
+the listener created, and the Secret:
 
 ```sh
-kubectl delete -k 'https://github.com/vulcanflow/platform//.tekton/triggers?ref=<commit>'
+kubectl -n vf-ci delete eventlisteners.triggers.tekton.dev/vf-platform
+kubectl -n vf-ci delete pipelineruns.tekton.dev \
+  -l triggers.tekton.dev/eventlistener=vf-platform
+kubectl -n vf-ci delete \
+  triggertemplates.triggers.tekton.dev/vf-ci-noop \
+  triggerbindings.triggers.tekton.dev/vf-github-pull-request \
+  triggerbindings.triggers.tekton.dev/vf-github-push \
+  pipelines.tekton.dev/vf-ci-noop \
+  referencegrants.gateway.networking.k8s.io/aether-ci-httproutes-to-el-vf-platform \
+  rolebindings.rbac.authorization.k8s.io/vf-ci-triggers-eventlistener \
+  serviceaccounts/vf-ci-triggers \
+  secrets/vf-ci-webhook
+kubectl delete clusterrolebindings.rbac.authorization.k8s.io/vf-ci-triggers-eventlistener
 ```
 
-This removes the namespace with its Secret, the ReferenceGrant, any
-PipelineRuns and anything else applied to `vf-ci` (VFL-125's pipelines
-included). Outside `vf-ci`, only the ClusterRoleBinding is deleted.
+Deleting the EventListener first stops new runs; Kubernetes removes its
+Deployment and Service `el-vf-platform` with it. Then remove
+`ci/tekton/vulcanflow-platform/github-webhook-secret` from Paperclip's secret
+store.
+
+Namespace `vf-ci` is not deleted: it also holds VFL-125's pipelines and any
+other VulcanFlow CI objects. Do not use `kubectl delete -k` on this directory
+for a roll back, because that deletes `namespace.yaml` and with it everything
+in `vf-ci`.

@@ -1,7 +1,7 @@
 # One PipelineRun per accepted delivery. The GitHub delivery id is put on the
 # run as a label, so the run a given webhook delivery created is found with
 #
-#   kubectl -n vf-ci get pipelineruns -l vulcanflow.io/github-delivery=<id>
+#   kubectl -n vf-ci get pipelineruns -l "vulcanflow.io/github-delivery=$delivery_id"
 #
 # Triggers adds its own labels as well (triggers.tekton.dev/eventlistener,
 # .../trigger, .../triggers-eventid).
