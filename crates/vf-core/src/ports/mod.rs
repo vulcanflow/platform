@@ -13,16 +13,18 @@
 //! F1 published the trait names only; §A6.1 fixes no method signatures, and
 //! each method arrives with the task that owns its port. Task F3 fills in
 //! [`ArtifactStore`] and [`WakeBus`] (see the [`artifact`] and [`wake`]
-//! submodules); the traits still listed inline below are empty until their own
-//! task lands (C1 for [`Clock`] and [`IdGen`], G3 for [`ChallengeProbe`], O1
-//! for [`ScanRuntime`], O2 for [`TenantProvisioner`], A1 for
-//! [`TokenVerifier`]). The `Send + Sync + 'static` bounds are part of the
-//! §A6.1 contract, because every port is held behind `Arc<dyn Port>`.
+//! submodules) and task C1 fills in [`Clock`] and [`IdGen`] below; the other
+//! traits listed inline are empty until their own task lands (G3 for
+//! [`ChallengeProbe`], O1 for [`ScanRuntime`], O2 for [`TenantProvisioner`],
+//! A1 for [`TokenVerifier`]). The `Send + Sync + 'static` bounds are part of
+//! the §A6.1 contract, because every port is held behind `Arc<dyn Port>`.
 //!
 //! # Why the port methods are not `async fn`
 //!
-//! Every method returns [`PortFuture`], a boxed future, rather than being an
-//! `async fn` in a trait. Two reasons, both structural:
+//! Every asynchronous method returns [`PortFuture`], a boxed future, rather
+//! than being an `async fn` in a trait. ([`Clock::now`] and
+//! [`IdGen::new_uuid`] are synchronous: neither waits on I/O.) Two reasons,
+//! both structural:
 //!
 //! 1. A port is always held as `Arc<dyn Port>` (§A6.1). An `async fn` in a
 //!    trait is not dyn-compatible without the same boxing written at every
