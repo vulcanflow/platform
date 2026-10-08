@@ -198,13 +198,14 @@ cmd_inline_tests() {
 # examine, and every `uses:` on an examined line must carry a pinned value.
 # Both are wider than YAML's key positions on purpose: a `uses:` inside a
 # string or a trailing comment is checked too, which can refuse a line but
-# never admit one.
+# never admit one. What the scanner cannot read is refused outright: a key
+# spelled without `uses` before a colon on one line, a line break git does not
+# split on, a file git does not treat as text, and a symlink or submodule.
 # ---------------------------------------------------------------------------
 
 # `uses` as a whole word, then an optional closing quote and a colon, anywhere
-# on the line (block key, flow collection, after an anchor or tag); or an
-# explicit `? uses` key, whose value is on a later line and so is refused.
-USES_SCOPE_RE='(^|[^[:alnum:]_])uses["'\'']?[[:space:]]*:|\?[[:space:]]+["'\'']?uses["'\'']?[[:space:]]*$'
+# on the line (block key, flow collection, after an anchor or tag).
+USES_SCOPE_RE='(^|[^[:alnum:]_])uses["'\'']?[[:space:]]*:'
 # One `uses:` occurrence; group 2 is the rest of the line after it.
 USES_KEY_RE='(^|[^[:alnum:]_])uses["'\'']?[[:space:]]*:[[:space:]]*(.*)$'
 # The value. A quoted one ends at its closing quote (a doubled '' continues a
@@ -217,27 +218,51 @@ PIN_RE='^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+(/[^@[:space:]]+)?@[0-9a-f]{40}
 # A line whose first non-blank character is # is a comment, unless it continues
 # a quoted scalar from an earlier line; such a line holds the closing quote.
 COMMENT_RE='^[[:space:]]*#'
+# Keys that need no `uses` before a colon on the line: an explicit key, block
+# (`? k`, `- ? k`) or flow (`[? k`, `{? k`, `, ? k`), whose text can be a block
+# scalar or run on to later lines; an alias used as a key (`*k : v`); and a
+# double-quoted key holding an escape (`"u\x73es": v`).
+EXPLICIT_KEY_RE='(^[[:space:]]*(-[[:space:]]+)*|[[{,][[:space:]]*)\?([[:space:]]|$)'
+ALIAS_KEY_RE='(^|[[:space:][{,])\*[^][{},:[:space:]]+[[:space:]]*:'
+ESCAPED_KEY_RE='"[^"]*\\[^"]*"[[:space:]]*:'
+# A line break YAML may honour and git grep does not: a lone CR, NEL, LS or PS.
+# A `uses:` behind one would sit on what git grep reads as a comment line.
+BREAK_RE=$'\r.|\xc2\x85|\xe2\x80\xa8|\xe2\x80\xa9'
 
-cmd_pins() {
-  local top refs rc=0 n=0 bad=() line loc text rest ref found
-  # Read from the tree at HEAD_REF, as inline-tests does, so the verdict is the
-  # commit's and not the working copy's, and from the repository root, so the
-  # pathspec does not shrink to nothing when run from a subdirectory. `git grep`
-  # exits 1 on no match, which is a tree without workflows; anything higher is
-  # a failure to read it.
-  top="$(git rev-parse --show-toplevel)"
-  refs="$(git -C "$top" grep -nE "$USES_SCOPE_RE" "$HEAD_REF" -- '.github/workflows/')" || rc=$?
+# wf_grep <top> <git grep args...> — git grep .github/workflows/ in the tree at
+# HEAD_REF into WF_OUT. Exit 1 is no match, which includes a tree without
+# workflows; anything higher is a failure to read the tree.
+wf_grep() {
+  local top="$1" rc=0; shift
+  WF_OUT="$(git -C "$top" grep "$@" "$HEAD_REF" -- '.github/workflows/')" || rc=$?
   if [ "$rc" -gt 1 ]; then
     fail "pins: could not read .github/workflows/ at $HEAD_REF (git grep exit $rc)."
   fi
+}
+
+# split_hit <line> — split one `git grep -n` line, <ref>:<path>:<n>:<text>, into
+# LOC (<path>:<n>) and TEXT.
+split_hit() {
+  local l="${1#"$HEAD_REF:"}"
+  LOC="${l%%:*}"; l="${l#*:}"
+  LOC="$LOC:${l%%:*}"; TEXT="${l#*:}"
+}
+
+cmd_pins() {
+  # Bytes, not characters, for git grep and for bash's own matching alike.
+  local -x LC_ALL=C
+  local top tree texts n=0 bad=() line rest ref found
+  # Read from the tree at HEAD_REF, as inline-tests does, so the verdict is the
+  # commit's and not the working copy's, and from the repository root, so the
+  # pathspec does not shrink to nothing when run from a subdirectory.
+  top="$(git rev-parse --show-toplevel)"
+  wf_grep "$top" -nE "$USES_SCOPE_RE"
 
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    line="${line#"$HEAD_REF:"}"
-    loc="${line%%:*}"; line="${line#*:}"
-    loc="$loc:${line%%:*}"; text="${line#*:}"
-    if [[ $text =~ $COMMENT_RE && $text != *[\"\']* ]]; then continue; fi
-    found=0; rest="$text"
+    split_hit "$line"
+    if [[ $TEXT =~ $COMMENT_RE && $TEXT != *[\"\']* ]]; then continue; fi
+    found=0; rest="$TEXT"
     while [[ $rest =~ $USES_KEY_RE ]]; do
       rest="${BASH_REMATCH[2]}"
       found=1; n=$((n + 1))
@@ -246,15 +271,58 @@ cmd_pins() {
       else
         [[ $rest =~ $PLAIN_VALUE_RE ]]; ref="${BASH_REMATCH[0]}"
       fi
-      [[ $ref =~ $PIN_RE ]] || bad+=("$loc: ${ref:-<no value on this line>}")
+      [[ $ref =~ $PIN_RE ]] || bad+=("$LOC: ${ref:-<no value on this line>}")
     done
     if [ "$found" -eq 0 ]; then
-      n=$((n + 1)); bad+=("$loc: <explicit ? uses key; value not on this line>")
+      n=$((n + 1)); bad+=("$LOC: <a uses: this check could not read>")
     fi
-  done <<< "$refs"
+  done <<< "$WF_OUT"
+
+  # A line holding a construct the scanner cannot read is refused whatever else
+  # it says. A comment line is skipped only when no line break hides behind it.
+  wf_grep "$top" -nE -e "$EXPLICIT_KEY_RE" -e "$ALIAS_KEY_RE" -e "$ESCAPED_KEY_RE" -e "$BREAK_RE"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    split_hit "$line"
+    if [[ $TEXT =~ $BREAK_RE ]]; then
+      bad+=("$LOC: <a line break other than LF or CRLF>")
+    elif [[ $TEXT =~ $COMMENT_RE && $TEXT != *[\"\']* ]]; then
+      continue
+    elif [[ $TEXT =~ $EXPLICIT_KEY_RE ]]; then
+      bad+=("$LOC: <an explicit ? key>")
+    elif [[ $TEXT =~ $ALIAS_KEY_RE ]]; then
+      bad+=("$LOC: <an alias used as a key>")
+    elif [[ $TEXT =~ $ESCAPED_KEY_RE ]]; then
+      bad+=("$LOC: <a double-quoted key holding an escape>")
+    else
+      bad+=("$LOC: <a line this check could not read>")
+    fi
+  done <<< "$WF_OUT"
+
+  # git grep -I skips a file git does not treat as text, such as UTF-16.
+  wf_grep "$top" -I -l -e ''
+  texts=$'\n'"$WF_OUT"$'\n'
+  wf_grep "$top" -l -e ''
+  while IFS= read -r line; do
+    case "$texts" in
+      *$'\n'"$line"$'\n'*) ;;
+      *) bad+=("${line#"$HEAD_REF:"}: <not a text file>") ;;
+    esac
+  done <<< "$WF_OUT"
+
+  # git grep skips a symlink and a submodule, so neither may stand on the way to
+  # .github/workflows/ or under it. ls-tree prints <mode> <type> <object>\t<path>.
+  tree="$(git -C "$top" ls-tree "$HEAD_REF" -- .github)"
+  tree+=$'\n'"$(git -C "$top" ls-tree -r -t "$HEAD_REF" -- .github/workflows)"
+  while IFS= read -r line; do
+    case "$line" in
+      ''|'040000 '*|'100644 '*|'100755 '*) ;;
+      *) bad+=("${line#*$'\t'}: <a symlink or submodule>") ;;
+    esac
+  done <<< "$tree"
 
   if [ ${#bad[@]} -gt 0 ]; then
-    printf '\n  uses: references not pinned to a commit SHA:\n' >&2
+    printf '\n  uses: references not pinned to a commit SHA, or not readable by this check:\n' >&2
     printf '    %s\n' "${bad[@]}" >&2
     fail "Every uses: under .github/workflows/ must name a full 40-character commit SHA.
 
@@ -266,7 +334,12 @@ cmd_pins() {
 
   Every uses: on a line is checked, including one inside a string or a comment.
   Keep the key and its value on one line. An unquoted value ends only at
-  whitespace, so in a flow mapping write { uses: <ref> } or quote the value."
+  whitespace, so in a flow mapping write { uses: <ref> } or quote the value.
+
+  The check reads lines, not YAML, so it refuses what it cannot read: an
+  explicit ? key, an alias used as a key, a double-quoted key holding an
+  escape, a line break other than LF or CRLF, a file that is not text, and a
+  symlink or submodule. No workflow needs these; write the key as plain uses:."
   fi
 
   if [ "$n" -eq 0 ]; then
