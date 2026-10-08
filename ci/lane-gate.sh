@@ -208,8 +208,9 @@ cmd_inline_tests() {
 # Each spelling is refused unless its colon is on its line: an explicit key in
 # any position; the others with the colon on the line or later.
 # What git grep cannot read as lines is refused outright: a line break it does
-# not split on, a file it does not treat as text, a symlink or submodule, and
-# a path holding a colon.
+# not split on, a file it reports as binary, a file whose blob holds a NUL byte
+# (decided from the blob, never from git's attributes), a symlink or submodule,
+# and a path holding a colon.
 # ---------------------------------------------------------------------------
 
 # `uses` as a whole word, then an optional closing quote and a colon, anywhere
@@ -277,7 +278,7 @@ split_hit() {
 cmd_pins() {
   # Bytes, not characters, for git grep and for bash's own matching alike.
   local -x LC_ALL=C
-  local top tree texts n=0 bad=() line rest ref found
+  local top tree path oid nul n=0 bad=() line rest ref found
   # Read from the tree at HEAD_REF, as inline-tests does, so the verdict is the
   # commit's and not the working copy's, and from the repository root, so the
   # pathspec does not shrink to nothing when run from a subdirectory.
@@ -301,9 +302,9 @@ cmd_pins() {
     done
     # A selected line with no `uses:` on it. git grep reports a file it holds to
     # be binary (a `-diff` attribute, say) as "Binary file <ref>:<path> matches",
-    # with no line, so LOC is not a location then; the non-text pass below
-    # refuses that file as well. Otherwise git grep and bash disagree on
-    # USES_SCOPE_RE, and the line is refused either way.
+    # with no line, so LOC is not a location then; the file is refused here, and
+    # by the blob check below as well if it holds a NUL. Otherwise git grep and
+    # bash disagree on USES_SCOPE_RE, and the line is refused either way.
     if [ "$found" -eq 0 ]; then
       n=$((n + 1)); bad+=("$LOC: <a uses: this check could not read>")
     fi
@@ -327,7 +328,7 @@ cmd_pins() {
     elif [[ $TEXT =~ $ESCAPED_KEY_RE ]]; then
       bad+=("$LOC: <a double-quoted key holding an escape>")
     elif [[ $TEXT =~ $SPLIT_KEY_RE ]]; then
-      bad+=("$LOC: <a key whose colon is on a later line>")
+      bad+=("$LOC: <a line ending in uses, an alias or a quoted escape, which may be a key whose colon is on a later line>")
     elif [[ $TEXT =~ $ESCAPED_BREAK_RE ]]; then
       bad+=("$LOC: <a double-quoted key continued by an escaped line break>")
     else
@@ -335,30 +336,33 @@ cmd_pins() {
     fi
   done <<< "$WF_OUT"
 
-  # git grep -I skips a file git does not treat as text, such as UTF-16.
-  wf_grep "$top" -I -l -e ''
-  texts=$'\n'"$WF_OUT"$'\n'
-  wf_grep "$top" -l -e ''
-  while IFS= read -r line; do
-    case "$texts" in
-      *$'\n'"$line"$'\n'*) ;;
-      *) bad+=("${line#"$HEAD_REF:"}: <not a text file>") ;;
-    esac
-  done <<< "$WF_OUT"
-
   # git grep skips a symlink and a submodule, so neither may stand on the way to
   # .github/workflows/ or under it, and split_hit cannot split a path holding a
   # colon. ls-tree prints <mode> <type> <object>\t<path>, the same paths git
   # grep searched; a colon is never quoted away.
+  # A workflow is text when its blob holds no NUL byte. YAML may also be UTF-16
+  # or UTF-32, where every ASCII character, `uses` included, carries a NUL, and
+  # where the line passes above match nothing. The blob decides, not git grep -I
+  # or git's binary heuristic: both follow the diff attribute, which a
+  # .gitattributes in the tree under check can set.
   tree="$(git -C "$top" ls-tree "$HEAD_REF" -- .github)"
   tree+=$'\n'"$(git -C "$top" ls-tree -r -t "$HEAD_REF" -- .github/workflows)"
   while IFS= read -r line; do
-    case "${line#*$'\t'}" in
-      *:*) bad+=("${line#*$'\t'}: <a path holding a colon>") ;;
+    path="${line#*$'\t'}"
+    case "$path" in
+      *:*) bad+=("$path: <a path holding a colon>") ;;
     esac
     case "$line" in
-      ''|'040000 '*|'100644 '*|'100755 '*) ;;
-      *) bad+=("${line#*$'\t'}: <a symlink or submodule>") ;;
+      ''|'040000 '*) ;;
+      '100644 '*|'100755 '*)
+        case "$path" in
+          .github/workflows/*)
+            oid="${line%%$'\t'*}"; oid="${oid##* }"
+            nul="$(git -C "$top" cat-file blob "$oid" | tr -dc '\000' | wc -c)" ||
+              fail "pins: could not read $path at $HEAD_REF."
+            [ "$nul" -eq 0 ] || bad+=("$path: <not a text file>") ;;
+        esac ;;
+      *) bad+=("$path: <a symlink or submodule>") ;;
     esac
   done <<< "$tree"
 
@@ -384,7 +388,8 @@ cmd_pins() {
   later line, a line break other than LF or CRLF, a file that is not text, a
   symlink or submodule, and a path holding a colon. No workflow needs these;
   write the key as plain uses: with its colon, and name the file without a
-  colon."
+  colon. A line that only looks like such a key, a step name or shell line
+  ending in uses, an alias or a quoted escape, is refused too; reword it."
   fi
 
   if [ "$n" -eq 0 ]; then
