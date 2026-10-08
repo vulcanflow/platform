@@ -198,10 +198,18 @@ cmd_inline_tests() {
 # examine, and every `uses:` on an examined line must carry a pinned value.
 # Both are wider than YAML's key positions on purpose: a `uses:` inside a
 # string or a trailing comment is checked too, which can refuse a line but
-# never admit one. What the scanner cannot read is refused outright: a key
-# spelled without `uses` before a colon on one line, a line break git does not
-# split on, a file git does not treat as text, a symlink or submodule, and a
-# path holding a colon.
+# never admit one.
+#
+# The scanner assumes a key and its colon share a line. That holds in block
+# context but not in a flow mapping, where a line break or a comment may come
+# between them. A key is spelled the literal `uses`, with an escape, as an
+# alias, or as an explicit `?` key. It has no other spelling, because an
+# unescaped line break inside a quoted key adds a space or a newline to it.
+# Each spelling is refused unless its colon is on its line: an explicit key in
+# any position; the others with the colon on the line or later.
+# What git grep cannot read as lines is refused outright: a line break it does
+# not split on, a file it does not treat as text, a symlink or submodule, and
+# a path holding a colon.
 # ---------------------------------------------------------------------------
 
 # `uses` as a whole word, then an optional closing quote and a colon, anywhere
@@ -215,7 +223,9 @@ USES_KEY_RE='(^|[^[:alnum:]_])uses["'\'']?[[:space:]]*:[[:space:]]*(.*)$'
 DQ_VALUE_RE='^"([^"]*)"([^"]|$)'
 SQ_VALUE_RE="^'([^']*)'([^']|\$)"
 PLAIN_VALUE_RE='^[^[:space:]]*'
-PIN_RE='^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+(/[^@[:space:]]+)?@[0-9a-f]{40}$'
+# The pin as written. The path holds no backslash, which a double-quoted value
+# would decode into something else (`\x40` is an @).
+PIN_RE='^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+(/[^@[:space:]\\]+)?@[0-9a-f]{40}$'
 # A line whose first non-blank character is # is a comment, unless it continues
 # a quoted scalar from an earlier line; such a line holds the closing quote.
 COMMENT_RE='^[[:space:]]*#'
@@ -226,6 +236,19 @@ COMMENT_RE='^[[:space:]]*#'
 EXPLICIT_KEY_RE='(^[[:space:]]*(-[[:space:]]+)*|[[{,][[:space:]]*)\?([[:space:]]|$)'
 ALIAS_KEY_RE='(^|[[:space:][{,])\*[^][{},:[:space:]]+[[:space:]]*:'
 ESCAPED_KEY_RE='"[^"]*\\[^"]*"[[:space:]]*:'
+# The same keys with the colon on a later line, which a flow mapping allows
+# (`{ uses` then `: v }` on the next line). Nothing but blanks and a comment can
+# follow such a key on its line. The literal word is matched wherever it ends a
+# line, as USES_SCOPE_RE is. An escaped or alias key is matched only where a
+# flow mapping can start a key: at the start of a line, after { [ or , or after
+# a tag or anchor. That keeps out shell such as `printf "%s\n"` in a run: block.
+FLOW_KEY_AT='(^[[:space:]]*|[[{,][[:space:]]*|[!&][^[:space:]]*[[:space:]]+)'
+SPLIT_KEY_RE='(^|[^[:alnum:]_])uses["'\'']?[[:space:]]*(#.*)?$|'"$FLOW_KEY_AT"'("[^"]*\\[^"]*"|\*[^][{},:[:space:]]+)[[:space:]]*(#.*)?$'
+# The first line of a double-quoted key continued by an escaped line break
+# (`"us\` then `es": v`). Every line break in a key spelled `uses` must be
+# escaped, the first one included, and the first sits on the line holding the
+# opening quote.
+ESCAPED_BREAK_RE="$FLOW_KEY_AT"'"[^"]*\\[[:space:]]*$'
 # A line break YAML may honour and git grep does not: a lone CR, NEL, LS or PS.
 # A `uses:` behind one would sit on what git grep reads as a comment line.
 BREAK_RE=$'\r.|\xc2\x85|\xe2\x80\xa8|\xe2\x80\xa9'
@@ -276,8 +299,11 @@ cmd_pins() {
       fi
       [[ $ref =~ $PIN_RE ]] || bad+=("$LOC: ${ref:-<no value on this line>}")
     done
-    # Unreachable while git grep and bash agree on USES_SCOPE_RE; kept so that a
-    # disagreement between the two regex engines refuses the line.
+    # A selected line with no `uses:` on it. git grep reports a file it holds to
+    # be binary (a `-diff` attribute, say) as "Binary file <ref>:<path> matches",
+    # with no line, so LOC is not a location then; the non-text pass below
+    # refuses that file as well. Otherwise git grep and bash disagree on
+    # USES_SCOPE_RE, and the line is refused either way.
     if [ "$found" -eq 0 ]; then
       n=$((n + 1)); bad+=("$LOC: <a uses: this check could not read>")
     fi
@@ -285,7 +311,8 @@ cmd_pins() {
 
   # A line holding a construct the scanner cannot read is refused whatever else
   # it says. A comment line is skipped only when no line break hides behind it.
-  wf_grep "$top" -nE -e "$EXPLICIT_KEY_RE" -e "$ALIAS_KEY_RE" -e "$ESCAPED_KEY_RE" -e "$BREAK_RE"
+  wf_grep "$top" -nE -e "$EXPLICIT_KEY_RE" -e "$ALIAS_KEY_RE" -e "$ESCAPED_KEY_RE" \
+    -e "$SPLIT_KEY_RE" -e "$ESCAPED_BREAK_RE" -e "$BREAK_RE"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     split_hit "$line"
@@ -299,6 +326,10 @@ cmd_pins() {
       bad+=("$LOC: <an alias used as a key>")
     elif [[ $TEXT =~ $ESCAPED_KEY_RE ]]; then
       bad+=("$LOC: <a double-quoted key holding an escape>")
+    elif [[ $TEXT =~ $SPLIT_KEY_RE ]]; then
+      bad+=("$LOC: <a key whose colon is on a later line>")
+    elif [[ $TEXT =~ $ESCAPED_BREAK_RE ]]; then
+      bad+=("$LOC: <a double-quoted key continued by an escaped line break>")
     else
       bad+=("$LOC: <a line this check could not read>")
     fi
@@ -342,15 +373,18 @@ cmd_pins() {
   A local ./ action or a docker:// image has no commit SHA and is refused as well;
   admitting one is a change to this gate, on its own pull request.
 
-  Every uses: on a line is checked, including one inside a string or a comment.
-  Keep the key and its value on one line. An unquoted value ends only at
-  whitespace, so in a flow mapping write { uses: <ref> } or quote the value.
+  Every uses: on a line is checked, including one inside a string or a comment,
+  and so is a line that ends in the word uses. Keep the key, its colon and its
+  value on one line. An unquoted value ends only at whitespace, so in a flow
+  mapping write { uses: <ref> } or quote the value.
 
   The check reads lines, not YAML, so it refuses what it cannot read: an
   explicit ? key, an alias used as a key, a double-quoted key holding an
-  escape, a line break other than LF or CRLF, a file that is not text, a
+  escape or continued by an escaped line break, a key whose colon is on a
+  later line, a line break other than LF or CRLF, a file that is not text, a
   symlink or submodule, and a path holding a colon. No workflow needs these;
-  write the key as plain uses: and name the file without a colon."
+  write the key as plain uses: with its colon, and name the file without a
+  colon."
   fi
 
   if [ "$n" -eq 0 ]; then
