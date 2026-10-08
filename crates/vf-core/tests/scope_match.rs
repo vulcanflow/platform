@@ -212,6 +212,27 @@ fn domain_tree_candidate_never_admits_a_sibling_domain() {
     );
 }
 
+#[test]
+fn domain_tree_candidate_inside_approval_but_outside_run_target_subtree_is_outside_approval() {
+    // The approval covers all of example.com, but this run only targeted
+    // www.example.com. A candidate inside the approval and outside the run's
+    // own target subtree must not come back InScope merely because the
+    // approval is wide — either as a sibling subtree (b.example.com) or as
+    // the approval root itself, which is the run target's ancestor
+    // (example.com). Cortana's recorded ruling pins the verdict at
+    // OutsideApproval for both shapes (VFL-381 review, VFL-384 MEDIUM-1).
+    let approval = domain_tree("example.com");
+    let r = run("www.example.com", true);
+    assert_eq!(
+        check_candidate(&approval, &r, &host("b.example.com")),
+        ScopeVerdict::OutsideApproval
+    );
+    assert_eq!(
+        check_candidate(&approval, &r, &host("example.com")),
+        ScopeVerdict::OutsideApproval
+    );
+}
+
 // --- authz/psl-exact-root: registrable_domain must never widen ExactHost ----
 
 #[test]

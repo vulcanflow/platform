@@ -70,6 +70,40 @@ fn rejects_reserved_class_e() {
 }
 
 #[test]
+fn rejects_reserved_ietf_protocol_assignments() {
+    rejects("192.0.0.1");
+}
+
+#[test]
+fn rejects_reserved_test_net_1() {
+    rejects("192.0.2.1");
+}
+
+#[test]
+fn rejects_reserved_test_net_2() {
+    rejects("198.51.100.1");
+}
+
+#[test]
+fn rejects_reserved_test_net_3() {
+    rejects("203.0.113.1");
+}
+
+#[test]
+fn rejects_reserved_6to4_relay_anycast() {
+    rejects("192.88.99.1");
+}
+
+#[test]
+fn rejects_reserved_inter_network_benchmarking() {
+    rejects("198.18.0.1");
+    // 198.18.0.0/15 spans 198.18.0.0-198.19.255.255; the upper edge is the one
+    // sample a /15-to-/16 prefix-length typo in the production table would not
+    // catch (VFL-384 MEDIUM-2).
+    rejects("198.19.255.255");
+}
+
+#[test]
 fn rejects_broadcast() {
     rejects("255.255.255.255");
 }
