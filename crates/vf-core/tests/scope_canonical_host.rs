@@ -158,7 +158,8 @@ fn rejects_bare_private_suffix() {
 
 #[test]
 fn accepts_host_under_private_suffix() {
-    let host = CanonicalHost::parse("foo.github.io").expect("subdomain of a private suffix is a valid host");
+    let host = CanonicalHost::parse("foo.github.io")
+        .expect("subdomain of a private suffix is a valid host");
     assert_eq!(host.as_str(), "foo.github.io");
 }
 

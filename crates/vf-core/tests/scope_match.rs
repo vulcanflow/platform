@@ -29,8 +29,8 @@
 
 use proptest::prelude::*;
 use vf_core::scope::{
-    check_candidate, check_run_scope, ApprovedScope, CanonicalHost, RunScope, ScopeType,
-    ScopeVerdict,
+    ApprovedScope, CanonicalHost, RunScope, ScopeType, ScopeVerdict, check_candidate,
+    check_run_scope,
 };
 
 fn host(s: &str) -> CanonicalHost {

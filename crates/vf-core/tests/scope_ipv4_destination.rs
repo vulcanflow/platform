@@ -31,8 +31,16 @@ fn accepts(addr: &str) {
         .unwrap_or_else(|e| panic!("expected {addr} to be accepted via new(), got {e:?}"));
     let via_parse = Ipv4Destination::parse(addr)
         .unwrap_or_else(|e| panic!("expected {addr} to be accepted via parse(), got {e:?}"));
-    assert_eq!(via_new.addr(), ip, "new() must preserve the address through addr()");
-    assert_eq!(via_parse.addr(), ip, "parse() must preserve the address through addr()");
+    assert_eq!(
+        via_new.addr(),
+        ip,
+        "new() must preserve the address through addr()"
+    );
+    assert_eq!(
+        via_parse.addr(),
+        ip,
+        "parse() must preserve the address through addr()"
+    );
 }
 
 #[test]
