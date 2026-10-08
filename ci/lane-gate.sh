@@ -193,22 +193,40 @@ cmd_inline_tests() {
 
 # ---------------------------------------------------------------------------
 # 4. pins — every workflow `uses:` names a commit, never a tag or branch
+#
+# This is a line scanner, not a YAML parser. USES_SCOPE_RE picks the lines to
+# examine, and every `uses:` on an examined line must carry a pinned value.
+# Both are wider than YAML's key positions on purpose: a `uses:` inside a
+# string or a trailing comment is checked too, which can refuse a line but
+# never admit one.
 # ---------------------------------------------------------------------------
 
-# A `uses:` key at the start of a line (after indentation and an optional list
-# dash) or inside a flow mapping. A commented-out line never matches.
-USES_KEY_RE='^[[:space:]]*(-[[:space:]]+)?["'\'']?uses["'\'']?[[:space:]]*:|[{,][[:space:]]*["'\'']?uses["'\'']?[[:space:]]*:'
-# The key's value, ending at whitespace (so a trailing `# <tag>` comment is
-# dropped) or at the end of a flow-mapping entry.
-USES_VALUE_RE='uses["'\'']?[[:space:]]*:[[:space:]]*([^[:space:],}]*)'
-PIN_RE='^[^@[:space:]]+@[0-9a-f]{40}$'
+# `uses` as a whole word, then an optional closing quote and a colon, anywhere
+# on the line (block key, flow collection, after an anchor or tag); or an
+# explicit `? uses` key, whose value is on a later line and so is refused.
+USES_SCOPE_RE='(^|[^[:alnum:]_])uses["'\'']?[[:space:]]*:|\?[[:space:]]+["'\'']?uses["'\'']?[[:space:]]*$'
+# One `uses:` occurrence; group 2 is the rest of the line after it.
+USES_KEY_RE='(^|[^[:alnum:]_])uses["'\'']?[[:space:]]*:[[:space:]]*(.*)$'
+# The value. A quoted one ends at its closing quote (a doubled '' continues a
+# single-quoted one). A plain one ends only at whitespace: , } ] and quotes are
+# legal in a git ref name, so cutting there would check only a prefix of the ref.
+DQ_VALUE_RE='^"([^"]*)"([^"]|$)'
+SQ_VALUE_RE="^'([^']*)'([^']|\$)"
+PLAIN_VALUE_RE='^[^[:space:]]*'
+PIN_RE='^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+(/[^@[:space:]]+)?@[0-9a-f]{40}$'
+# A line whose first non-blank character is # is a comment, unless it continues
+# a quoted scalar from an earlier line; such a line holds the closing quote.
+COMMENT_RE='^[[:space:]]*#'
 
 cmd_pins() {
-  local refs rc=0 n=0 bad=() line loc text ref
+  local top refs rc=0 n=0 bad=() line loc text rest ref found
   # Read from the tree at HEAD_REF, as inline-tests does, so the verdict is the
-  # commit's and not the working copy's. `git grep` exits 1 on no match, which
-  # is a tree without workflows; anything higher is a failure to read it.
-  refs="$(git grep -nE "$USES_KEY_RE" "$HEAD_REF" -- '.github/workflows/')" || rc=$?
+  # commit's and not the working copy's, and from the repository root, so the
+  # pathspec does not shrink to nothing when run from a subdirectory. `git grep`
+  # exits 1 on no match, which is a tree without workflows; anything higher is
+  # a failure to read it.
+  top="$(git rev-parse --show-toplevel)"
+  refs="$(git -C "$top" grep -nE "$USES_SCOPE_RE" "$HEAD_REF" -- '.github/workflows/')" || rc=$?
   if [ "$rc" -gt 1 ]; then
     fail "pins: could not read .github/workflows/ at $HEAD_REF (git grep exit $rc)."
   fi
@@ -218,11 +236,21 @@ cmd_pins() {
     line="${line#"$HEAD_REF:"}"
     loc="${line%%:*}"; line="${line#*:}"
     loc="$loc:${line%%:*}"; text="${line#*:}"
-    n=$((n + 1))
-    ref=""
-    if [[ $text =~ $USES_VALUE_RE ]]; then ref="${BASH_REMATCH[1]}"; fi
-    ref="${ref#[\"\']}"; ref="${ref%[\"\']}"
-    [[ $ref =~ $PIN_RE ]] || bad+=("$loc: ${ref:-<no value on this line>}")
+    if [[ $text =~ $COMMENT_RE && $text != *[\"\']* ]]; then continue; fi
+    found=0; rest="$text"
+    while [[ $rest =~ $USES_KEY_RE ]]; do
+      rest="${BASH_REMATCH[2]}"
+      found=1; n=$((n + 1))
+      if [[ $rest =~ $DQ_VALUE_RE || $rest =~ $SQ_VALUE_RE ]]; then
+        ref="${BASH_REMATCH[1]}"
+      else
+        [[ $rest =~ $PLAIN_VALUE_RE ]]; ref="${BASH_REMATCH[0]}"
+      fi
+      [[ $ref =~ $PIN_RE ]] || bad+=("$loc: ${ref:-<no value on this line>}")
+    done
+    if [ "$found" -eq 0 ]; then
+      n=$((n + 1)); bad+=("$loc: <explicit ? uses key; value not on this line>")
+    fi
   done <<< "$refs"
 
   if [ ${#bad[@]} -gt 0 ]; then
@@ -234,7 +262,11 @@ cmd_pins() {
   executes. Write <owner>/<repo>[/<path>]@<40 lowercase hex>, optionally followed by
   a '# <tag>' comment, and resolve the SHA the way README.md '## Pins' describes.
   A local ./ action or a docker:// image has no commit SHA and is refused as well;
-  admitting one is a change to this gate, on its own pull request."
+  admitting one is a change to this gate, on its own pull request.
+
+  Every uses: on a line is checked, including one inside a string or a comment.
+  Keep the key and its value on one line. An unquoted value ends only at
+  whitespace, so in a flow mapping write { uses: <ref> } or quote the value."
   fi
 
   if [ "$n" -eq 0 ]; then
