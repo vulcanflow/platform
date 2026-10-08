@@ -8,7 +8,8 @@
 #   partition      a PR may not contain both production source and test files
 #   erosion        tests may not be ignored, deleted, or thinned out
 #   inline-tests   no #[cfg(test)] modules inside production source
-#   all            run all three
+#   pins           every workflow `uses:` names a full commit SHA
+#   all            run all four
 #
 # Usage: ci/lane-gate.sh <subcommand> [base-ref] [head-ref]
 # Defaults to origin/${GITHUB_BASE_REF:-main}...HEAD.
@@ -191,11 +192,65 @@ cmd_inline_tests() {
 }
 
 # ---------------------------------------------------------------------------
+# 4. pins — every workflow `uses:` names a commit, never a tag or branch
+# ---------------------------------------------------------------------------
+
+# A `uses:` key at the start of a line (after indentation and an optional list
+# dash) or inside a flow mapping. A commented-out line never matches.
+USES_KEY_RE='^[[:space:]]*(-[[:space:]]+)?["'\'']?uses["'\'']?[[:space:]]*:|[{,][[:space:]]*["'\'']?uses["'\'']?[[:space:]]*:'
+# The key's value, ending at whitespace (so a trailing `# <tag>` comment is
+# dropped) or at the end of a flow-mapping entry.
+USES_VALUE_RE='uses["'\'']?[[:space:]]*:[[:space:]]*([^[:space:],}]*)'
+PIN_RE='^[^@[:space:]]+@[0-9a-f]{40}$'
+
+cmd_pins() {
+  local refs rc=0 n=0 bad=() line loc text ref
+  # Read from the tree at HEAD_REF, as inline-tests does, so the verdict is the
+  # commit's and not the working copy's. `git grep` exits 1 on no match, which
+  # is a tree without workflows; anything higher is a failure to read it.
+  refs="$(git grep -nE "$USES_KEY_RE" "$HEAD_REF" -- '.github/workflows/')" || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    fail "pins: could not read .github/workflows/ at $HEAD_REF (git grep exit $rc)."
+  fi
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    line="${line#"$HEAD_REF:"}"
+    loc="${line%%:*}"; line="${line#*:}"
+    loc="$loc:${line%%:*}"; text="${line#*:}"
+    n=$((n + 1))
+    ref=""
+    if [[ $text =~ $USES_VALUE_RE ]]; then ref="${BASH_REMATCH[1]}"; fi
+    ref="${ref#[\"\']}"; ref="${ref%[\"\']}"
+    [[ $ref =~ $PIN_RE ]] || bad+=("$loc: ${ref:-<no value on this line>}")
+  done <<< "$refs"
+
+  if [ ${#bad[@]} -gt 0 ]; then
+    printf '\n  uses: references not pinned to a commit SHA:\n' >&2
+    printf '    %s\n' "${bad[@]}" >&2
+    fail "Every uses: under .github/workflows/ must name a full 40-character commit SHA.
+
+  A tag or branch is mutable, so re-pointing it upstream silently changes what CI
+  executes. Write <owner>/<repo>[/<path>]@<40 lowercase hex>, optionally followed by
+  a '# <tag>' comment, and resolve the SHA the way README.md '## Pins' describes.
+  A local ./ action or a docker:// image has no commit SHA and is refused as well;
+  admitting one is a change to this gate, on its own pull request."
+  fi
+
+  if [ "$n" -eq 0 ]; then
+    pass "pins: no uses: references under .github/workflows/"
+  else
+    pass "pins: $n uses: reference(s), all pinned to a commit SHA"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 
 case "${1:-all}" in
   partition)    cmd_partition ;;
   erosion)      cmd_erosion ;;
   inline-tests) cmd_inline_tests ;;
-  all)          cmd_partition; cmd_erosion; cmd_inline_tests ;;
-  *) printf 'usage: %s {partition|erosion|inline-tests|all} [base-ref] [head-ref]\n' "$0" >&2; exit 2 ;;
+  pins)         cmd_pins ;;
+  all)          cmd_partition; cmd_erosion; cmd_inline_tests; cmd_pins ;;
+  *) printf 'usage: %s {partition|erosion|inline-tests|pins|all} [base-ref] [head-ref]\n' "$0" >&2; exit 2 ;;
 esac
