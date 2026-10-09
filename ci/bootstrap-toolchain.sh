@@ -64,15 +64,29 @@ RUSTUP_VERSION="1.29.1"
 # `loader` is spelled out per architecture rather than derived from `uname -m`:
 # the two differ in both directory and suffix (/lib vs /lib64, .so.1 vs .so.2),
 # so there is no substitution that produces both.
+#
+# Each case also names the *other* architecture, because the sysroot carries two
+# compilers. §A5 has exactly two first-class Linux targets, so `just check-cross`
+# means "the one that is not this machine" and the cross_ variables below are
+# simply the host ones with the two architectures swapped.
 case "$(uname -m)" in
   aarch64)
     deb_arch=arm64; gnu_triple=aarch64-linux-gnu; rust_host=aarch64-unknown-linux-gnu
-    loader=/lib/ld-linux-aarch64.so.1 ;;
+    loader=/lib/ld-linux-aarch64.so.1
+    cross_gnu_triple=x86_64-linux-gnu; cross_rust_target=x86_64-unknown-linux-gnu
+    cross_loader=/lib64/ld-linux-x86-64.so.2 ;;
   x86_64)
     deb_arch=amd64; gnu_triple=x86_64-linux-gnu;  rust_host=x86_64-unknown-linux-gnu
-    loader=/lib64/ld-linux-x86-64.so.2 ;;
+    loader=/lib64/ld-linux-x86-64.so.2
+    cross_gnu_triple=aarch64-linux-gnu; cross_rust_target=aarch64-unknown-linux-gnu
+    cross_loader=/lib/ld-linux-aarch64.so.1 ;;
   *) echo "bootstrap-toolchain: unsupported machine $(uname -m)" >&2; exit 1 ;;
 esac
+
+# The env-var spelling cargo and the cc crate use for a per-target override:
+# the Rust target triple uppercased with dashes turned into underscores.
+cross_env_suffix="${cross_rust_target//-/_}"
+cross_env_suffix_upper="$(echo "$cross_env_suffix" | tr '[:lower:]' '[:upper:]')"
 
 # rustup-init is pinned by version *and* digest. The unversioned
 # /rustup/dist/ URL always serves the newest release, so it cannot be pinned;
@@ -106,6 +120,20 @@ print_env() {
   # CC as well as PATH: `cc` on PATH is enough for rustc's default linker, but
   # the cc crate resolves $CC first and some build scripts read it directly.
   printf 'export CC=%q\n' "$shim_dir/cc"
+  # The cross compiler has to be named explicitly, and `CC` being set is exactly
+  # why. The cc crate resolves a target compiler as CC_<target>, then TARGET_CC,
+  # then CC — so with only the host `CC` exported it silently uses the *host*
+  # gcc to compile ring's C for the other architecture, and reports
+  # `unrecognized command-line option '-m64'` (VFL-151). Naming CC_<target>
+  # takes the first branch instead. AR_<target> is set for symmetry with it, and
+  # so that a non-GNU archiver (llvm-ar, thin archives under LTO) can never pick
+  # up the host one; GNU `ar` itself reads any ELF, so today this is insurance
+  # rather than a necessity. The linker variable is cargo's own, not the cc
+  # crate's, and spelled in its uppercase form.
+  printf 'export CC_%s=%q\n' "$cross_env_suffix" "$shim_dir/$cross_gnu_triple-cc"
+  printf 'export AR_%s=%q\n' "$cross_env_suffix" "$shim_dir/$cross_gnu_triple-ar"
+  printf 'export CARGO_TARGET_%s_LINKER=%q\n' \
+    "$cross_env_suffix_upper" "$shim_dir/$cross_gnu_triple-cc"
   printf 'export PATH=%q:%q:"$PATH"\n' "$shim_dir" "$cargo_home/bin"
   # Exporting PATH is not enough on an agent runner. The harness sets BASH_ENV
   # to a generated .bashrc, so *every* non-interactive bash sources it on
@@ -257,6 +285,74 @@ exec "$real" "\$@"
 SHIM
     link_shim "$tool" "$dir/$gnu_triple-$tool"
   done
+
+  # The cross compiler: the same shim idea pointed at the other architecture's
+  # gcc. It is always triple-prefixed and never plain `cc`, because `cc` is the
+  # host compiler and a build script that finds the wrong one there is the bug
+  # this is fixing (VFL-151).
+  #
+  # It needs strictly less than the host shim, and the difference is worth
+  # stating so nobody "restores" flags later:
+  #
+  #   * No -B. Debian's cross gcc keeps its private cc1, crtbegin.o and libgcc.a
+  #     under /usr/lib{,exec}/gcc-cross/<triple>/14 and its `ld`/`as` under
+  #     /usr/<triple>/bin, and it finds all of them by relocating from argv[0].
+  #     The host shim needs -B only because the *unprefixed* names it wants are
+  #     ambiguous with a system toolchain; these names are not.
+  #
+  #   * --sysroot is still required, for the same reason as the host: the
+  #     target's libc.so is a linker script naming absolute /usr/<triple>/lib
+  #     paths, and without --sysroot ld resolves them against the real root and
+  #     finds nothing. The target libraries are under $sysroot/usr/<triple>,
+  #     which is where this gcc looks once the sysroot is right, so the native
+  #     and cross library sets coexist in one tree without colliding.
+  #
+  # LD_LIBRARY_PATH names the *host* triple, not the cross one: these are gcc's
+  # own dependencies (libmpfr, libisl, libmpc), and the cross compiler is a host
+  # binary like any other.
+  #
+  # --dynamic-linker is asserted rather than relied on. It already comes out as
+  # the target's own unprefixed loader here, but that is a property of gcc's
+  # spec file, and a sysroot-relative default would silently produce binaries
+  # that depend on this prefix. The path is the *target's* loader: a
+  # cross-built binary never runs on this machine, so there is no local loader
+  # for it to agree with.
+  #
+  # The two programs print_env names are checked first, because only the lock
+  # puts them here. Without the check, a lock that lost the cross set would
+  # still bootstrap cleanly and the fault would surface much later as the
+  # opaque `-m64` error inside `cargo check --target`.
+  for tool in gcc-14 ar; do
+    [[ -x "$root/usr/bin/$cross_gnu_triple-$tool" ]] && continue
+    echo "bootstrap-toolchain: no $cross_gnu_triple-$tool in the sysroot for lock $lock_digest" >&2
+    echo "  the lock is missing the cross set; regenerate it with ci/toolchain/resolve-debs.py --arch $deb_arch" >&2
+    exit 1
+  done
+
+  write_shim "$dir/$cross_gnu_triple-cc" <<SHIM
+#!/usr/bin/env bash
+# Generated by ci/bootstrap-toolchain.sh — do not edit.
+export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple:$sysroot/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "$sysroot/usr/bin/$cross_gnu_triple-gcc-14" \\
+  --sysroot="$sysroot" \\
+  -Wl,--dynamic-linker=$cross_loader \\
+  "\$@"
+SHIM
+  link_shim "$cross_gnu_triple-cc" "$dir/$cross_gnu_triple-gcc"
+
+  # The cross binutils, as scripts of their own rather than links into the host
+  # set: `as` and `ld` are per-architecture programs, and the host ones cannot
+  # assemble or link for the target. The rest come along so that every
+  # triple-prefixed name a build script asks for is the target's own tool.
+  for tool in ar ranlib nm strip objcopy objdump readelf ld ld.bfd as addr2line size strings; do
+    [[ -x "$root/usr/bin/$cross_gnu_triple-$tool" ]] || continue
+    write_shim "$dir/$cross_gnu_triple-$tool" <<SHIM
+#!/usr/bin/env bash
+# Generated by ci/bootstrap-toolchain.sh — do not edit.
+export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "$sysroot/usr/bin/$cross_gnu_triple-$tool" "\$@"
+SHIM
+  done
 }
 
 if [[ -d "$tree" ]]; then
@@ -350,5 +446,8 @@ if [[ -f "$repo_root/rust-toolchain.toml" ]]; then
   ( cd "$repo_root" && rustup show active-toolchain >&2 )
 fi
 
-log "ready — $(cd "$repo_root" && rustc --version 2>&1), $("$shim_dir/cc" --version | head -1)"
+# Both compilers are reported so the log says which pair this lock produced.
+# This line is a report, not a check: a command substitution that fails inside
+# an argument does not trip `set -e`. The check is the one in write_shims.
+log "ready — $(cd "$repo_root" && rustc --version 2>&1), $("$shim_dir/cc" --version | head -1), cross $("$shim_dir/$cross_gnu_triple-cc" --version | head -1)"
 print_env
