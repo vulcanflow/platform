@@ -1,0 +1,25 @@
+# Lets the existing HTTPRoute on https://zozotk.go.ro reach the EventListener.
+#
+# The host is served by the cluster's Cilium Gateway `eg`; its HTTPRoute lives
+# in namespace aether-ci and today sends every path (`/`) to the aether-ci
+# EventListener. VulcanFlow gets its own path prefix on that route, a rule that
+# is added to the aether-ci HTTPRoute by hand (README.md, "Route"). A backend in
+# another namespace is only honoured when that namespace grants it, which is
+# what this object does: HTTPRoutes in aether-ci may send traffic to the one
+# Service el-vf-platform, and to nothing else in vf-ci.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: aether-ci-httproutes-to-el-vf-platform
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: aether-ci
+  to:
+    - group: ""
+      kind: Service
+      name: el-vf-platform

@@ -1,0 +1,17 @@
+# The namespace every VulcanFlow CI object lives in. VFL-125's Pipelines and
+# Tasks are applied here too (`kubectl -n vf-ci ...`).
+#
+# Pod Security: enforce `baseline`, warn and audit `restricted`. The steps we
+# write are restricted-clean; Tekton's own init containers are only
+# restricted-clean when the cluster's `set-security-context` feature flag is on,
+# which has not been checked yet (VFL-124 cluster-inventory). Raise enforce to
+# `restricted` once it has.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
