@@ -13,7 +13,10 @@ integration = []
 
 [dependencies]
 vf-core = { workspace = true }
-vf-db = { workspace = true }
+# §A1.3 lists `vf-db` among this crate's dependencies. The edge is left out
+# until task C3 exports a migrator for `TestDb` to call: until then `TestDb`
+# reads the migration files from `crates/vf-db/migrations/` at run time, which
+# needs the directory and not the crate.
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
 tokio = { workspace = true }
@@ -22,3 +25,18 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+# `TestDb` hands tests `sqlx::PgPool`s, and `Error` carries sqlx's query and
+# migration errors, so sqlx appears in this crate's public signatures. The
+# pin, its features and its rustls provider are the workspace ones (§A5);
+# nothing is selected here.
+sqlx = { workspace = true }
+# Dev-issuer token minting (§A6.4). jsonwebtoken 10+ compiles in no signing
+# backend by default and panics at the first sign or verify unless one is
+# chosen, and the two it offers are `aws_lc_rs`, which deny.toml bans (§A5:
+# `ring` is the single provider), and `rust_crypto`, which is §A5's own "No
+# OpenSSL; RustCrypto for HMAC and tokens". So this is the one feature
+# selected locally rather than at the pin, and it is the only one that can be.
+jsonwebtoken = { workspace = true, features = ["rust_crypto"] }
+# SHA-256 of `DevIssuer::FIXTURE_SEED` is the dev issuer's Ed25519 seed, and
+# of a tenant and role the default `sub`.
+sha2 = { workspace = true }

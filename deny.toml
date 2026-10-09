@@ -27,20 +27,36 @@ feature-depth = 1
 # ---------------------------------------------------------------------------
 [advisories]
 # `db-path` is a *root* that cargo-deny clones one database per `db-urls` entry
-# into, so it must not be `~/.cargo/advisory-db` — that is the path cargo-audit
-# clones the RustSec repository to directly. Pointing both at one directory makes
+# into, so it must not be `$CARGO_HOME/advisory-db` — cargo-audit clones the
+# RustSec repository to that path directly. Pointing both at one directory makes
 # `just check` fail in recipe order: `deny` runs first and leaves the directory
 # non-empty but not a repository, then `audit` cannot clone into it and exits 1
 # with "Refusing to initialize the non-empty directory". It passes only where a
 # cargo-audit clone already exists, so it is green on a developer machine and red
-# on every fresh CI runner. `advisory-dbs` is cargo-deny's own default root.
-db-path = "~/.cargo/advisory-dbs"
+# on every fresh CI runner. `advisory-dbs` is cargo-deny's own default root, and
+# spelling it `$CARGO_HOME` — which cargo-deny expands itself, falling back to
+# `~/.cargo` when unset — keeps both roots under the same cargo home.
+db-path = "$CARGO_HOME/advisory-dbs"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 version = 2
 yanked = "deny"
-# No ignored advisories. An advisory that cannot be fixed by a bump is a
-# reviewed exception added here with the issue that tracks it.
-ignore = []
+# §A5 / VFL-98 ruling: `unmaintained` is cargo-deny's default, stated so the
+# policy reads next to `yanked`; `unsound = "all"` tightens the `workspace`
+# default so transitive unsound advisories error here too, matching `audit`.
+unmaintained = "all"
+unsound = "all"
+# Reviewed exceptions only. An advisory that cannot be fixed by a bump enters
+# here by an architecture ruling, with the issue that tracks its retirement,
+# and nothing else does. `.cargo/audit.toml` mirrors this list for the
+# `cargo audit` pass; the two must stay equal.
+ignore = [
+    # RUSTSEC-2023-0071 (Marvin timing side channel) on `rsa`, reached only via
+    # jsonwebtoken `rust_crypto`. Affects RSA private-key operations timed over a
+    # network; no network-facing crate here signs or decrypts with RSA (A1 verifies
+    # only; the dev issuer is EdDSA). Reviewed exception, Cortana 2026-10-06, VFL-173.
+    # Retire per VFL-176 when `rsa` ships a patched version.
+    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin side channel: no RSA private-key operation in any network-facing crate; dev issuer is EdDSA; tracking VFL-176" },
+]
 
 # ---------------------------------------------------------------------------
 # Licences — allow-list, per §A5
@@ -125,6 +141,18 @@ allow = ["CDLA-Permissive-2.0"]
 [[licenses.exceptions]]
 name = "xxhash-rust"
 allow = ["BSL-1.0"]
+
+# libfuzzer-sys bundles the LLVM libFuzzer C++ sources and declares
+# `(MIT OR Apache-2.0) AND NCSA`, so the NCSA half is required, not a choice,
+# and is not one of the six. NCSA (University of Illinois/NCSA Open Source
+# License) is permissive, OSI-approved and BSD-style: notice-only, no
+# obligation on a linked binary beyond attribution, and nothing it covers
+# ships in a product artefact — fuzz binaries are test-lane only. Ratified by
+# VFL-202 ruling (/VFL/issues/VFL-202#document-ruling).
+# Edge: vf-fuzz -> libfuzzer-sys.
+[[licenses.exceptions]]
+name = "libfuzzer-sys"
+allow = ["NCSA"]
 
 # There is deliberately no licence clarification for `ring`. cargo-deny's own
 # documentation uses `ring` as its clarify example, with the expression
@@ -220,6 +248,10 @@ wrappers = []
 # crates whose set changes on every bump.
 
 # vf-graph must not depend on vf-core (§A1.4), and nor may vf-abuse.
+#
+# vf-fuzz (fuzz/, test-lane) is added here per VFL-202 ruling: its second
+# `cargo deny` sweep resolves the fuzz workspace's own graph, where vf-core is
+# a path dependency of the fuzz harness crate.
 [[bans.deny]]
 name = "vf-core"
 wrappers = [
@@ -236,6 +268,7 @@ wrappers = [
     "vf-scanner-adapter",
     "vf-report",
     "vf-testkit",
+    "vf-fuzz",
 ]
 
 # Keeps the wasm32 bundle minimal: only the three crates that actually consume

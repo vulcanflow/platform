@@ -21,7 +21,7 @@ jobs:
     name: lane-partition
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Fetch base branch
@@ -33,7 +33,7 @@ jobs:
     name: test-erosion
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Fetch base branch
@@ -45,7 +45,7 @@ jobs:
     name: inline-test-modules
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Production source may not contain #[cfg(test)] modules
         run: ci/lane-gate.sh inline-tests
 
@@ -53,6 +53,6 @@ jobs:
     name: gate-self-test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: The gate's own verdicts are asserted against fixture diffs
         run: ci/lane-gate-test.sh ci/lane-gate.sh
