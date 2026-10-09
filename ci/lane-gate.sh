@@ -182,7 +182,7 @@ count_diff_lines() {
 }
 
 cmd_erosion() {
-  local base_count head_count added_ignores removed_tests
+  local base_rev base_count head_count added_ignores removed_tests
 
   added_ignores="$(count_diff_lines '+' '#\[ignore')"
   if [ "${added_ignores:-0}" -gt 0 ]; then
@@ -195,9 +195,15 @@ cmd_erosion() {
 
   removed_tests="$(count_diff_lines '-' "$TEST_MARKER_RE")"
 
-  base_count="$(count_markers "$BASE_REF")"
+  # The base is counted at the merge-base, the same base the `...` diffs use. The
+  # base tip can be ahead of the head's own base: a reopened PR reuses a stale
+  # merge ref, and main can move before the job fetches it.
+  base_rev="$(git merge-base "$BASE_REF" "$HEAD_REF")" \
+    || fail "erosion: no merge-base between $BASE_REF and $HEAD_REF, so there is no base to count."
+
+  base_count="$(count_markers "$base_rev")"
   head_count="$(count_markers "$HEAD_REF")"
-  note "test declarations: $base_count at base, $head_count at head (removed lines carrying a marker: ${removed_tests:-0})"
+  note "test declarations: $base_count at base $(git rev-parse --short "$base_rev") (merge-base with $BASE_REF), $head_count at head (removed lines carrying a marker: ${removed_tests:-0})"
 
   if [ "$head_count" -lt "$base_count" ]; then
     fail "This pull request reduces the number of test declarations from $base_count to $head_count.
