@@ -330,8 +330,18 @@ clippy:
 
 # No `--all-features` here: `deny.toml`'s `[graph] all-features` is the single
 # place that choice is made, and a flag would override the committed value.
+#
+# The second command sweeps the test-lane fuzz workspace against the same
+# root `deny.toml` — §A5 extends there too (VFL-202 ruling). `--config` is
+# explicit so the policy is the root file regardless of how cargo-deny would
+# otherwise locate a default: one licence and advisory policy, not two.
+# `--manifest-path`, `--locked` and `--config` are top-level cargo-deny options
+# in the pinned 0.20, so they go before `check`, which rejects all three. A
+# relative `--config` resolves against the working directory, which is this
+# file's directory, not `fuzz/`.
 deny:
     cargo deny check
+    cargo deny --manifest-path fuzz/Cargo.toml --locked --config deny.toml check
 
 audit:
     #!/usr/bin/env bash
@@ -344,6 +354,7 @@ audit:
     # env clears it, but this recipe is also run on its own by Test Runner.
     [ -n "${GIT_CONFIG_COUNT:-}" ] || unset GIT_CONFIG_COUNT
     cargo audit --deny warnings
+    cargo audit --deny warnings --file fuzz/Cargo.lock
 
 build:
     cargo build --workspace --all-targets
@@ -361,7 +372,7 @@ test-integration:
 
 # The pre-push gate. The lane gate runs first, because a diff that mixes
 # production and test files is refused before anything else is worth running.
-gate: lane-gate lane-gate-selftest check build test-unit wasm graph-rules check-cross
+gate: lane-gate lane-gate-selftest check build test-unit fuzz-check wasm graph-rules check-cross
 
 # The lane gate itself (§A6.2): diff partition, test erosion and #[cfg(test)]
 # in production source, against origin/main.
@@ -414,3 +425,13 @@ graph-rules:
 # Emits the OpenAPI document so §27-17 evidence can be diffed.
 openapi:
     cargo run -p vf-api --bin vf-openapi
+
+# Type-checks the test-lane fuzz workspace under its own pinned nightly
+# (fuzz/rust-toolchain.toml). Run from inside fuzz/: rustup selects the
+# toolchain by working directory, not by --manifest-path. Not part of
+# `check`: `check` is the stable-only loop every coder runs many times a day,
+# and this needs the second toolchain plus a C++ compiler (`libfuzzer-sys`
+# compiles bundled C++ in its build script, so even `cargo check` needs
+# `c++`). Per VFL-202 ruling; fails until VFL-201 provisions that toolchain.
+fuzz-check:
+    cd fuzz && cargo check --locked

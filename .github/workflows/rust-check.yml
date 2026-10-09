@@ -78,3 +78,6 @@ jobs:
 
       - name: just test-unit
         run: just test-unit
+
+      - name: just fuzz-check
+        run: just fuzz-check

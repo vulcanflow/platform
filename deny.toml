@@ -142,6 +142,18 @@ allow = ["CDLA-Permissive-2.0"]
 name = "xxhash-rust"
 allow = ["BSL-1.0"]
 
+# libfuzzer-sys bundles the LLVM libFuzzer C++ sources and declares
+# `(MIT OR Apache-2.0) AND NCSA`, so the NCSA half is required, not a choice,
+# and is not one of the six. NCSA (University of Illinois/NCSA Open Source
+# License) is permissive, OSI-approved and BSD-style: notice-only, no
+# obligation on a linked binary beyond attribution, and nothing it covers
+# ships in a product artefact — fuzz binaries are test-lane only. Ratified by
+# VFL-202 ruling (/VFL/issues/VFL-202#document-ruling).
+# Edge: vf-fuzz -> libfuzzer-sys.
+[[licenses.exceptions]]
+name = "libfuzzer-sys"
+allow = ["NCSA"]
+
 # There is deliberately no licence clarification for `ring`. cargo-deny's own
 # documentation uses `ring` as its clarify example, with the expression
 # `MIT AND ISC AND OpenSSL`; copying it here would admit `OpenSSL` — a licence
@@ -236,6 +248,10 @@ wrappers = []
 # crates whose set changes on every bump.
 
 # vf-graph must not depend on vf-core (§A1.4), and nor may vf-abuse.
+#
+# vf-fuzz (fuzz/, test-lane) is added here per VFL-202 ruling: its second
+# `cargo deny` sweep resolves the fuzz workspace's own graph, where vf-core is
+# a path dependency of the fuzz harness crate.
 [[bans.deny]]
 name = "vf-core"
 wrappers = [
@@ -252,6 +268,7 @@ wrappers = [
     "vf-scanner-adapter",
     "vf-report",
     "vf-testkit",
+    "vf-fuzz",
 ]
 
 # Keeps the wasm32 bundle minimal: only the three crates that actually consume
