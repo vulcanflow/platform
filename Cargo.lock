@@ -4848,11 +4848,14 @@ name = "vf-db"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "futures",
  "object_store",
  "redis",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx",
  "thiserror",
  "tokio",

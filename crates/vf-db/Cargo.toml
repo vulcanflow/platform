@@ -21,6 +21,13 @@ object_store = { workspace = true }
 # rather than only when some other workspace crate happens to pull reqwest in.
 reqwest = { workspace = true }
 redis = { workspace = true }
+# §A5: the binary installs the `ring` provider before its first TLS use, and
+# §A5 names F3's ArtifactStore path as the place (`install_crypto_provider`).
+rustls = { workspace = true }
+# SHA-256 of every artifact written and read (§A7-6), computed by the adapter
+# over the bytes it actually moved.
+sha2 = { workspace = true }
+futures = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
