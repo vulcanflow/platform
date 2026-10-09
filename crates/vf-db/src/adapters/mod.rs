@@ -30,6 +30,13 @@
 //! `fake`, `memory` and `dev` adapters generally and lists `fs` as a test
 //! adapter; the names this module owns are enforced here.
 //!
+//! The refusal guards configuration, not construction. Every adapter's
+//! constructor is public and takes no [`DeployEnv`], so code in the process
+//! can still build a test adapter under `VF_ENV=production`; a binary gets
+//! the guard by building its store through [`artifact_store_from_env`], and
+//! only through it. It also arms only on `VF_ENV=production`: see
+//! [`DeployEnv`].
+//!
 //! Every entry point that reads configuration has a `*_from_lookup` twin that
 //! takes the variables from a closure instead of the process environment, so
 //! the refusal can be tested without mutating the environment of a running
@@ -98,13 +105,13 @@ pub enum AdapterSelectionError {
     },
 
     /// The adapter name is not one this build offers.
-    #[error("{name}={value:?} is not a known adapter; expected one of {expected}")]
+    ///
+    /// The value given is not echoed, for the same reason as
+    /// [`Self::InvalidSetting`]; the accepted names are enough to fix it.
+    #[error("{name} is not a known adapter; expected one of {expected}")]
     UnknownAdapter {
         /// The variable involved.
         name: &'static str,
-        /// The name given. Echoed because it is an operator-supplied adapter
-        /// name from the process environment, not request data.
-        value: String,
         /// The accepted names, comma separated.
         expected: &'static str,
     },
@@ -175,10 +182,14 @@ pub(crate) fn optional_bool(
 ///
 /// Only `production` has a behavioural meaning in this module, so everything
 /// else collapses into [`Self::NonProduction`] rather than becoming a list
-/// that has to be kept in step with the deployment tooling. An unset `VF_ENV`
-/// is [`Self::NonProduction`]: a developer machine is the default, and a
-/// production deployment that forgets the variable is caught by the real
-/// adapter it must also have configured.
+/// that has to be kept in step with the deployment tooling.
+///
+/// This fails open. An unset `VF_ENV`, or any value other than
+/// `production` (`prod`, `production-eu`), is [`Self::NonProduction`], and
+/// nothing else catches it: with `VF_ARTIFACT_STORE=memory` as well, a
+/// production deployment starts with a test adapter. A production deployment
+/// must therefore set `VF_ENV=production` exactly, and its manifests are where
+/// that is checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeployEnv {
     /// `VF_ENV=production`. Test adapters are refused.
@@ -272,9 +283,8 @@ impl ArtifactStoreKind {
             "s3" => Ok(Self::S3),
             "fs" => Ok(Self::Fs),
             "memory" => Ok(Self::Memory),
-            other => Err(AdapterSelectionError::UnknownAdapter {
+            _ => Err(AdapterSelectionError::UnknownAdapter {
                 name: ENV_ARTIFACT_STORE,
-                value: other.to_owned(),
                 expected: Self::EXPECTED,
             }),
         }

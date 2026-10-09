@@ -102,8 +102,8 @@ pub struct S3ArtifactStoreConfig {
     /// endpoint and bucket path, not by a `{bucket}.` DNS prefix that would
     /// need a wildcard record.
     pub path_style: bool,
-    /// Whether to allow a plaintext `http://` endpoint. `true` for RustFS on
-    /// loopback; `false` in production, where the endpoint is TLS.
+    /// Whether to allow an endpoint that is not `https://`. `true` for RustFS
+    /// on loopback; `false` in production, where the endpoint is TLS.
     pub allow_http: bool,
     /// Size bounds.
     pub limits: ArtifactLimits,
@@ -172,21 +172,24 @@ impl S3ArtifactStore {
     ///
     /// [`ArtifactStoreError::Backend`] when `config` cannot be turned into a
     /// client — a malformed endpoint, or `allow_http: false` with an
-    /// `http://` endpoint.
+    /// endpoint that does not start with `https://`.
     pub fn new(config: S3ArtifactStoreConfig) -> Result<Self, ArtifactStoreError> {
         install_crypto_provider();
 
         // Refused here rather than left to the first request, so that a
         // production binary pointed at a plaintext endpoint fails to start.
+        // Only a literal `https://` passes: a test for `http://` would let a
+        // schemeless endpoint through, and one with a tab or newline inside
+        // the scheme, which the URL parser strips before it reads the scheme.
         if !config.allow_http
-            && config
+            && !config
                 .endpoint
                 .trim_start()
                 .to_ascii_lowercase()
-                .starts_with("http://")
+                .starts_with("https://")
         {
             return Err(ArtifactStoreError::Backend {
-                message: "the endpoint is plaintext http and allow_http is false".to_owned(),
+                message: "the endpoint is not https and allow_http is false".to_owned(),
             });
         }
 

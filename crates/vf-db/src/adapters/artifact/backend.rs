@@ -35,10 +35,22 @@ use super::ArtifactLimits;
 
 /// How many multipart parts may be in flight at once.
 ///
-/// Bounds the memory a streamed upload holds to about
+/// Bounds what the multipart writer holds to about
 /// `(MAX_PARTS_IN_FLIGHT + 1) * multipart_part_bytes`, whatever the object
-/// size.
+/// size. An [`ArtifactBody::Stream`] holds more on top of that: the head it
+/// buffered to choose multipart, up to `multipart_threshold_bytes` plus one
+/// source chunk, until the head is written, and one source chunk at a time
+/// after. Its peak is therefore about `multipart_threshold_bytes +
+/// (MAX_PARTS_IN_FLIGHT + 1) * multipart_part_bytes` plus the largest source
+/// chunk: 56 MiB with the defaults and a small source chunk. That is still
+/// constant in the object size.
 const MAX_PARTS_IN_FLIGHT: usize = 4;
+
+/// Most a `get` reserves up front from the size the backend reported.
+///
+/// The reported size is the backend's claim, not a count, so it sizes only
+/// the first allocation; past this the buffer grows as bytes arrive.
+const MAX_GET_PREALLOCATION_BYTES: usize = 1024 * 1024;
 
 /// An [`ArtifactStore`] over any `object_store` backend: the one
 /// implementation that [`S3ArtifactStore`](super::S3ArtifactStore),
@@ -253,7 +265,10 @@ impl ObjectStoreArtifactStore {
     async fn get_impl(&self, key: ArtifactKey) -> Result<ArtifactContent, ArtifactStoreError> {
         let mut reader = self.open(key).await?;
         let mut hasher = Sha256::new();
-        let mut bytes = Vec::with_capacity(usize::try_from(reader.meta.size).unwrap_or(0));
+        let capacity = usize::try_from(reader.meta.size)
+            .unwrap_or(0)
+            .min(MAX_GET_PREALLOCATION_BYTES);
+        let mut bytes = Vec::with_capacity(capacity);
         while let Some(chunk) = reader.read().await? {
             hasher.update(&chunk);
             bytes.extend_from_slice(&chunk);
