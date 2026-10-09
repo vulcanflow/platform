@@ -224,7 +224,11 @@ with the tag it resolved to as a trailing comment. A tag is mutable, so a
 re-point would silently change what CI executes. Resolve a new one with
 `git ls-remote <repo> 'refs/tags/<tag>^{}'`, falling back to `refs/tags/<tag>`
 when that is empty because the tag is lightweight, and keep the comment in step
-with the SHA.
+with the SHA. `ci/lane-gate.sh pins` refuses any other form of `uses:`. A pin
+changes only through a task of its own that re-resolves the tag that way,
+confirms through the GitHub API (`repos/<owner>/<repo>/git/commits/<sha>`) that
+the SHA names a commit and not a tag object, and records the old and new SHA on
+the task; no automated updater such as Dependabot or Renovate is used.
 
 ## Deferred
 
