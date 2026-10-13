@@ -250,5 +250,119 @@ printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' 
 commit tekton-rust-check-plus-prod
 check "Tekton rust-check (NEUTRAL) + prod" partition pass
 
+# --- 25. .tekton/kustomization.yaml bundled with production source: refused -
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit kustomization-plus-prod
+check ".tekton/kustomization.yaml + prod" partition fail
+
+# --- 26. .tekton/kustomization.yaml alone: allowed ------------------------
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+commit kustomization-only
+check ".tekton/kustomization.yaml alone" partition pass
+
+# --- 27. .tekton/kustomization.yaml + .tekton/README.md (NEUTRAL): allowed -
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+printf '# tekton\n' > .tekton/README.md
+commit kustomization-plus-tekton-readme
+check ".tekton/kustomization.yaml + .tekton/README.md" partition pass
+
+# --- 28. .tekton/triggers/kustomization.yaml (NEUTRAL) + prod: allowed
+#     (control: the trigger-slice manifest is not swept into GATE) ---------
+setup
+mkdir -p .tekton/triggers
+printf 'kind: Kustomization\n' > .tekton/triggers/kustomization.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-triggers-kustomization-plus-prod
+check ".tekton/triggers/kustomization.yaml (NEUTRAL) + prod" partition pass
+
+# --- 29. .tekton/pipelineruns/lane-gate.yaml (NEUTRAL) + prod: allowed
+#     (control: GATE classification is exact-path, not a lane-gate.yaml
+#     basename glob under .tekton/**) --------------------------------------
+setup
+mkdir -p .tekton/pipelineruns
+printf 'kind: PipelineRun\n' > .tekton/pipelineruns/lane-gate.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-pipelineruns-lane-gate-plus-prod
+check "Tekton pipelineruns/lane-gate.yaml (NEUTRAL) + prod" partition pass
+
+# --- 30. .tekton/kustomization.yml (VFL-799 alias) bundled with production
+#     source: refused -------------------------------------------------------
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit kustomization-yml-plus-prod
+check ".tekton/kustomization.yml + prod" partition fail
+
+# --- 31. .tekton/Kustomization (VFL-799 alias) bundled with production
+#     source: refused -------------------------------------------------------
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/Kustomization
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit kustomization-capital-plus-prod
+check ".tekton/Kustomization + prod" partition fail
+
+# --- 32. renaming .tekton/kustomization.yaml to the .yml alias, bundled with
+#     production source: refused (changed_files lists a rename under its new
+#     path, so classify_path sees .tekton/kustomization.yml) ---------------
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+git add -A >/dev/null; git commit -qm add-kustomization-yaml
+git branch -f baseline
+git mv .tekton/kustomization.yaml .tekton/kustomization.yml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit rename-kustomization-yaml-to-yml-plus-prod
+check "git mv .tekton/kustomization.yaml -> .yml + prod" partition fail
+
+# --- 33. .tekton/triggers/kustomization.yml (NEUTRAL) + prod: allowed
+#     (control: the trigger-slice manifest stays NEUTRAL even under the .yml
+#     alias name; LOW-2 scope is unchanged by VFL-799) ---------------------
+setup
+mkdir -p .tekton/triggers
+printf 'kind: Kustomization\n' > .tekton/triggers/kustomization.yml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-triggers-kustomization-yml-plus-prod
+check ".tekton/triggers/kustomization.yml (NEUTRAL) + prod" partition pass
+
+# --- 34. .tekton/kustomization.yaml bundled with a TEST file: refused
+#     (VFL-797 LOW-8: GATE + TEST must refuse, not just GATE + PROD) -------
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+printf '#[test]\nfn subs(){assert_eq!(vf_core::sub(3,1),2);}\n' > crates/vf-core/tests/sub.rs
+commit kustomization-yaml-plus-test
+check ".tekton/kustomization.yaml + test" partition fail
+
+# --- 35. .tekton/kustomization.yml alone: allowed -------------------------
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yml
+commit kustomization-yml-only
+check ".tekton/kustomization.yml alone" partition pass
+
+# --- 36. .tekton/Kustomization alone: allowed -----------------------------
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/Kustomization
+commit kustomization-capital-only
+check ".tekton/Kustomization alone" partition pass
+
+# --- 37. .tekton/kustomization.yml + .tekton/README.md (NEUTRAL): allowed -
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yml
+printf '# tekton\n' > .tekton/README.md
+commit kustomization-yml-plus-tekton-readme
+check ".tekton/kustomization.yml + .tekton/README.md" partition pass
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
