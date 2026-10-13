@@ -162,5 +162,93 @@ check "first test in a previously bare tree" erosion pass
 setup
 check "empty diff" partition pass
 
+# --- 16. Tekton lane-gate task (.tekton/tasks/lane-gate.yaml) bundled with
+#     production source: refused ------------------------------------------
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-lane-gate-task-plus-prod
+check "Tekton lane-gate task (.tekton/tasks/lane-gate.yaml) + prod" partition fail
+
+# Optional: the refusal names the Tekton lane gate, not just ci/lane-gate.sh.
+out="$(./ci/lane-gate.sh partition baseline HEAD 2>&1)"; rc=$?
+if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q 'Tekton lane gate'; then
+  printf 'ok    %-46s %s\n' "refusal text names the Tekton lane gate" "partition"
+  pass_count=$((pass_count+1))
+else
+  printf 'NOT OK %-45s expected refusal text to name the Tekton lane gate\n' "refusal text"
+  printf '%s\n' "$out" | sed 's/^/        | /'
+  fail_count=$((fail_count+1))
+fi
+
+# --- 17. Tekton lane-gate selftest task (.tekton/tasks/lane-gate-selftest.yaml)
+#     bundled with production source: refused -----------------------------
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate-selftest.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-lane-gate-selftest-plus-prod
+check "Tekton lane-gate selftest (.tekton/tasks/lane-gate-selftest.yaml) + prod" partition fail
+
+# --- 18. Tekton lane-gate pipeline (.tekton/pipelines/lane-gate.yaml) bundled
+#     with production source: refused --------------------------------------
+setup
+mkdir -p .tekton/pipelines
+printf 'kind: Pipeline\n' > .tekton/pipelines/lane-gate.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-lane-gate-pipeline-plus-prod
+check "Tekton lane-gate pipeline (.tekton/pipelines/lane-gate.yaml) + prod" partition fail
+
+# --- 19. a Tekton lane-gate path bundled with a test file: refused --------
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate.yaml
+printf '#[test]\nfn subs(){assert_eq!(vf_core::sub(3,1),2);}\n' > crates/vf-core/tests/sub.rs
+commit tekton-lane-gate-task-plus-test
+check "Tekton lane-gate task (.tekton/tasks/lane-gate.yaml) + test" partition fail
+
+# --- 20. Tekton lane-gate task alone: allowed -----------------------------
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate.yaml
+commit tekton-lane-gate-task-only
+check "Tekton lane-gate task alone" partition pass
+
+# --- 21. Tekton lane-gate selftest task alone: allowed --------------------
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate-selftest.yaml
+commit tekton-lane-gate-selftest-only
+check "Tekton lane-gate selftest alone" partition pass
+
+# --- 22. Tekton lane-gate pipeline alone: allowed -------------------------
+setup
+mkdir -p .tekton/pipelines
+printf 'kind: Pipeline\n' > .tekton/pipelines/lane-gate.yaml
+commit tekton-lane-gate-pipeline-only
+check "Tekton lane-gate pipeline alone" partition pass
+
+# --- 23. all three Tekton lane-gate paths together with NEUTRAL files:
+#     allowed ---------------------------------------------------------------
+setup
+mkdir -p .tekton/tasks .tekton/pipelines
+printf 'kind: Task\n' > .tekton/tasks/lane-gate.yaml
+printf 'kind: Task\n' > .tekton/tasks/lane-gate-selftest.yaml
+printf 'kind: Pipeline\n' > .tekton/pipelines/lane-gate.yaml
+printf '# docs\nneutral tweak\n' > README.md
+printf '# tekton\n' > .tekton/README.md
+commit tekton-lane-gate-all-three-plus-neutral
+check "all three Tekton lane-gate paths + NEUTRAL files" partition pass
+
+# --- 24. Tekton rust-check task (NEUTRAL) alongside production source:
+#     allowed (control: a non-gate .tekton/ path stays NEUTRAL) -------------
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/rust-check.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-rust-check-plus-prod
+check "Tekton rust-check (NEUTRAL) + prod" partition pass
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
