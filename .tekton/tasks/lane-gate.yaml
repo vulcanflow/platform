@@ -20,7 +20,11 @@
 #     ubuntu-latest, so the bash, git and grep the script depends on are fixed;
 #   - the steps run as an unprivileged user (stepTemplate below), not as the
 #     runner's passwordless-sudo user. The script writes nothing outside the
-#     checkout.
+#     checkout;
+#   - partition and erosion fail when the base branch was not fetched. GitHub's
+#     jobs and pipelines/lane-gate.yaml always fetch it, so this never fires
+#     there. It stops `fetch-base: "false"` from passing erosion, because
+#     ci/lane-gate.sh counts the tests at a missing base ref as zero.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -67,6 +71,7 @@ spec:
       description: >-
         "true" runs the workflow's "Fetch base branch" step. The
         inline-test-modules job has no such step, so it passes "false".
+        partition and erosion fail without the base branch.
       default: "true"
     - name: image
       type: string
@@ -189,7 +194,16 @@ spec:
         set -euo pipefail
         cd repo
         case "$SUBCOMMAND" in
-          partition|erosion|inline-tests) ;;
+          partition|erosion)
+            # The base ref ci/lane-gate.sh reads by default. It must exist:
+            # count_markers absorbs a git grep miss, and with it a missing ref.
+            base_ref="origin/${GITHUB_BASE_REF:-main}"
+            if ! git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null; then
+              echo "$SUBCOMMAND needs the base branch, but $base_ref is missing; set fetch-base to \"true\"." >&2
+              exit 1
+            fi
+            ;;
+          inline-tests) ;;
           *) echo "unknown subcommand '$SUBCOMMAND'" >&2; exit 2 ;;
         esac
         ci/lane-gate.sh "$SUBCOMMAND"
