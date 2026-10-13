@@ -59,8 +59,8 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use vf_core::scope::{
-    check_candidate, check_run_scope, ApprovedScope, CanonicalHost, RunScope, ScopeType,
-    ScopeVerdict,
+    ApprovedScope, CanonicalHost, RunScope, ScopeType, ScopeVerdict, check_candidate,
+    check_run_scope,
 };
 
 /// Known-good registrable-domain bases, suffix-plus-one under the Public

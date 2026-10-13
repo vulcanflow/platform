@@ -1,0 +1,96 @@
+# Placeholder pipeline for VFL-124: proves that a webhook delivery becomes a
+# PipelineRun. It prints what it was given and exits 0. VFL-125 replaces the
+# template's pipelineRef with the real lane-gate and rust-check pipelines.
+#
+# Webhook fields reach the step through env, never by $(params.*) substitution
+# inside the script: a branch name is chosen by whoever pushes it, and text
+# substituted into a script is executed as shell.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: vf-ci-noop
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  params:
+    - name: event-type
+      type: string
+    - name: delivery-id
+      type: string
+    - name: repo-full-name
+      type: string
+    - name: git-ref
+      type: string
+    - name: revision
+      type: string
+    - name: base-branch
+      type: string
+      default: ""
+  tasks:
+    - name: report-event
+      params:
+        - name: event-type
+          value: $(params.event-type)
+        - name: delivery-id
+          value: $(params.delivery-id)
+        - name: repo-full-name
+          value: $(params.repo-full-name)
+        - name: git-ref
+          value: $(params.git-ref)
+        - name: revision
+          value: $(params.revision)
+        - name: base-branch
+          value: $(params.base-branch)
+      taskSpec:
+        params:
+          - name: event-type
+            type: string
+          - name: delivery-id
+            type: string
+          - name: repo-full-name
+            type: string
+          - name: git-ref
+            type: string
+          - name: revision
+            type: string
+          - name: base-branch
+            type: string
+        steps:
+          - name: report
+            # busybox 1.37.0, multi-arch index (amd64 and arm64 included).
+            image: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+            env:
+              - name: EVENT_TYPE
+                value: $(params.event-type)
+              - name: DELIVERY_ID
+                value: $(params.delivery-id)
+              - name: REPO_FULL_NAME
+                value: $(params.repo-full-name)
+              - name: GIT_REF
+                value: $(params.git-ref)
+              - name: REVISION
+                value: $(params.revision)
+              - name: BASE_BRANCH
+                value: $(params.base-branch)
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+              seccompProfile:
+                type: RuntimeDefault
+            computeResources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                memory: 32Mi
+            script: |
+              #!/bin/sh
+              set -eu
+              printf 'vf-ci-noop: event=%s delivery=%s repo=%s ref=%s revision=%s base=%s\n' \
+                "$EVENT_TYPE" "$DELIVERY_ID" "$REPO_FULL_NAME" "$GIT_REF" "$REVISION" "$BASE_BRANCH"

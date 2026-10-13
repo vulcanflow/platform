@@ -152,6 +152,14 @@ fuzz_target!(|pair: HostPair| {
         Related::Same => a_str.clone(),
         Related::Descendant(indices) => {
             let mut parts = label_stack(indices, 3);
+            if parts.is_empty() {
+                // An empty `indices` would otherwise materialize to
+                // `a_str` unchanged — indistinguishable from `Same` and
+                // not a descendant at all. Force at least one extra label
+                // so this arm always holds the "1..=3 extra labels" shape
+                // documented below.
+                parts.push(LABELS[0]);
+            }
             parts.push(a_str.as_str());
             parts.join(".")
         }
