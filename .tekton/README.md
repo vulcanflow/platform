@@ -79,11 +79,11 @@ checked out: its checkout step prints it on the line after
 `git log -1 --format=%H`.
 
 ```sh
-commit=<commit>; rev=<sha>; curl -fsSL "https://raw.githubusercontent.com/vulcanflow/platform/$commit/.tekton/pipelineruns/lane-gate.yaml" | sed "s/@REVISION@/$rev/" | kubectl create -f -
+commit=<commit>; rev=<sha>; curl -fsSL "https://raw.githubusercontent.com/vulcanflow/platform/$commit/.tekton/pipelineruns/lane-gate.yaml" | sed "s|@REVISION@|$rev|" | kubectl create -f -
 ```
 
 ```sh
-commit=<commit>; rev=<sha>; curl -fsSL "https://raw.githubusercontent.com/vulcanflow/platform/$commit/.tekton/pipelineruns/rust-check.yaml" | sed "s/@REVISION@/$rev/" | kubectl create -f -
+commit=<commit>; rev=<sha>; curl -fsSL "https://raw.githubusercontent.com/vulcanflow/platform/$commit/.tekton/pipelineruns/rust-check.yaml" | sed "s|@REVISION@|$rev|" | kubectl create -f -
 ```
 
 Each prints the run name, e.g. `pipelinerun.tekton.dev/vf-lane-gate-x7k2p
@@ -93,10 +93,11 @@ created`.
 
 `$run` is the name printed in step 2. This prints the run's status and
 duration, one row per check with its result, the commit it ran on and the base
-tip it compared with, then the last 40 log lines of every step:
+tip it compared with, then the last 40 log lines of every container (each
+step, and Tekton's own init containers):
 
 ```sh
-run=<name>; kubectl -n vf-ci get pipelinerun "$run" -o custom-columns='RUN:.metadata.name,STATUS:.status.conditions[0].reason,START:.status.startTime,END:.status.completionTime'; echo ---; kubectl -n vf-ci get taskruns -l "tekton.dev/pipelineRun=$run" -o custom-columns='CHECK:.metadata.labels.tekton\.dev/pipelineTask,STATUS:.status.conditions[0].reason,START:.status.startTime,END:.status.completionTime,COMMIT:.status.results[?(@.name=="commit")].value,BASE:.status.results[?(@.name=="base-commit")].value'; echo ---; kubectl -n vf-ci logs -l "tekton.dev/pipelineRun=$run" --all-containers --prefix --tail=40 --max-log-requests=12
+run=<name>; kubectl -n vf-ci get pipelinerun "$run" -o custom-columns='RUN:.metadata.name,STATUS:.status.conditions[0].reason,START:.status.startTime,END:.status.completionTime'; echo ---; kubectl -n vf-ci get taskruns -l "tekton.dev/pipelineRun=$run" -o custom-columns='CHECK:.metadata.labels.tekton\.dev/pipelineTask,STATUS:.status.conditions[0].reason,START:.status.startTime,END:.status.completionTime,COMMIT:.status.results[?(@.name=="commit")].value,BASE:.status.results[?(@.name=="base-commit")].value'; echo ---; kubectl -n vf-ci logs -l "tekton.dev/pipelineRun=$run" --all-containers --prefix --tail=40
 ```
 
 A check passed when its STATUS is `Succeeded` and failed when it is `Failed`.

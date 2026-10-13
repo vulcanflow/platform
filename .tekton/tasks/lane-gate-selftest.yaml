@@ -93,6 +93,9 @@ spec:
         git --no-pager log -1 --format='HEAD %H %s'
         git rev-parse HEAD | tr -d '\n' > "$(results.commit.path)"
 
+    # workingDir stays the workspace root and the script does `cd repo`. Naming
+    # the clone directory as workingDir makes Tekton create it before checkout,
+    # and `mkdir repo` then fails; see tasks/lane-gate.yaml.
     - name: gate-self-test
       image: $(params.image)
       workingDir: $(workspaces.source.path)
