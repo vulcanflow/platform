@@ -197,9 +197,13 @@ cmd_erosion() {
 
   # The base is counted at the merge-base, the same base the `...` diffs use. The
   # base tip can be ahead of the head's own base: a reopened PR reuses a stale
-  # merge ref, and main can move before the job fetches it.
+  # merge ref, and main can move before the job fetches it. This needs the full
+  # history of both refs (the workflow checks out with fetch-depth: 0).
   base_rev="$(git merge-base "$BASE_REF" "$HEAD_REF")" \
-    || fail "erosion: no merge-base between $BASE_REF and $HEAD_REF, so there is no base to count."
+    || fail "erosion: no merge-base between $BASE_REF and $HEAD_REF, so there is no base to count.
+
+  Either a ref does not resolve, the histories are unrelated, or the checkout is shallow.
+  This check needs the full history of both refs."
 
   base_count="$(count_markers "$base_rev")"
   head_count="$(count_markers "$HEAD_REF")"
