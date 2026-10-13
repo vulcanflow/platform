@@ -46,6 +46,9 @@
 #     is pinned here. They go to $CARGO_HOME/bin, which is on PATH.
 #   - CARGO_BUILD_JOBS=4, the vCPU count of both GitHub runners, so a node with
 #     more cores does not run more rustc processes than the memory limit allows.
+#     RUST_TEST_THREADS=4 for the same reason: libtest sizes its thread pool
+#     from the cores it sees, and the step has a CPU request but no CPU limit,
+#     so without it `just test-unit` would use every core on the node.
 #   - the step runs as an unprivileged user. The image makes RUSTUP_HOME and
 #     CARGO_HOME writable for every user, which is all the step writes outside
 #     the checkout and /tmp.
@@ -141,13 +144,16 @@ spec:
         git --no-pager log -1 --format='HEAD %H %s'
         git rev-parse HEAD | tr -d '\n' > "$(results.commit.path)"
 
+    # workingDir stays the workspace root and the script does `cd repo`. Naming
+    # the clone directory as workingDir makes Tekton create it before checkout,
+    # and `mkdir repo` then fails; see tasks/lane-gate.yaml.
     - name: check
       image: $(params.image)
       workingDir: $(workspaces.source.path)
       env:
         # CARGO_TERM_COLOR and RUSTFLAGS are the workflow's top-level `env:`
         # block, verbatim; RUSTFLAGS applies to every cargo invocation below, as
-        # it does to every step there. The other two are explained in the
+        # it does to every step there. The other three are explained in the
         # header.
         - name: CARGO_TERM_COLOR
           value: always
@@ -156,6 +162,8 @@ spec:
         - name: CARGO_INCREMENTAL
           value: "0"
         - name: CARGO_BUILD_JOBS
+          value: "4"
+        - name: RUST_TEST_THREADS
           value: "4"
         - name: ARCH
           value: $(params.arch)
