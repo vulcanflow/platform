@@ -84,7 +84,8 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir repo && cd repo
+        mkdir repo
+        cd repo
         git init -q -b vf-ci .
         git remote add origin "$REPO_URL"
         git fetch --no-tags --depth=1 origin "+${REVISION}:refs/vf-ci/head"
@@ -94,8 +95,9 @@ spec:
 
     - name: gate-self-test
       image: $(params.image)
-      workingDir: $(workspaces.source.path)/repo
+      workingDir: $(workspaces.source.path)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        cd repo
         ci/lane-gate-test.sh ci/lane-gate.sh
