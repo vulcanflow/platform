@@ -33,7 +33,7 @@ classify_path() {
   case "$1" in
     # --- GATE: the enforcement mechanism itself ---
     ci/lane-gate.sh|ci/lane-gate-test.sh|.github/workflows/lane-gate.yml) echo GATE ;;
-    .tekton/tasks/lane-gate.yaml|.tekton/tasks/lane-gate-selftest.yaml|.tekton/pipelines/lane-gate.yaml) echo GATE ;;
+    .tekton/tasks/lane-gate.yaml|.tekton/tasks/lane-gate-selftest.yaml|.tekton/pipelines/lane-gate.yaml|.tekton/kustomization.yaml) echo GATE ;;
 
     # --- TEST: owned by the test authors (Scribe, Ledger) ---
     tests/*|crates/*/tests/*|fuzz/*|conformance/*) echo TEST ;;

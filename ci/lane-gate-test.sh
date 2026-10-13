@@ -250,5 +250,47 @@ printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' 
 commit tekton-rust-check-plus-prod
 check "Tekton rust-check (NEUTRAL) + prod" partition pass
 
+# --- 25. .tekton/kustomization.yaml bundled with production source: refused -
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit kustomization-plus-prod
+check ".tekton/kustomization.yaml + prod" partition fail
+
+# --- 26. .tekton/kustomization.yaml alone: allowed ------------------------
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+commit kustomization-only
+check ".tekton/kustomization.yaml alone" partition pass
+
+# --- 27. .tekton/kustomization.yaml + .tekton/README.md (NEUTRAL): allowed -
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+printf '# tekton\n' > .tekton/README.md
+commit kustomization-plus-tekton-readme
+check ".tekton/kustomization.yaml + .tekton/README.md" partition pass
+
+# --- 28. .tekton/triggers/kustomization.yaml (NEUTRAL) + prod: allowed
+#     (control: the trigger-slice manifest is not swept into GATE) ---------
+setup
+mkdir -p .tekton/triggers
+printf 'kind: Kustomization\n' > .tekton/triggers/kustomization.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-triggers-kustomization-plus-prod
+check ".tekton/triggers/kustomization.yaml (NEUTRAL) + prod" partition pass
+
+# --- 29. .tekton/pipelineruns/lane-gate.yaml (NEUTRAL) + prod: allowed
+#     (control: GATE classification is exact-path, not a lane-gate.yaml
+#     basename glob under .tekton/**) --------------------------------------
+setup
+mkdir -p .tekton/pipelineruns
+printf 'kind: PipelineRun\n' > .tekton/pipelineruns/lane-gate.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-pipelineruns-lane-gate-plus-prod
+check "Tekton pipelineruns/lane-gate.yaml (NEUTRAL) + prod" partition pass
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
