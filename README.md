@@ -85,6 +85,9 @@ reaches GitHub through one shared identity.
 | GATE | `ci/lane-gate.sh`, `ci/lane-gate-test.sh`, `.github/workflows/lane-gate.yml`, `.tekton/tasks/lane-gate.yaml`, `.tekton/tasks/lane-gate-selftest.yaml`, `.tekton/pipelines/lane-gate.yaml`, `.tekton/kustomization.yaml`, `.tekton/kustomization.yml`, `.tekton/Kustomization` | the gate owner |
 | NEUTRAL | everything else | any lane |
 
+Deleted paths and the old path of a rename are classified too, so deleting a
+GATE or TEST file, or renaming one away, counts the same as changing it.
+
 The gate also refuses `#[cfg(test)]` inside production source, and refuses
 diffs that ignore, delete or thin out existing tests. `just lane-gate` runs all
 three checks on this working tree against `origin/main`;

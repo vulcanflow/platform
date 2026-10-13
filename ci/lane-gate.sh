@@ -48,8 +48,20 @@ classify_path() {
   esac
 }
 
+# One path per line. A deleted path is listed, and a rename is listed under both
+# its old and its new path, so deleting a GATE or TEST file, or renaming one away
+# to a NEUTRAL name, is classified the same as changing it. -M turns rename
+# detection on whatever diff.renames is set to locally; a copy keeps its source,
+# so only the new path is listed.
 changed_files() {
-  git diff --name-only --diff-filter=ACMRT "$BASE_REF...$HEAD_REF"
+  git diff --name-status -M --diff-filter=ACDMRT "$BASE_REF...$HEAD_REF" \
+    | while IFS=$'\t' read -r status path dest; do
+        case "$status" in
+          R*) printf '%s\n%s\n' "$path" "$dest" ;;
+          C*) printf '%s\n' "$dest" ;;
+          *)  printf '%s\n' "$path" ;;
+        esac
+      done
 }
 
 # ---------------------------------------------------------------------------
