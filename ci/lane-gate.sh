@@ -33,6 +33,7 @@ classify_path() {
   case "$1" in
     # --- GATE: the enforcement mechanism itself ---
     ci/lane-gate.sh|ci/lane-gate-test.sh|.github/workflows/lane-gate.yml) echo GATE ;;
+    .tekton/tasks/lane-gate.yaml|.tekton/tasks/lane-gate-selftest.yaml|.tekton/pipelines/lane-gate.yaml) echo GATE ;;
 
     # --- TEST: owned by the test authors (Scribe, Ledger) ---
     tests/*|crates/*/tests/*|fuzz/*|conformance/*) echo TEST ;;
@@ -97,9 +98,9 @@ cmd_partition() {
   if [ ${#gate[@]} -gt 0 ] && { [ ${#prod[@]} -gt 0 ] || [ ${#test[@]} -gt 0 ]; }; then
     fail "This pull request changes the lane gate itself and also changes source or tests.
 
-  A change to ci/lane-gate.sh or .github/workflows/lane-gate.yml goes on its own pull
-  request, so that weakening the gate is never bundled with the change it would let
-  through. See ADR-0005."
+  A change to ci/lane-gate.sh, .github/workflows/lane-gate.yml or the Tekton lane gate
+  under .tekton/ goes on its own pull request, so that weakening the gate is never
+  bundled with the change it would let through. See ADR-0005."
   fi
 
   pass "partition: no lane crossing"
