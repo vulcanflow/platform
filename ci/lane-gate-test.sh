@@ -311,8 +311,9 @@ commit kustomization-capital-plus-prod
 check ".tekton/Kustomization + prod" partition fail
 
 # --- 32. renaming .tekton/kustomization.yaml to the .yml alias, bundled with
-#     production source: refused (changed_files lists a rename under its new
-#     path, so classify_path sees .tekton/kustomization.yml) ---------------
+#     production source: refused (changed_files lists a rename under both its
+#     old and its new path, so classify_path sees .tekton/kustomization.yaml
+#     and .tekton/kustomization.yml; VFL-813 made the old path visible too) -
 setup
 mkdir -p .tekton
 printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
@@ -363,6 +364,79 @@ printf 'kind: Kustomization\n' > .tekton/kustomization.yml
 printf '# tekton\n' > .tekton/README.md
 commit kustomization-yml-plus-tekton-readme
 check ".tekton/kustomization.yml + .tekton/README.md" partition pass
+
+# --- 38. ci/lane-gate.sh deleted, bundled with production source: refused
+#     (VFL-813: a deleted path keeps its class, so the gate's own script
+#     deleted next to prod is GATE + PROD). Committing the deletion removes
+#     ./ci/lane-gate.sh from the fixture's working tree, and check() execs
+#     that relative path, so the real gate script is copied back onto disk
+#     (untracked) right after the commit. baseline...HEAD still records the
+#     deletion since that diff reads commits, not the working tree, so the
+#     verdict still comes from the gate under test and not from a missing
+#     executable, which also exits non-zero and would look like a pass. ----
+setup
+rm ci/lane-gate.sh
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit delete-lane-gate-sh-plus-prod
+cp "$GATE" ci/lane-gate.sh; chmod +x ci/lane-gate.sh
+check "delete ci/lane-gate.sh + prod" partition fail
+
+# --- 39. .tekton/kustomization.yaml deleted, bundled with production source:
+#     refused (VFL-813: a deleted GATE path counts as GATE; the base must
+#     carry the file for the deletion to show up as a D row) --------------
+setup
+mkdir -p .tekton
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+git add -A >/dev/null; git commit -qm add-kustomization-yaml
+git branch -f baseline
+git rm -q .tekton/kustomization.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit delete-kustomization-yaml-plus-prod
+check "delete .tekton/kustomization.yaml + prod" partition fail
+
+# --- 40. renaming .tekton/tasks/lane-gate.yaml to a NEUTRAL name, bundled
+#     with production source: refused (VFL-813: changed_files lists an R row
+#     under its old path too, so classify_path sees the GATE source path
+#     even though the destination is NEUTRAL; the base must carry the file) -
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate.yaml
+git add -A >/dev/null; git commit -qm add-lane-gate-task
+git branch -f baseline
+git mv .tekton/tasks/lane-gate.yaml .tekton/tasks/lane-gate.yaml.disabled
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit rename-lane-gate-task-to-disabled-plus-prod
+check "git mv .tekton/tasks/lane-gate.yaml -> .disabled + prod" partition fail
+
+# --- 41. a TEST file deleted, bundled with production source: refused
+#     (VFL-813: a deleted TEST path still counts as TEST, so this is a lane
+#     crossing the same as editing the test file would have been) ---------
+setup
+rm crates/vf-core/tests/more.rs
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit delete-test-file-plus-prod
+check "delete TEST file (crates/vf-core/tests/more.rs) + prod" partition fail
+
+# --- 42. a NEUTRAL file deleted, bundled with production source: allowed
+#     (control: a deleted NEUTRAL path still carries no lane, same as before
+#     VFL-813) ----------------------------------------------------------
+setup
+rm README.md
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit delete-readme-plus-prod
+check "delete NEUTRAL file (README.md) + prod" partition pass
+
+# --- 43. a GATE file deleted alone: allowed (VFL-813: a deletion with no
+#     accompanying PROD or TEST passes, same as any other GATE-only change;
+#     the base must carry the file for the deletion to show up as a D row) -
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate.yaml
+git add -A >/dev/null; git commit -qm add-lane-gate-task
+git branch -f baseline
+git rm -q .tekton/tasks/lane-gate.yaml
+commit delete-lane-gate-task-alone
+check "delete GATE file alone (.tekton/tasks/lane-gate.yaml)" partition pass
 
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
