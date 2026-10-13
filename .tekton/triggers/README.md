@@ -31,7 +31,8 @@ until Tekton reports the same check names (VFL-126).
   (Cilium's Gateway API support installs it).
 - Rights to create a Namespace and a ClusterRoleBinding (one-time, cluster
   admin), and to edit the HTTPRoute in `aether-ci`. Everything else is
-  namespaced to `vf-ci`.
+  namespaced to `vf-ci`. The checks in step 4 and under Check also read pod
+  logs in `tekton-pipelines`.
 
 ## 1. Apply
 
@@ -43,6 +44,10 @@ commit='full-commit-id-of-the-reviewed-revision'
 kubectl apply -k "https://github.com/vulcanflow/platform//.tekton/triggers?ref=$commit"
 kubectl -n vf-ci rollout status deploy/el-vf-platform
 ```
+
+The Triggers controller creates Deployment `el-vf-platform` a few seconds
+after `apply` returns, so `rollout status` can fail with `NotFound`. Wait a
+few seconds and run it again.
 
 ## 2. Webhook secret
 
@@ -63,7 +68,9 @@ the Secret already holds. Under `Data`, key `secret` must show `64 bytes`
 (the length of `openssl rand -hex 32`). No `secret` key, or `65 bytes` (a
 trailing newline), means no signature can ever match: rotate (below).
 Otherwise go on to step 3, and in step 4 enter the value the Secret was
-created from.
+created from (kept in Paperclip's secret store, see step 4). If you do not
+have that value, rotate (below): GitHub never shows a saved webhook secret
+again, and the value is not decoded out of the cluster.
 
 **It does not exist** (`NotFound`). Generate the value and create the Secret.
 If step 1 has not run yet, create the namespace first
@@ -127,15 +134,22 @@ requests go to the aether-ci listener.
 
 ## 4. Register the webhook
 
-On `vulcanflow/platform`, Settings, Webhooks, Add webhook. Register it on the
-repository, not the organization: an organization webhook also sends the
-private repositories' events, over the unverified TLS described below.
+Register the webhook on the `vulcanflow/platform` repository, not the
+organization: an organization webhook also sends the private repositories'
+events, over the unverified TLS described below.
 
-Exactly one webhook may post to this URL. If the organization already has one
-for it (Organization settings, Webhooks), delete that one when you add the
-repository webhook. Left in place, it keeps sending the private repositories'
-events, and with the same secret every `vulcanflow/platform` event arrives
-twice and starts two runs.
+Exactly one webhook may post to this URL. With the same secret, a second one
+makes every `vulcanflow/platform` event arrive twice and start two runs.
+Check both places before adding one:
+
+- Repository (`vulcanflow/platform`, Settings, Webhooks): if a webhook
+  already posts to this URL, edit it to the values below instead of adding
+  another.
+- Organization (Organization settings, Webhooks): if one posts to this URL,
+  delete it once the repository webhook is in place. Left in place, it also
+  keeps sending the private repositories' events.
+
+Otherwise, on the repository: Settings, Webhooks, Add webhook.
 
 | Field | Value |
 | --- | --- |
@@ -162,13 +176,35 @@ effect.
 
 The listener answers 202 to every delivery it accepts, including one whose
 signature does not match, so neither GitHub nor the response body shows a
-wrong secret. After the first push or pull-request delivery, check the
-listener log; a match logged for that delivery means the webhook and the Secret
-hold different values, or the key is wrong (step 2):
+wrong secret. After the first push or pull-request delivery, check that a run
+carries that delivery's id (X-GitHub-Delivery, under Recent Deliveries):
 
 ```sh
-kubectl -n vf-ci logs deploy/el-vf-platform | grep -iE 'signature|secret'
+delivery_id='delivery-id-from-recent-deliveries'
+kubectl -n vf-ci get pipelineruns -l "vulcanflow.io/github-delivery=$delivery_id"
 ```
+
+No run means an interceptor stopped the delivery. The listener does not log
+that at the default level, and the core interceptors log it without any id,
+so match their lines to the delivery's time in Recent Deliveries (`ts` is in
+Unix seconds):
+
+```sh
+kubectl -n tekton-pipelines logs deploy/tekton-triggers-core-interceptors \
+  --tail=-1 --since=1h | grep -iE 'signature|secret'
+```
+
+`payload signature check failed` at that time means the webhook and the
+Secret hold different values, or the Secret has no `secret` key (step 2). The
+core interceptors serve every EventListener in the cluster, and the unsigned
+POST under Check logs `no X-Hub-Signature-256 header set`, so a line at
+another time is not this delivery's.
+
+The log commands here and under Check read the last hour of the current
+container's log; widen `--since` for an older delivery. The kubelet rotates
+container logs, a restarted container's earlier log needs `--previous`, and a
+replaced pod's log is gone. An empty `grep` then means "not in this log", not
+"not received"; the run list is the record.
 
 **Why SSL verification is off.** The Gateway presents its `*.zozoo.io`
 certificate, which does not cover `zozotk.go.ro`, so GitHub cannot verify the
@@ -178,7 +214,11 @@ the HMAC signature still authenticates each one. With verification off, someone
 who can intercept traffic between GitHub and the cluster can read deliveries
 (the repository is public, so they hold nothing secret) and replay a captured
 delivery. A replay re-runs CI for a commit that already exists; without the
-secret nobody can forge a delivery or alter one.
+secret nobody can forge a delivery or alter one. They can also swallow a
+delivery and answer `202` themselves, so GitHub shows it as delivered and no
+run exists. With verification on, GitHub would show that delivery as failed.
+When Tekton reports a required check (VFL-126), that check must fail closed
+when no run exists for a commit, not only when a run fails.
 
 To turn verification on, the Payload URL needs a name that the presented
 certificate covers: a name under `zozoo.io` (a CNAME to `zozotk.go.ro`, which
@@ -201,40 +241,55 @@ kubectl -n vf-ci get pipelineruns -l "vulcanflow.io/github-delivery=$delivery_id
 event_id=$(kubectl -n vf-ci get pipelineruns \
   -l "vulcanflow.io/github-delivery=$delivery_id" \
   -o jsonpath='{.items[0].metadata.labels.triggers\.tekton\.dev/triggers-eventid}')
-kubectl -n vf-ci logs deploy/el-vf-platform |
+kubectl -n vf-ci logs deploy/el-vf-platform --tail=-1 --since=1h |
   grep -F "${event_id:?no run carries that delivery id}"
 ```
 
 An unsigned POST is refused by the github interceptor and creates no run. The
-response carries the listener's `eventID`; the log names it, and no run
-carries it:
+response carries the listener's `eventID`; the check is that no run carries
+it:
 
 ```sh
 event_id=$(curl -sk -X POST -H 'Content-Type: application/json' \
   -H 'X-GitHub-Event: pull_request' -d '{}' \
   https://zozotk.go.ro/vulcanflow/platform |
   sed -n 's/.*"eventID":"\([^"]*\)".*/\1/p')
-kubectl -n vf-ci logs deploy/el-vf-platform |
-  grep -F "${event_id:?no eventID in the response}"
-kubectl -n vf-ci get pipelineruns -l "triggers.tekton.dev/triggers-eventid=$event_id"
+date -u +%s    # the POST time, in Unix seconds like the log's ts
+kubectl -n vf-ci get pipelineruns \
+  -l "triggers.tekton.dev/triggers-eventid=${event_id:?no eventID in the response}"
 # No resources found in vf-ci namespace.
+kubectl -n tekton-pipelines logs deploy/tekton-triggers-core-interceptors \
+  --tail=-1 --since=1h | grep -F 'no X-Hub-Signature-256 header set'
 ```
 
+At the default log level no EventListener line names the refused id: Triggers
+v0.34.0 logs an interceptor stop at `debug` only. The core interceptors log
+the refusal (`Continue:false`, `FailedPrecondition`,
+`no X-Hub-Signature-256 header set`) without an event id, so the last command
+only supports the check: its line should have a `ts` at the POST time.
+
 `${event_id:?...}` stops the command when the id is empty, where `grep -F ""`
-would match every line.
+would match every line and an empty label value would match no run, which
+reads as a pass.
 
 ## Roll back
+
+Roll back VFL-125 first: the steps below remove the EventListener, Secret and
+TriggerTemplate that VFL-125 reuses, and delete every PipelineRun labelled
+with this EventListener, VFL-125's included.
 
 Delete the webhook on `vulcanflow/platform` (and any organization webhook that
 posts to `https://zozotk.go.ro/vulcanflow/platform`), remove the rule from the
 aether-ci HTTPRoute, then delete this directory's objects by name, the runs
-the listener created, and the Secret:
+the listener created, and the Secret. `--ignore-not-found` lets a partly
+installed slice roll back without `NotFound` errors:
 
 ```sh
-kubectl -n vf-ci delete eventlisteners.triggers.tekton.dev/vf-platform
-kubectl -n vf-ci delete pipelineruns.tekton.dev \
+kubectl -n vf-ci delete --ignore-not-found \
+  eventlisteners.triggers.tekton.dev/vf-platform
+kubectl -n vf-ci delete --ignore-not-found pipelineruns.tekton.dev \
   -l triggers.tekton.dev/eventlistener=vf-platform
-kubectl -n vf-ci delete \
+kubectl -n vf-ci delete --ignore-not-found \
   triggertemplates.triggers.tekton.dev/vf-ci-noop \
   triggerbindings.triggers.tekton.dev/vf-github-pull-request \
   triggerbindings.triggers.tekton.dev/vf-github-push \
@@ -243,7 +298,8 @@ kubectl -n vf-ci delete \
   rolebindings.rbac.authorization.k8s.io/vf-ci-triggers-eventlistener \
   serviceaccounts/vf-ci-triggers \
   secrets/vf-ci-webhook
-kubectl delete clusterrolebindings.rbac.authorization.k8s.io/vf-ci-triggers-eventlistener
+kubectl delete --ignore-not-found \
+  clusterrolebindings.rbac.authorization.k8s.io/vf-ci-triggers-eventlistener
 ```
 
 Deleting the EventListener first stops new runs; Kubernetes removes its
@@ -251,7 +307,8 @@ Deployment and Service `el-vf-platform` with it. Then remove
 `ci/tekton/vulcanflow-platform/github-webhook-secret` from Paperclip's secret
 store.
 
-Namespace `vf-ci` is not deleted: it also holds VFL-125's pipelines and any
-other VulcanFlow CI objects. Do not use `kubectl delete -k` on this directory
-for a roll back, because that deletes `namespace.yaml` and with it everything
-in `vf-ci`.
+Namespace `vf-ci` is not deleted: it is shared with VFL-125 and any other
+VulcanFlow CI objects. Its Pod Security labels from step 1 stay on it
+by design; they apply to every pod in `vf-ci`, not only to this slice's. Do
+not use `kubectl delete -k` on this directory for a roll back, because that
+deletes `namespace.yaml` and with it everything in `vf-ci`.

@@ -6,12 +6,19 @@ name, version, SHA256 and archive URL, one package per line. It is generated,
 not hand-edited — a hand-edited lock drifts from the dependency closure and the
 first thing anyone notices is a link error three crates deep.
 
+A lock covers two compilers, not one: the native one for --arch, and a cross
+compiler from --arch to the *other* architecture. The second one is what
+`just check-cross` needs. `cargo check --target <other>` is not a pure type
+check — ring compiles C for the target through cc-rs — and a native gcc cannot
+emit code for another architecture, so no shim flag substitutes for a real
+cross compiler in the sysroot. See VFL-151.
+
 This runs when the toolchain is deliberately moved (a new Debian suite, a new
 gcc major, a new architecture), not on every bootstrap. The bootstrap only ever
 reads the committed lock, so a normal run touches no package index and resolves
 no dependency: it downloads exactly what was reviewed.
 
-Four choices are worth recording:
+Five choices are worth recording:
 
   * Every index is authenticated before it is read. Each suite's InRelease is
     verified with sqv against the Debian archive keyring and must name its
@@ -37,6 +44,17 @@ Four choices are worth recording:
     later source carries an older build. On an exact tie the later source
     wins, so a package published in both main and -security is fetched from
     -security.
+
+  * The cross set's glibc is whatever Debian's `*-cross` packages carry, and it
+    lags the native one (2.41-11cross1 against 2.41-12+deb13u4 at the time of
+    writing). That is deliberate rather than overlooked. The native pair is
+    pinned to the runner image's own glibc because a binary built for the host
+    is *executed* here against the image's loader; a binary built for the other
+    architecture never runs on this machine, so there is no loader to agree
+    with and nothing for the version to skew against. This holds while cross
+    output is dynamically linked. A statically linked cross artifact embeds
+    libc.a and crt*.o from the cross glibc, and at that point the cross pair
+    needs pinning the way the native pair is.
 
 Usage:
   ci/toolchain/resolve-debs.py --arch arm64 > ci/toolchain/debs-arm64.lock
@@ -97,9 +115,39 @@ SOURCES = [
 # debian-archive-keyring and sqv, so any image with apt has what this needs.
 KEYRING = "/usr/share/keyrings/debian-archive-keyring.gpg"
 
-# The toolchain we actually want. Everything else in the lock is here because
-# one of these four pulls it in.
+# The native toolchain we actually want. Everything else the host half of the
+# lock contains is here because one of these four pulls it in.
 SEEDS = ["gcc-14", "libc6-dev", "binutils", "libgcc-14-dev"]
+
+# The other architecture, and how Debian spells its GNU triple inside a package
+# name — `x86_64` becomes `x86-64`, because an underscore is not legal there.
+# Keyed by host architecture: a lock is built for one host and names the one
+# other architecture it must be able to cross-compile for (§A5 has exactly two
+# first-class Linux targets, so "the other one" is unambiguous).
+CROSS_TARGETS = {
+    "arm64": ("amd64", "x86-64-linux-gnu"),
+    "amd64": ("arm64", "aarch64-linux-gnu"),
+}
+
+
+def cross_seeds(host_arch: str) -> list[str]:
+    """Seeds for the cross compiler from `host_arch` to the other architecture.
+
+    Two naming schemes meet here, which is the only subtle part. The programs
+    run on the host, so they are host-architecture packages named after the
+    *target's* GNU triple (gcc-14-x86-64-linux-gnu). The target's libraries and
+    headers are Architecture: all packages named after the target's *Debian*
+    architecture with a -cross suffix (libc6-dev-amd64-cross), and they unpack
+    under /usr/<triple>/ rather than /usr, which is what keeps them from
+    colliding with the native set in a single sysroot.
+    """
+    target_arch, target_triple = CROSS_TARGETS[host_arch]
+    return [
+        f"gcc-14-{target_triple}",
+        f"binutils-{target_triple}",
+        f"libc6-dev-{target_arch}-cross",
+        f"libgcc-14-dev-{target_arch}-cross",
+    ]
 
 # Packaging and scripting machinery: needed to *install* a package, irrelevant
 # to unpacking one and compiling C with it.
@@ -364,8 +412,11 @@ def main() -> int:
             if clause:
                 provides.setdefault(clause.split()[0], name)
 
+    seeds = SEEDS + cross_seeds(args.arch)
+    print(f"# seeds: {' '.join(seeds)}", file=sys.stderr)
+
     resolved: OrderedDict[str, dict] = OrderedDict()
-    queue = list(SEEDS)
+    queue = list(seeds)
     missing: list[str] = []
     while queue:
         name = queue.pop(0)
