@@ -1,0 +1,186 @@
+# vf-lane-gate — the Tekton equivalent of three of the four jobs in
+# .github/workflows/lane-gate.yml (`lane-partition`, `test-erosion`,
+# `inline-test-modules`). The fourth, `gate-self-test`, is a separate Task
+# because it runs a different script; see tasks/lane-gate-selftest.yaml.
+#
+# The three jobs in the workflow differ only in the argument handed to
+# ci/lane-gate.sh and in how deep they check out, so they are one Task with
+# `subcommand`, `fetch-depth` and `fetch-base` parameters and three
+# PipelineTasks. The verdict logic lives entirely in ci/lane-gate.sh, which is
+# invoked with exactly the workflow's command line. No argument is added, so the
+# script's own default (origin/${GITHUB_BASE_REF}...HEAD) decides pass or fail,
+# on Tekton as on GitHub.
+#
+# Deliberate differences from the workflow, none of which can change a verdict:
+#   - actions/checkout with fetch-depth: 0 fetches every branch and tag; this
+#     fetches the revision under test with full history and nothing else. The
+#     base branch arrives through the workflow's own "Fetch base branch" step,
+#     and ci/lane-gate.sh reads no other ref;
+#   - the container image is pinned by digest instead of GitHub's
+#     ubuntu-latest, so the bash, git and grep the script depends on are fixed;
+#   - the steps run as an unprivileged user (stepTemplate below), not as the
+#     runner's passwordless-sudo user. The script writes nothing outside the
+#     checkout.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: vf-lane-gate
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  description: >-
+    Runs one subcommand of ci/lane-gate.sh (partition, erosion or inline-tests)
+    against a revision of vulcanflow/platform. Equivalent to the lane-partition,
+    test-erosion and inline-test-modules jobs of .github/workflows/lane-gate.yml.
+
+  params:
+    - name: repo-url
+      type: string
+      description: Clone URL of the repository under test.
+      default: https://github.com/vulcanflow/platform.git
+    - name: revision
+      type: string
+      description: >-
+        Full 40-character commit SHA, or a ref, to test. For a pull request
+        pass the merge commit GitHub's run checked out (refs/pull/N/merge at
+        that time), which is what actions/checkout uses on a pull_request event.
+    - name: base-branch
+      type: string
+      description: >-
+        Base branch of the pull request. Exported as GITHUB_BASE_REF, which is
+        where ci/lane-gate.sh reads it from, so the script is called with no
+        positional arguments exactly as in the workflow.
+      default: main
+    - name: subcommand
+      type: string
+      description: partition | erosion | inline-tests
+    - name: fetch-depth
+      type: string
+      description: >-
+        actions/checkout's fetch-depth: "0" for full history (partition and
+        erosion need the merge base), "1" for the default shallow checkout
+        (inline-test-modules).
+      default: "0"
+    - name: fetch-base
+      type: string
+      description: >-
+        "true" runs the workflow's "Fetch base branch" step. The
+        inline-test-modules job has no such step, so it passes "false".
+      default: "true"
+    - name: image
+      type: string
+      description: >-
+        Pinned image. rust:1.99.0-bookworm matches the channel in
+        rust-toolchain.toml and carries bash, git and GNU grep, which is all the
+        gate script needs. The digest is the multi-architecture index, so the
+        same pin resolves on an amd64 and on an arm64 node.
+      default: docker.io/library/rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6
+
+  results:
+    - name: commit
+      description: The commit the check ran against (git rev-parse HEAD).
+    - name: base-commit
+      description: >-
+        The base branch tip the check compared with, or empty when the base was
+        not fetched. test-erosion counts tests at this commit, so two runs only
+        agree when they saw the same base tip.
+
+  workspaces:
+    - name: source
+      description: >-
+        Where the repository is cloned. Bind an emptyDir: every job in the
+        workflow checks out for itself, and an emptyDir keeps the TaskRuns
+        independent of each other and of any single node.
+
+  stepTemplate:
+    env:
+      # No passwd entry for the uid below, so HOME would be `/`, which this
+      # user cannot write. git reads (and lane-gate-test.sh writes) under it.
+      - name: HOME
+        value: /tmp
+    # Restricted pod security profile. The root filesystem stays writable
+    # because /tmp is on it.
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      seccompProfile:
+        type: RuntimeDefault
+    computeResources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
+  steps:
+    # actions/checkout. The clone goes into a subdirectory this user creates:
+    # the emptyDir root is owned by root, and git refuses a work tree owned by
+    # another user ("dubious ownership").
+    - name: checkout
+      image: $(params.image)
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+        - name: FETCH_DEPTH
+          value: $(params.fetch-depth)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir repo && cd repo
+        git init -q -b vf-ci .
+        git remote add origin "$REPO_URL"
+        depth=()
+        [ "$FETCH_DEPTH" = 0 ] || depth=(--depth="$FETCH_DEPTH")
+        # The same refspec form actions/checkout uses; it accepts a branch, a
+        # tag, refs/pull/N/merge or a full commit SHA.
+        git fetch --no-tags "${depth[@]}" origin "+${REVISION}:refs/vf-ci/head"
+        git checkout -q --detach refs/vf-ci/head
+        git --no-pager log -1 --format='HEAD %H %s'
+        git rev-parse HEAD | tr -d '\n' > "$(results.commit.path)"
+
+    # The workflow's "Fetch base branch" step, verbatim apart from reading the
+    # base branch from a Task parameter instead of the GitHub event.
+    - name: fetch-base-branch
+      image: $(params.image)
+      workingDir: $(workspaces.source.path)/repo
+      env:
+        - name: GITHUB_BASE_REF
+          value: $(params.base-branch)
+        - name: FETCH_BASE
+          value: $(params.fetch-base)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        if [ "$FETCH_BASE" != true ]; then
+          printf '' > "$(results.base-commit.path)"
+          echo "no base fetch for this check"
+          exit 0
+        fi
+        git fetch --no-tags origin "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
+        git --no-pager log -1 --format="BASE %H %s" "origin/${GITHUB_BASE_REF}"
+        git rev-parse "origin/${GITHUB_BASE_REF}" | tr -d '\n' > "$(results.base-commit.path)"
+
+    - name: lane-gate
+      image: $(params.image)
+      workingDir: $(workspaces.source.path)/repo
+      env:
+        - name: GITHUB_BASE_REF
+          value: $(params.base-branch)
+        - name: SUBCOMMAND
+          value: $(params.subcommand)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        case "$SUBCOMMAND" in
+          partition|erosion|inline-tests) ;;
+          *) echo "unknown subcommand '$SUBCOMMAND'" >&2; exit 2 ;;
+        esac
+        ci/lane-gate.sh "$SUBCOMMAND"

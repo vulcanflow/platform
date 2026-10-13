@@ -1,0 +1,101 @@
+# vf-lane-gate-selftest — the Tekton equivalent of the `gate-self-test` job in
+# .github/workflows/lane-gate.yml.
+#
+# It is a Task of its own rather than a fourth subcommand of vf-lane-gate
+# because it runs a different script: ci/lane-gate-test.sh builds a throwaway
+# fixture repository under $TMPDIR and replays prepared diffs through
+# ci/lane-gate.sh, asserting each verdict. It therefore asserts the gate, not
+# this revision's diff, and needs neither the base branch nor history.
+#
+# Deliberate differences from the workflow, none of which can change a verdict:
+#   - the container image is pinned by digest instead of GitHub's ubuntu-latest.
+#     ci/lane-gate-test.sh resets PATH to /usr/bin:/bin:/usr/local/bin and
+#     depends on bash, git, mktemp and GNU grep; all four are in that image at
+#     those paths. It sets its own git identity, so none is configured here;
+#   - the steps run as an unprivileged user. The script writes only under
+#     mktemp -d.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: vf-lane-gate-selftest
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  description: >-
+    Runs ci/lane-gate-test.sh against ci/lane-gate.sh at a revision of
+    vulcanflow/platform. Equivalent to the gate-self-test job of
+    .github/workflows/lane-gate.yml.
+
+  params:
+    - name: repo-url
+      type: string
+      description: Clone URL of the repository under test.
+      default: https://github.com/vulcanflow/platform.git
+    - name: revision
+      type: string
+      description: Full 40-character commit SHA, or a ref, to test.
+    - name: image
+      type: string
+      description: >-
+        Pinned image, the same pin as vf-lane-gate. The digest is the
+        multi-architecture index, so it resolves on an amd64 and an arm64 node.
+      default: docker.io/library/rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6
+
+  results:
+    - name: commit
+      description: The commit the check ran against (git rev-parse HEAD).
+
+  workspaces:
+    - name: source
+      description: Where the repository is cloned. Bind an emptyDir.
+
+  stepTemplate:
+    env:
+      - name: HOME
+        value: /tmp
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      seccompProfile:
+        type: RuntimeDefault
+    computeResources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
+  steps:
+    # actions/checkout at its default depth of 1. Same script as in
+    # tasks/lane-gate.yaml; see the comments there.
+    - name: checkout
+      image: $(params.image)
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir repo && cd repo
+        git init -q -b vf-ci .
+        git remote add origin "$REPO_URL"
+        git fetch --no-tags --depth=1 origin "+${REVISION}:refs/vf-ci/head"
+        git checkout -q --detach refs/vf-ci/head
+        git --no-pager log -1 --format='HEAD %H %s'
+        git rev-parse HEAD | tr -d '\n' > "$(results.commit.path)"
+
+    - name: gate-self-test
+      image: $(params.image)
+      workingDir: $(workspaces.source.path)/repo
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        ci/lane-gate-test.sh ci/lane-gate.sh
