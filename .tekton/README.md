@@ -3,10 +3,11 @@
 Tekton Tasks and Pipelines that reproduce, step for step, the GitHub Actions
 lane gate and both legs of rust-check. The amd64 leg is cross-built on an
 arm64 node (see "Architectures"). They run in namespace `vf-ci` next to the
-webhook listener from `triggers/` (VFL-124). For now they are started by
-hand. Starting them from the webhook and reporting their result to the pull
-request is later work (see "Not here yet"). The GitHub Actions workflows stay
-in place until Tekton reports the same contexts.
+webhook listener from `triggers/` (VFL-124). The webhook starts both for
+every pull request from a branch of this repository (`triggers/README.md`,
+VFL-777); they can also be started by hand. Reporting their result to the
+pull request is later work (see "Not here yet"). The GitHub Actions workflows
+stay in place until Tekton reports the same contexts.
 
 | GitHub job (status context) | Workflow | PipelineTask | Task | Command |
 |---|---|---|---|---|
@@ -30,6 +31,9 @@ and there is no build cache.
 - `tasks/`, `pipelines/`: the definitions.
 - `pipelineruns/`: one manual PipelineRun per pipeline, with an `@REVISION@`
   placeholder. Not part of the kustomization.
+- `policies/check-egress.yaml`: the egress policy on the check pods (see
+  "Prerequisites"). Not part of the kustomization either; it is applied on its
+  own.
 
 ## Architectures
 
@@ -67,32 +71,52 @@ retired (VFL-127).
 - `kubectl` with rights to create Tasks, Pipelines and PipelineRuns in `vf-ci`.
 - Tekton Pipelines with the `tekton.dev/v1` API. The cluster had v1.15.1 on
   2026-10-09.
-- Egress from the pods to `github.com`, `objects.githubusercontent.com`,
+- Egress from the pods to `github.com`,
   `release-assets.githubusercontent.com`, `static.rust-lang.org`,
-  `index.crates.io`, `static.crates.io` and `deb.debian.org`. Release
-  downloads from `github.com` redirect to
-  `release-assets.githubusercontent.com` (2026-10-13). Only `check (amd64)`
-  uses `deb.debian.org`, for its cross packages; it serves them without a
-  redirect (2026-10-14). The node pulls the images from Docker Hub, not the
-  pod.
-- Before the webhook starts these pipelines, a default-deny egress policy on
-  their pods. The pods run code from the revision under test (build scripts,
-  proc macros, tests). They hold no credential and mount no token, but without
-  a policy they reach any host and the whole cluster network. The policy is a
-  `CiliumNetworkPolicy` `vf-ci-check-egress` in `vf-ci`. It selects the pods
-  whose `tekton.dev/pipeline` label is `vf-lane-gate` or `vf-rust-check`, and
-  allows egress only:
-  - to the seven hosts above, by `toFQDNs` `matchName`;
+  `index.crates.io`, `static.crates.io` and `deb.debian.org`. All six
+  release downloads in `tasks/rust-check.yaml` (both architectures) redirect
+  from `github.com` to `release-assets.githubusercontent.com` (measured
+  2026-10-13). If one redirects elsewhere, that host is added here and in the
+  policy with the reason. Only `check (amd64)` uses `deb.debian.org`, for its
+  cross packages; it serves them without a redirect (2026-10-14). The node
+  pulls the images from Docker Hub, not the pod.
+- Before the webhook starts these pipelines, the default-deny egress policy
+  in `policies/check-egress.yaml`, a `CiliumNetworkPolicy`
+  `vf-ci-check-egress` in `vf-ci`. The pods run code from the revision under
+  test (build scripts, proc macros, tests). They hold no credential: no Secret
+  is mounted, and the PipelineRuns that start them (`pipelineruns/` and
+  `triggers/pull-request-template.yaml`) set
+  `automountServiceAccountToken: false`. A Pipeline cannot set that, so a run
+  created any other way mounts the token. Without the policy the pods reach
+  any host and the whole cluster network. It selects the pods whose
+  `tekton.dev/pipeline` label is `vf-lane-gate` or `vf-rust-check`, and allows
+  egress only:
+  - to the hosts in the bullet above, by `toFQDNs` `matchName`, on TCP port
+    443;
   - to cluster DNS, the `k8s-app: kube-dns` pods in `kube-system` on port 53
     UDP and TCP, with a DNS rule (`rules.dns`, `matchPattern: "*"`).
 
   Once an egress rule selects a pod, Cilium denies all other egress from it.
-  Host names need Cilium: a Kubernetes `NetworkPolicy` matches IP blocks only,
-  and the addresses behind these hosts change. Cilium's DNS proxy reads the
-  pods' DNS answers and allows the addresses they return, so a `toFQDNs` rule
-  matches nothing without the DNS rule. The owner confirmed on 2026-10-13
-  that the cluster's Gateway `eg` is Cilium's, so the CNI is Cilium. The
-  EventListener pod is not selected; it has no policy either (VFL-124 LOW-4).
+  Host names need Cilium: for destinations outside the cluster a Kubernetes
+  `NetworkPolicy` can only match IP blocks, and the addresses behind these
+  hosts change. Cilium's DNS proxy reads the pods' DNS answers and allows the
+  addresses they return, so a `toFQDNs` rule matches nothing without the DNS
+  rule. The owner confirmed on 2026-10-13 that the cluster's Gateway `eg` is
+  Cilium's, so the CNI is Cilium. The EventListener pod is not selected; it
+  has no policy either (VFL-124 LOW-4).
+
+  The policy assumes two things about the cluster. Check both, read-only,
+  before applying it:
+
+  ```sh
+  kubectl -n kube-system get configmap cilium-config -o jsonpath='{.data.enable-l7-proxy}{"\n"}'
+  kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide
+  ```
+
+  The first must print `true`: Cilium's DNS proxy is part of its L7 proxy, and
+  `toFQDNs` needs it. The second must list the cluster's DNS pods. If either
+  fails, the policy denies all egress and every check fails at its first
+  `git fetch`.
 
 ## 1. Apply
 
@@ -105,6 +129,16 @@ commit=<commit>; kubectl apply -k "https://github.com/vulcanflow/platform//.tekt
 This creates or updates three Tasks (`vf-lane-gate`, `vf-lane-gate-selftest`,
 `vf-rust-check`) and two Pipelines (`vf-lane-gate`, `vf-rust-check`) in
 `vf-ci`. It does not touch `triggers/`.
+
+Then, once both checks under "Prerequisites" pass, the egress policy:
+
+```sh
+commit=<commit>; kubectl apply -f "https://raw.githubusercontent.com/vulcanflow/platform/$commit/.tekton/policies/check-egress.yaml"
+```
+
+Start both pipelines by hand once (step 2) with the policy in place. Both
+must pass before `triggers/` starts them from the webhook; a host the policy
+lacks shows as a failed fetch in the step's log.
 
 ## 2. Run by hand
 
@@ -176,21 +210,25 @@ kubectl -n vf-ci delete pipelinerun -l tekton.dev/pipeline=vf-lane-gate; kubectl
 
 ## Roll back
 
-Clean up as above, then remove the five definitions by name. Namespace
-`vf-ci` and everything from `triggers/` stay:
+First stop the webhook from starting these pipelines (`triggers/README.md`,
+"Roll back"). Then clean up as above and remove the five definitions by name.
+Namespace `vf-ci` and everything from `triggers/` stay:
 
 ```sh
 kubectl -n vf-ci delete pipeline vf-lane-gate vf-rust-check; kubectl -n vf-ci delete task vf-lane-gate vf-lane-gate-selftest vf-rust-check
 ```
 
+The egress policy goes last, once nothing starts these pipelines:
+
+```sh
+kubectl -n vf-ci delete --ignore-not-found ciliumnetworkpolicies.cilium.io/vf-ci-check-egress
+```
+
 ## Not here yet
 
-- Starting these pipelines from the webhook. `triggers/trigger-template.yaml`
-  still starts `vf-ci-noop`. Before it starts a pipeline that checks out
-  pull-request code, a policy for pull requests from forks is needed. The
-  pipelines here hold no credential and mount no token, and the egress policy
-  in "Prerequisites" limits where their pods connect. Both are parts of such a
-  policy.
+- Runs for pull requests from forks. The webhook starts these pipelines only
+  for pull requests whose head branch is in this repository
+  (`triggers/event-listener.yaml`); a fork's pull request starts nothing.
 - Pruning of finished runs, and a LimitRange or ResourceQuota on `vf-ci`.
 - Reporting each check to the PR commit as a status with the same context
   name, and switching the required contexts on `main` (VFL-126).

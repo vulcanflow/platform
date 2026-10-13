@@ -6,5 +6,6 @@ resources:
   - noop-pipeline.yaml
   - trigger-bindings.yaml
   - trigger-template.yaml
+  - pull-request-template.yaml
   - event-listener.yaml
   - route.yaml

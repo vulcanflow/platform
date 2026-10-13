@@ -1,0 +1,63 @@
+# Egress policy for the check pods, the prerequisite README.md names (VFL-776)
+# for the webhook starting the pipelines (triggers/, VFL-777). The pods run
+# code from the revision under test: build scripts, proc macros and tests.
+#
+# Not part of the kustomization: it is applied on its own, after the two
+# read-only checks in README.md, "Prerequisites", and before triggers/ starts
+# runs from the webhook. See README.md, "1. Apply".
+#
+# It selects every pod of a vf-lane-gate or vf-rust-check PipelineRun, by the
+# tekton.dev/pipeline label Tekton puts on each TaskRun and its pod, whether the
+# run came from the webhook or by hand. A TaskRun created straight from one of
+# the Tasks, with no PipelineRun, carries no such label and is not selected;
+# nothing here creates one. The EventListener and vf-ci-noop pods are not
+# selected either.
+#
+# Once an egress rule selects a pod, Cilium denies all other egress from it.
+# What stays allowed:
+#   - DNS to the cluster DNS pods, through Cilium's DNS proxy. The proxy reads
+#     the answers, and that is how the toFQDNs rule below learns which
+#     addresses a host name has. Without this rule toFQDNs matches nothing;
+#   - HTTPS to the hosts the checks fetch from: github.com (the revision, the
+#     base branch, the advisory databases, release downloads), the host GitHub
+#     release downloads redirect to, rustup's static.rust-lang.org, and the
+#     crates.io index and crate downloads.
+# A host missing here fails the check that needs it, at its first fetch; it
+# never passes a check.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: vf-ci-check-egress
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: tekton.dev/pipeline
+        operator: In
+        values: [vf-lane-gate, vf-rust-check]
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toFQDNs:
+        - matchName: github.com
+        - matchName: release-assets.githubusercontent.com
+        - matchName: static.rust-lang.org
+        - matchName: index.crates.io
+        - matchName: static.crates.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

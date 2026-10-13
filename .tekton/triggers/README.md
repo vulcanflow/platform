@@ -3,9 +3,15 @@
 A GitHub webhook on `vulcanflow/platform` posts `pull_request` and `push`
 events to `https://zozotk.go.ro/vulcanflow/platform`. The cluster's Gateway
 sends that path to the Tekton Triggers EventListener `vf-platform` in
-namespace `vf-ci`. Every request is signature-checked; a signed pull request
-(opened, synchronize, reopened) or branch push creates one PipelineRun of
-`vf-ci-noop`, which prints the event and exits.
+namespace `vf-ci`. Every request is signature-checked.
+
+- A signed pull request (opened, synchronize, reopened) whose head branch is
+  in `vulcanflow/platform` creates one PipelineRun of `vf-lane-gate` and one
+  of `vf-rust-check` (VFL-777). Both test the pull request's merge ref
+  `refs/pull/N/merge`, as GitHub's `actions/checkout` does. A pull request from
+  a fork creates nothing.
+- A signed branch push creates one PipelineRun of `vf-ci-noop`, which prints
+  the event and exits.
 
 | File | Objects |
 | --- | --- |
@@ -13,12 +19,18 @@ namespace `vf-ci`. Every request is signature-checked; a signed pull request
 | `rbac.yaml` | ServiceAccount `vf-ci-triggers`, its RoleBinding and ClusterRoleBinding |
 | `noop-pipeline.yaml` | Pipeline `vf-ci-noop` |
 | `trigger-bindings.yaml` | TriggerBindings `vf-github-pull-request`, `vf-github-push` |
-| `trigger-template.yaml` | TriggerTemplate `vf-ci-noop` |
+| `trigger-template.yaml` | TriggerTemplate `vf-ci-noop` (pushes) |
+| `pull-request-template.yaml` | TriggerTemplate `vf-pull-request` (pull requests) |
 | `event-listener.yaml` | EventListener `vf-platform` (Service `el-vf-platform`, port 8080) |
 | `route.yaml` | ReferenceGrant letting the aether-ci HTTPRoute reach `el-vf-platform` |
 
+The pipelines themselves are in `../` (VFL-125). Their pod settings in
+`pull-request-template.yaml` (emptyDir, no service account token, the arm64
+nodeSelector, the timeouts) copy `../pipelineruns/`; keep the two in step.
+
 Nothing here touches the GitHub Actions workflows, which keep gating `main`
-until Tekton reports the same check names (VFL-126).
+until Tekton reports the same check names (VFL-126). Nothing here reports a
+result to GitHub yet either (VFL-778).
 
 ## Prerequisites
 
@@ -33,6 +45,21 @@ until Tekton reports the same check names (VFL-126).
   admin), and to edit the HTTPRoute in `aether-ci`. Everything else is
   namespaced to `vf-ci`. The checks in step 4 and under Check also read pod
   logs in `tekton-pipelines`.
+- In `vf-ci`, before this revision is applied: the Tasks and Pipelines from
+  `../kustomization.yaml`, and the egress policy `vf-ci-check-egress` from
+  `../policies/check-egress.yaml`, both applied and tried by hand as in
+  `../README.md`, "1. Apply". From step 1 on, every same-repository pull
+  request update starts both pipelines, and their pods run the pull request's
+  code. Without the Pipelines the runs fail at once; without the policy their
+  pods reach any host. Check both:
+
+  ```sh
+  kubectl -n vf-ci get pipelines.tekton.dev vf-lane-gate vf-rust-check
+  kubectl -n vf-ci get ciliumnetworkpolicies.cilium.io vf-ci-check-egress
+  ```
+
+  On a cluster without namespace `vf-ci`, create it first
+  (`kubectl create namespace vf-ci`); step 1 adopts it.
 
 ## 1. Apply
 
@@ -245,6 +272,27 @@ kubectl -n vf-ci logs deploy/el-vf-platform --tail=-1 --since=1h |
   grep -F "${event_id:?no run carries that delivery id}"
 ```
 
+A pull request delivery starts two runs, `vf-lane-gate-...` and
+`vf-rust-check-...`, with five checks between them. Each check's checkout
+step logs the commit it tested as `HEAD <sha> <subject>`. GitHub's merge
+commits are titled `Merge <head> into <base>`, so `<head>` there must be the
+run's `HEAD-SHA`:
+
+```sh
+delivery_id='delivery-id-from-recent-deliveries'
+kubectl -n vf-ci get pipelineruns -l "vulcanflow.io/github-delivery=$delivery_id" \
+  -L tekton.dev/pipeline,vulcanflow.io/github-pr,vulcanflow.io/github-head-sha
+kubectl -n vf-ci get taskruns -l "vulcanflow.io/github-delivery=$delivery_id" \
+  -o custom-columns='CHECK:.metadata.labels.tekton\.dev/pipelineTask,STATUS:.status.conditions[0].reason,COMMIT:.status.results[?(@.name=="commit")].value'
+kubectl -n vf-ci logs -l "vulcanflow.io/github-delivery=$delivery_id" \
+  -c step-checkout --prefix --tail=-1 | grep -F ' HEAD '
+```
+
+A different `<head>` means the check fetched a stale merge ref
+(`pull-request-template.yaml`), and its result is not that head's. A pull
+request from a fork starts no run: its delivery's id matches no
+PipelineRun.
+
 An unsigned POST is refused by the github interceptor and creates no run. The
 response carries the listener's `eventID`; the check is that no run carries
 it:
@@ -274,9 +322,27 @@ reads as a pass.
 
 ## Roll back
 
-Roll back VFL-125 first: the steps below remove the EventListener, Secret and
-TriggerTemplate that VFL-125 reuses, and delete every PipelineRun labelled
-with this EventListener, VFL-125's included.
+To stop pull requests from starting the pipelines (VFL-777) and keep the rest,
+apply the triggers revision before it as in step 1, then delete the template
+it no longer names and the runs it started:
+
+```sh
+commit='full-commit-id-of-the-previous-revision'
+kubectl apply -k "https://github.com/vulcanflow/platform//.tekton/triggers?ref=$commit"
+kubectl -n vf-ci delete --ignore-not-found \
+  triggertemplates.triggers.tekton.dev/vf-pull-request
+kubectl -n vf-ci delete --ignore-not-found pipelineruns.tekton.dev \
+  -l 'triggers.tekton.dev/eventlistener=vf-platform,tekton.dev/pipeline in (vf-lane-gate,vf-rust-check)'
+```
+
+The label selector leaves the runs started by hand (`../README.md`, "Run by
+hand"), which carry no EventListener label.
+
+Pull requests then start `vf-ci-noop` again.
+
+To remove everything: roll back VFL-125 first. The steps below remove the
+EventListener, Secret and TriggerTemplates that VFL-125 reuses, and delete
+every PipelineRun labelled with this EventListener, VFL-125's included.
 
 Delete the webhook on `vulcanflow/platform` (and any organization webhook that
 posts to `https://zozotk.go.ro/vulcanflow/platform`), remove the rule from the
@@ -291,6 +357,7 @@ kubectl -n vf-ci delete --ignore-not-found pipelineruns.tekton.dev \
   -l triggers.tekton.dev/eventlistener=vf-platform
 kubectl -n vf-ci delete --ignore-not-found \
   triggertemplates.triggers.tekton.dev/vf-ci-noop \
+  triggertemplates.triggers.tekton.dev/vf-pull-request \
   triggerbindings.triggers.tekton.dev/vf-github-pull-request \
   triggerbindings.triggers.tekton.dev/vf-github-push \
   pipelines.tekton.dev/vf-ci-noop \
