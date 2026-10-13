@@ -82,7 +82,7 @@ reaches GitHub through one shared identity.
 | --- | --- | --- |
 | PROD | `crates/*/src/**`, `crates/*/build.rs`, `crates/*/Cargo.toml`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` | the coding agents |
 | TEST | `tests/**`, `crates/*/tests/**`, `fuzz/**`, `conformance/**`, `**/testdata/**`, `**/golden/**`, `*.golden`, `*.snap` | the test authors |
-| GATE | `ci/lane-gate.sh`, `ci/lane-gate-test.sh`, `.github/workflows/lane-gate.yml`, `.tekton/tasks/lane-gate.yaml`, `.tekton/tasks/lane-gate-selftest.yaml`, `.tekton/pipelines/lane-gate.yaml` | the gate owner |
+| GATE | `ci/lane-gate.sh`, `ci/lane-gate-test.sh`, `.github/workflows/lane-gate.yml`, `.tekton/tasks/lane-gate.yaml`, `.tekton/tasks/lane-gate-selftest.yaml`, `.tekton/pipelines/lane-gate.yaml`, `.tekton/kustomization.yaml` | the gate owner |
 | NEUTRAL | everything else | any lane |
 
 The gate also refuses `#[cfg(test)]` inside production source, and refuses
