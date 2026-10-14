@@ -1,0 +1,121 @@
+# The checks for one pull-request delivery: one PipelineRun of vf-lane-gate and
+# one of vf-rust-check, as GitHub starts lane-gate.yml and rust-check.yml for a
+# pull_request event. The pod settings are those of ../pipelineruns/: an
+# emptyDir per TaskRun, no service account token, ndots 1, the arm64
+# nodeSelector for both rust-check legs, and the same timeouts. Keep the two in
+# step.
+#
+# One difference from GitHub: lane-gate.yml runs only for pull requests into
+# main, while both runs start here whatever the base branch is. The lane gate
+# then compares with that base branch, as the Pipeline's base-branch says.
+#
+# Both runs test refs/pull/N/merge, the merge ref actions/checkout checks out
+# on a pull_request event. The ref is resolved when each Task fetches it, not
+# when the delivery arrives, and GitHub recomputes it on its own schedule, so a
+# Task can fetch a stale merge commit (VFL-696):
+#   - its base parent is an older tip of the base branch. PR #30 got one after
+#     a reopen, and test-erosion failed falsely because it counted the tests
+#     at the newer tip it fetched. VFL-696 makes ci/lane-gate.sh count at the
+#     merge base instead; until it lands, the same false red happens here;
+#   - its head parent is the previous head, when the Task starts before GitHub
+#     has recomputed the ref after a push, or when the pull request conflicts
+#     with its base and GitHub keeps no current merge.
+# Each Task records the commit it tested in its `commit` result, and both runs
+# carry the head SHA they are for in label vulcanflow.io/github-head-sha. A
+# result whose second parent is not that SHA tested a stale merge, and must not
+# be reported as that head's verdict.
+#
+# The labels are an index, as in trigger-template.yaml: Tekton copies them onto
+# every TaskRun and pod of the run, so
+#
+#   kubectl -n vf-ci get taskruns -l "vulcanflow.io/github-delivery=$delivery_id"
+#
+# lists the six checks one delivery started.
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: vf-pull-request
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  params:
+    - name: event-type
+    - name: delivery-id
+    - name: pr-number
+    - name: head-sha
+    - name: merge-ref
+    - name: base-branch
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        generateName: vf-lane-gate-
+        namespace: vf-ci
+        labels:
+          app.kubernetes.io/part-of: vf-ci
+          vulcanflow.io/github-event: $(tt.params.event-type)
+          vulcanflow.io/github-delivery: $(tt.params.delivery-id)
+          vulcanflow.io/github-pr: $(tt.params.pr-number)
+          vulcanflow.io/github-head-sha: $(tt.params.head-sha)
+      spec:
+        pipelineRef:
+          name: vf-lane-gate
+        params:
+          - name: revision
+            value: $(tt.params.merge-ref)
+          - name: base-branch
+            value: $(tt.params.base-branch)
+        workspaces:
+          - name: source
+            emptyDir: {}
+        taskRunTemplate:
+          podTemplate:
+            automountServiceAccountToken: false
+            dnsConfig:
+              options:
+                - name: ndots
+                  value: "1"
+        timeouts:
+          pipeline: 20m
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        generateName: vf-rust-check-
+        namespace: vf-ci
+        labels:
+          app.kubernetes.io/part-of: vf-ci
+          vulcanflow.io/github-event: $(tt.params.event-type)
+          vulcanflow.io/github-delivery: $(tt.params.delivery-id)
+          vulcanflow.io/github-pr: $(tt.params.pr-number)
+          vulcanflow.io/github-head-sha: $(tt.params.head-sha)
+      spec:
+        pipelineRef:
+          name: vf-rust-check
+        params:
+          - name: revision
+            value: $(tt.params.merge-ref)
+        # No cache-amd64 or cache-arm64 workspace: every run is a cold build,
+        # as in ../pipelineruns/rust-check.yaml.
+        workspaces:
+          - name: source
+            emptyDir: {}
+        taskRunTemplate:
+          podTemplate:
+            automountServiceAccountToken: false
+            dnsConfig:
+              options:
+                - name: ndots
+                  value: "1"
+        taskRunSpecs:
+          - pipelineTaskName: check-amd64
+            podTemplate:
+              nodeSelector:
+                kubernetes.io/arch: arm64
+          - pipelineTaskName: check-arm64
+            podTemplate:
+              nodeSelector:
+                kubernetes.io/arch: arm64
+        timeouts:
+          pipeline: 1h30m
+          tasks: 1h20m
