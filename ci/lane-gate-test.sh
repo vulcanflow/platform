@@ -1545,5 +1545,60 @@ git add -A >/dev/null
 git commit -qm orphan-root
 check_contains "no merge-base between baseline and an orphan head" erosion fail "no merge-base between"
 
+# --- 153. erosion: a compiled rustdoc example's fence is demoted from rust
+#     to ignore (VFL-734): refused ----------------------------------------
+setup
+printf '/// ```rust\n/// assert_eq!(1 + 1, 2);\n/// ```\npub fn add(a:i32,b:i32)->i32{a+b}\n' > crates/vf-core/src/lib.rs
+commit doc-example-compiled
+git branch -f baseline
+printf '/// ```ignore\n/// assert_eq!(1 + 1, 2);\n/// ```\npub fn add(a:i32,b:i32)->i32{a+b}\n' > crates/vf-core/src/lib.rs
+commit doc-example-demoted-to-ignore
+check_contains "compiled rustdoc example demoted from rust to ignore" erosion fail \
+  'rustdoc fence(s) tagged ignore, text or no_run' '+/// ```ignore'
+
+# --- 154. erosion: a brand-new rustdoc example is added already tagged
+#     ignore, with no compiled fence existing before (VFL-734): refused --
+setup
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\n\n/// ```ignore\n/// assert_eq!(1 + 1, 2);\n/// ```\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit new-ignore-fence-no-prior-example
+check_contains "brand-new ignore-tagged fence with no prior compiled example" erosion fail \
+  'rustdoc fence(s) tagged ignore, text or no_run' '+/// ```ignore'
+
+# --- 155. erosion: a new rustdoc example stays compiled (rust fence) and a
+#     json block beside it is not a doctest fence (VFL-734): pass ---------
+setup
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\n\n/// ```rust\n/// assert_eq!(1 + 1, 2);\n/// ```\n///\n/// ```json\n/// {"ok": true}\n/// ```\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit new-rust-example-plus-json-block
+check "new rustdoc example (rust) plus a json block" erosion pass
+
+# --- 156. erosion: a compiled rustdoc example's fence is demoted from rust
+#     to text (VFL-734): refused -----------------------------------------
+setup
+printf '/// ```rust\n/// assert_eq!(1 + 1, 2);\n/// ```\npub fn add(a:i32,b:i32)->i32{a+b}\n' > crates/vf-core/src/lib.rs
+commit doc-example-compiled-2
+git branch -f baseline
+printf '/// ```text\n/// assert_eq!(1 + 1, 2);\n/// ```\npub fn add(a:i32,b:i32)->i32{a+b}\n' > crates/vf-core/src/lib.rs
+commit doc-example-demoted-to-text
+check_contains "compiled rustdoc example demoted from rust to text" erosion fail \
+  'rustdoc fence(s) tagged ignore, text or no_run' '+/// ```text'
+
+# --- 157. erosion: a compiled rustdoc example's fence is demoted from rust
+#     to no_run (VFL-734): refused ----------------------------------------
+setup
+printf '/// ```rust\n/// assert_eq!(1 + 1, 2);\n/// ```\npub fn add(a:i32,b:i32)->i32{a+b}\n' > crates/vf-core/src/lib.rs
+commit doc-example-compiled-3
+git branch -f baseline
+printf '/// ```no_run\n/// assert_eq!(1 + 1, 2);\n/// ```\npub fn add(a:i32,b:i32)->i32{a+b}\n' > crates/vf-core/src/lib.rs
+commit doc-example-demoted-to-no_run
+check_contains "compiled rustdoc example demoted from rust to no_run" erosion fail \
+  'rustdoc fence(s) tagged ignore, text or no_run' '+/// ```no_run'
+
+# --- 158. erosion: a new rustdoc example tagged rust,should_panic stays
+#     compiled (VFL-734): pass --------------------------------------------
+setup
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\n\n/// ```rust,should_panic\n/// panic!("boom");\n/// ```\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit new-should-panic-example
+check "new rustdoc example tagged rust,should_panic" erosion pass
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]

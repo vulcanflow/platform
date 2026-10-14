@@ -157,6 +157,9 @@ cmd_partition() {
 # ---------------------------------------------------------------------------
 
 TEST_MARKER_RE='#\[test\]|#\[tokio::test|#\[test_case|#\[rstest|proptest!|fuzz_target!'
+# An added `///` or `//!` line opening a rustdoc fence whose info string takes the
+# example out of the doctest run. A bare, `rust` or `rust,…` fence is compiled.
+DEMOTED_FENCE_RE='^\+[[:space:]]*//[/!][[:space:]]*(`{3,}|~{3,})[^`]*(ignore|text|no_run)'
 
 count_markers() {
   # Counts test declarations across the whole tree at a revision. Counting the
@@ -173,16 +176,17 @@ count_markers() {
 }
 
 count_diff_lines() {
-  # $1 = '+' for added lines or '-' for removed; $2 = pattern.
+  # $1 = '+' for added lines or '-' for removed; $2 = pattern; $3 = pathspec,
+  # every .rs file by default.
   local n
-  n="$( { git diff "$BASE_REF...$HEAD_REF" -- '*.rs' 2>/dev/null || true; } \
+  n="$( { git diff "$BASE_REF...$HEAD_REF" -- "${3:-*.rs}" 2>/dev/null || true; } \
         | { grep -E "^\\$1[^$1]" || true; } \
         | { grep -cE "$2" || true; } )"
   printf '%s' "${n:-0}"
 }
 
 cmd_erosion() {
-  local base_rev base_count head_count added_ignores removed_tests
+  local base_rev base_count head_count added_ignores added_fences removed_tests
 
   added_ignores="$(count_diff_lines '+' '#\[ignore')"
   if [ "${added_ignores:-0}" -gt 0 ]; then
@@ -191,6 +195,18 @@ cmd_erosion() {
 
   An ignored test is a deleted test that still looks present in the suite. If a test
   cannot pass, that is a code defect (lane 5) and it routes back to lane 3. See ADR-0005."
+  fi
+
+  # VFL-536 put the rustdoc examples in crate source into test-unit, so each one is
+  # a test that no #[test] marker counts. Retagging its fence ignore, text or no_run
+  # drops it from the run, which this diff check treats as an added #[ignore].
+  added_fences="$(count_diff_lines '+' "$DEMOTED_FENCE_RE" 'crates/*/src/*.rs')"
+  if [ "${added_fences:-0}" -gt 0 ]; then
+    git diff "$BASE_REF...$HEAD_REF" -- 'crates/*/src/*.rs' | grep -E "$DEMOTED_FENCE_RE" >&2 || true
+    fail "This pull request adds $added_fences rustdoc fence(s) tagged ignore, text or no_run.
+
+  An ignored example is a deleted example that still looks present in the docs. If a doc
+  example cannot pass, that is a code defect (lane 5) and it routes back to lane 3. See ADR-0005."
   fi
 
   removed_tests="$(count_diff_lines '-' "$TEST_MARKER_RE")"
