@@ -68,9 +68,9 @@ retired (VFL-127).
 ## Prerequisites
 
 - Namespace `vf-ci`, from a `triggers/` revision before VFL-777 or from
-  `kubectl create namespace vf-ci`. The `triggers/` of this revision comes
-  last, after step 2: it starts these pipelines for every pull request update
-  (`triggers/README.md`, "Prerequisites").
+  `kubectl create namespace vf-ci`. `triggers/` comes last, after step 2, and
+  only at or after the VFL-974 commit: it starts these pipelines for every
+  pull request update (`triggers/README.md`, "Prerequisites").
 - `kubectl` with rights to create Tasks, Pipelines and PipelineRuns in `vf-ci`.
 - Tekton Pipelines with the `tekton.dev/v1` API. The cluster had v1.15.1 on
   2026-10-09.
@@ -253,8 +253,9 @@ kubectl -n vf-ci delete --ignore-not-found ciliumnetworkpolicies.cilium.io/vf-ci
 - Runs for pull requests from forks. The webhook starts these pipelines only
   for pull requests whose head branch is in this repository
   (`triggers/event-listener.yaml`); a fork's pull request starts nothing.
-- Pruning of finished runs, cancelling a pull request's runs when a newer
-  push supersedes them, and a LimitRange or ResourceQuota on `vf-ci`. Each
+- Cancelling a pull request's runs when a newer push supersedes them. That
+  control is VFL-974, and `triggers/` is applied only at or after its commit.
+- Pruning of finished runs, and a LimitRange or ResourceQuota on `vf-ci`. Each
   pull request update starts six pods: the four `vf-lane-gate` checks, which
   run for up to 20m, and `check-amd64` and `check-arm64`, which request 2 CPU
   and 4Gi each and run for up to 1h30m. A run's timeouts count from its
