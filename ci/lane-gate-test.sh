@@ -48,6 +48,36 @@ check() {
 
 commit() { git add -A >/dev/null; git commit -qm "$1"; }
 
+# check_contains <name> <subcommand> <expected: pass|fail> <substring>...
+# Like check(), but also asserts the subcommand's combined stdout+stderr output
+# contains every given literal substring (grep -F, so a path's dots are not
+# treated as regex wildcards). Needed for cases whose refusal text must name
+# specific paths, not just land on the right pass/fail verdict.
+check_contains() {
+  local name="$1" sub="$2" expect="$3"; shift 3
+  local out rc got=pass
+  out="$(./ci/lane-gate.sh "$sub" baseline HEAD 2>&1)"; rc=$?
+  [ $rc -ne 0 ] && got=fail
+  if [ "$got" != "$expect" ]; then
+    printf 'NOT OK %-45s %s: expected %s got %s\n' "$name" "$sub" "$expect" "$got"
+    printf '%s\n' "$out" | sed 's/^/        | /'
+    fail_count=$((fail_count+1))
+    return
+  fi
+  local missing=() s
+  for s in "$@"; do
+    printf '%s' "$out" | grep -qF "$s" || missing+=("$s")
+  done
+  if [ ${#missing[@]} -eq 0 ]; then
+    printf 'ok    %-46s %s=%s (output verified)\n' "$name" "$sub" "$got"
+    pass_count=$((pass_count+1))
+  else
+    printf 'NOT OK %-45s %s: output missing: %s\n' "$name" "$sub" "${missing[*]}"
+    printf '%s\n' "$out" | sed 's/^/        | /'
+    fail_count=$((fail_count+1))
+  fi
+}
+
 # --- 1. production-only change: allowed -------------------------------------
 setup
 printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
@@ -437,6 +467,31 @@ git branch -f baseline
 git rm -q .tekton/tasks/lane-gate.yaml
 commit delete-lane-gate-task-alone
 check "delete GATE file alone (.tekton/tasks/lane-gate.yaml)" partition pass
+
+# --- 44. GATE + PROD: the gate refusal names the GATE path, not just a note
+#     count (VFL-814 / VFL-787 LOW-6: before this, the gate refusal printed
+#     only "production files: N   test files: N   gate files: N", so with
+#     several GATE paths an author could not tell which file was classed
+#     GATE) ----------------------------------------------------------------
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit tekton-lane-gate-task-plus-prod-names-paths
+check_contains "GATE + PROD refusal names the GATE and PROD paths" partition fail \
+  'gate files in this diff:' '.tekton/tasks/lane-gate.yaml' \
+  'production source in this diff:' 'crates/vf-core/src/lib.rs'
+
+# --- 45. GATE + TEST: the gate refusal names both the GATE path and the
+#     TEST path (VFL-814 / VFL-787 LOW-6) -----------------------------------
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate.yaml
+printf '#[test]\nfn two(){assert!(true);}\n#[test]\nfn three(){assert!(true);}\n#[test]\nfn four(){assert!(true);}\n' > crates/vf-core/tests/more.rs
+commit tekton-lane-gate-task-plus-test-names-paths
+check_contains "GATE + TEST refusal names the GATE and TEST paths" partition fail \
+  'gate files in this diff:' '.tekton/tasks/lane-gate.yaml' \
+  'test files in this diff:' 'crates/vf-core/tests/more.rs'
 
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
