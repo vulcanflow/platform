@@ -123,11 +123,13 @@ retired (VFL-127).
   their `dnsConfig`. Every listed host has a dot, so glibc and musl both look
   it up as given first, and no search-domain form is sent. The checks
   therefore do not depend on the response code the proxy refuses with. A
-  `vf-rust-check` run created any other way keeps `ndots:5`, and its `deny`
-  step fails; it never passes. The owner
-  confirmed on 2026-10-13 that the cluster's
-  Gateway `eg` is Cilium's, so the CNI is Cilium. The EventListener pod is not
-  selected; it has no policy either (VFL-124 LOW-4).
+  `vf-rust-check` run created any other way keeps `ndots:5`, so the `deny`
+  recipe of `just check`, in the `check` step, fails and the run does not
+  pass. That holds unless the run sets its own `dnsConfig`, or the cluster
+  sets one in Tekton's `default-pod-template`. The owner confirmed on
+  2026-10-13 that the cluster's Gateway `eg` is Cilium's, so the CNI is
+  Cilium. The EventListener pod is not selected; it has no policy either
+  (VFL-124 LOW-4).
 
   The policy assumes two things about the cluster. Check both, read-only,
   before applying it:
@@ -178,11 +180,11 @@ rule, which Cilium merges into a lookup of any name. Find that policy before
 going on.
 
 `getent` resolves through glibc, so the probe does not cover musl. Step 2
-does: the `deny` step of both `vf-rust-check` legs runs the musl
-`cargo-deny`, which looks up `github.com`. Start both pipelines by hand once
-(step 2) with the policy in place. Both must pass before `triggers/` starts
-them from the webhook; a host the policy lacks shows as a failed fetch in
-the step's log.
+does: the `deny` recipe of `just check`, in the `check` step of both
+`vf-rust-check` legs, runs the musl `cargo-deny`, which looks up
+`github.com`. Start both pipelines by hand once (step 2) with the policy in
+place. Both must pass before `triggers/` starts them from the webhook; a host
+the policy lacks shows as a failed fetch in the `check` step's log.
 
 ## 2. Run by hand
 
