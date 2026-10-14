@@ -14,6 +14,12 @@
 # fork has been deleted, head.repo is null, the filter fails to evaluate, and
 # that too starts nothing. A branch push still starts only vf-ci-noop.
 #
+# A `synchronize` delivery, a push to the pull request's branch, also matches
+# pull-request-supersede. Each trigger acts on the delivery on its own, so the
+# delivery starts the two checks for the new head and one vf-ci-supersede run,
+# which cancels the unfinished checks for the head the push replaced
+# (supersede-pipeline.yaml). `opened` and `reopened` cancel nothing.
+#
 # The Secret is not in this directory. The owner creates it in the cluster, or
 # has already created it, from the value set on the webhook; see README.md.
 apiVersion: triggers.tekton.dev/v1beta1
@@ -53,6 +59,34 @@ spec:
         - ref: vf-github-pull-request
       template:
         ref: vf-pull-request
+    # The filter of pull-request above, narrowed to `synchronize`.
+    - name: pull-request-supersede
+      interceptors:
+        - name: verify-github-signature
+          ref:
+            name: github
+            kind: ClusterInterceptor
+          params:
+            - name: secretRef
+              value:
+                secretName: vf-ci-webhook
+                secretKey: secret
+            - name: eventTypes
+              value: ["pull_request"]
+        - name: platform-pr-synchronize
+          ref:
+            name: cel
+            kind: ClusterInterceptor
+          params:
+            - name: filter
+              value: >-
+                body.repository.full_name == 'vulcanflow/platform' &&
+                body.pull_request.head.repo.full_name == 'vulcanflow/platform' &&
+                body.action == 'synchronize'
+      bindings:
+        - ref: vf-github-pull-request-supersede
+      template:
+        ref: vf-pull-request-supersede
     - name: push
       interceptors:
         - name: verify-github-signature
