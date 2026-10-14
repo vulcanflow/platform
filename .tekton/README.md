@@ -56,8 +56,28 @@ lands, GitHub's `rust-check.yml` keeps running both legs.
 - Tekton Pipelines with the `tekton.dev/v1` API. The cluster had v1.15.1 on
   2026-10-09.
 - Egress from the pods to `github.com`, `objects.githubusercontent.com`,
-  `static.rust-lang.org`, `index.crates.io` and `static.crates.io`, and to
-  Docker Hub for the image.
+  `release-assets.githubusercontent.com`, `static.rust-lang.org`,
+  `index.crates.io` and `static.crates.io`. Release downloads from
+  `github.com` redirect to `release-assets.githubusercontent.com`
+  (2026-10-13). The node pulls the images from Docker Hub, not the pod.
+- Before the webhook starts these pipelines, a default-deny egress policy on
+  their pods. The pods run code from the revision under test (build scripts,
+  proc macros, tests). They hold no credential and mount no token, but without
+  a policy they reach any host and the whole cluster network. The policy is a
+  `CiliumNetworkPolicy` `vf-ci-check-egress` in `vf-ci`. It selects the pods
+  whose `tekton.dev/pipeline` label is `vf-lane-gate` or `vf-rust-check`, and
+  allows egress only:
+  - to the six hosts above, by `toFQDNs` `matchName`;
+  - to cluster DNS, the `k8s-app: kube-dns` pods in `kube-system` on port 53
+    UDP and TCP, with a DNS rule (`rules.dns`, `matchPattern: "*"`).
+
+  Once an egress rule selects a pod, Cilium denies all other egress from it.
+  Host names need Cilium: a Kubernetes `NetworkPolicy` matches IP blocks only,
+  and the addresses behind these hosts change. Cilium's DNS proxy reads the
+  pods' DNS answers and allows the addresses they return, so a `toFQDNs` rule
+  matches nothing without the DNS rule. The owner confirmed on 2026-10-13
+  that the cluster's Gateway `eg` is Cilium's, so the CNI is Cilium. The
+  EventListener pod is not selected; it has no policy either (VFL-124 LOW-4).
 
 ## 1. Apply
 
@@ -143,8 +163,9 @@ kubectl -n vf-ci delete pipeline vf-lane-gate vf-rust-check; kubectl -n vf-ci de
 - Starting these pipelines from the webhook. `triggers/trigger-template.yaml`
   still starts `vf-ci-noop`. Before it starts a pipeline that checks out
   pull-request code, a policy for pull requests from forks is needed. The
-  pipelines here hold no credential and mount no token, which is one part of
-  such a policy.
+  pipelines here hold no credential and mount no token, and the egress policy
+  in "Prerequisites" limits where their pods connect. Both are parts of such a
+  policy.
 - Pruning of finished runs, and a LimitRange or ResourceQuota on `vf-ci`.
 - Reporting each check to the PR commit as a status with the same context
   name, and switching the required contexts on `main` (VFL-126).
