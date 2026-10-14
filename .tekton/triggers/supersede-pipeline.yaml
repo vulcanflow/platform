@@ -22,14 +22,19 @@
 # and the step cancels nothing. Creation times are in whole seconds, so a run
 # from the same second counts. This check can only make the step cancel less.
 #
-# What the check cannot tell apart: a delivery that reaches the listener after
-# a newer one (GitHub does not promise the order) looks like a return to its
-# head, so that head's runs finish on their own, as after a lost delivery. The
-# check needs the delivery's first runs: if they were deleted, or its first
-# attempt never reached the listener, its redelivery after a return to
-# `before` cancels the current head's runs. The delivery id is not signed
-# (trigger-template.yaml), so a replay under a new id is not caught either; it
-# cancels the runs for its `before`, as it would without the check.
+# What the check cannot tell apart: GitHub does not promise the order of
+# deliveries. When a delivery reaches the listener after a newer one, the
+# newer delivery's run takes this delivery's runs for a return to their head,
+# so they finish on their own, as after a lost delivery. And when the newer
+# push went back to this delivery's `before`, this run cancels the current
+# head's runs: its own runs are the later ones, and the runs left in the
+# cluster are the same as for the two pushes in the other order, where that
+# cancel is right. The check needs the delivery's first runs: if they were
+# deleted, or its first attempt never reached the listener, its redelivery
+# after a return to `before` cancels the current head's runs. The delivery id
+# is not signed (trigger-template.yaml), so a replay under a new id is not
+# caught either; it cancels the runs for its `before`, as it would without the
+# check.
 #
 # The step never cancels a run that its own delivery started.
 #
@@ -135,8 +140,9 @@ spec:
           echo "vf-ci-supersede: before '$BEFORE' is not a commit id" >&2
           exit 1
         fi
+        # A label value: it starts and ends with a letter or a digit.
         case "$DELIVERY_ID" in
-          '' | *[!0-9A-Za-z._-]*)
+          '' | *[!0-9A-Za-z._-]* | [!0-9A-Za-z]* | *[!0-9A-Za-z])
             echo "vf-ci-supersede: delivery-id '$DELIVERY_ID' is not a delivery id" >&2
             exit 1 ;;
         esac

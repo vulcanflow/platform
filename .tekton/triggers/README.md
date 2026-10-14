@@ -300,7 +300,8 @@ oldest run that carries the delivery's id; a redelivery keeps the id. If a run
 for `before` from another delivery was created at or after that time (to the
 second), the run cancels nothing and logs those runs.
 
-Not covered, and in each case the runs are left to finish on their own:
+Not covered, and in each case a superseded head's runs are left to finish on
+their own:
 
 - A `synchronize` delivery that never reaches the listener cancels nothing,
   because the next push cancels only the head that push replaces. One lost
@@ -308,18 +309,27 @@ Not covered, and in each case the runs are left to finish on their own:
 - GitHub does not promise the order of deliveries. When an older delivery
   reaches the listener after a newer one, or its runs are created after the
   newer delivery's `vf-ci-supersede` run has looked, that run either does not
-  see them or takes them for a return to `before`. Telling the two
-  apart needs GitHub's own order, which the run cannot ask for: it may reach
-  only the Kubernetes API server.
+  see them or takes them for a return to `before`.
 - Two pushes in the same second: the check counts a run from the same second
   as newer, so it cancels nothing.
 
-What the check needs, and when it cancels the current head after all: the
-redelivered delivery's first runs must still exist. If they were deleted, or
-its first attempt never reached the listener, its redelivery after the branch
-returned to `before` cancels the current head's runs; push again to start new
-ones. A replayed delivery with a new X-GitHub-Delivery (the id is not signed,
-`trigger-template.yaml`) is not caught either, as without the check.
+Not covered either, and in each case the current head's runs are cancelled;
+push again to start new ones:
+
+- The older delivery's own run, when that delivery reaches the listener after
+  a newer one and the newer push went back to the older delivery's `before`.
+  Push A to B, then B to A, and the B-to-A delivery arrives first: the A-to-B
+  delivery's runs are created after A's, so its run cancels A's runs. Pushing
+  B to A and then A to B, with the deliveries arriving at the same times,
+  leaves the same runs with the same times, and there cancelling A's runs is
+  right. Telling the two apart needs GitHub's own order, which the run cannot
+  ask for: it may reach only the Kubernetes API server.
+- The check needs the delivery's first runs. If they were deleted, or its
+  first attempt never reached the listener, its redelivery after the branch
+  returned to `before` cancels the current head's runs.
+- A replayed delivery with a new X-GitHub-Delivery (the id is not signed,
+  `trigger-template.yaml`) is not caught, as without the check. It cancels the
+  runs for its `before`, which can be the current head.
 
 Of the run pods in `vf-ci`, only the `vf-ci-supersede` pod holds a token with
 a grant: the `vf-ci-supersede` token. Its Role allows get, list and patch on
