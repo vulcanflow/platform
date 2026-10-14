@@ -53,8 +53,10 @@ Five choices are worth recording:
     architecture never runs on this machine, so there is no loader to agree
     with and nothing for the version to skew against. This holds while cross
     output is dynamically linked. A statically linked cross artifact embeds
-    libc.a and crt*.o from the cross glibc, and at that point the cross pair
-    needs pinning the way the native pair is.
+    libc.a and crt*.o from the cross glibc, so that glibc ships inside it. At
+    that point the cross pair needs a deliberate version pin of its own,
+    chosen for where the artifact will run: unlike the native pair, there is
+    no image glibc on this machine to match it to.
 
 Usage:
   ci/toolchain/resolve-debs.py --arch arm64 > ci/toolchain/debs-arm64.lock
