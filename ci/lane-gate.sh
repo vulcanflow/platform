@@ -108,6 +108,16 @@ cmd_partition() {
   fi
 
   if [ ${#gate[@]} -gt 0 ] && { [ ${#prod[@]} -gt 0 ] || [ ${#test[@]} -gt 0 ]; }; then
+    printf '\n  gate files in this diff:\n' >&2
+    printf '    %s\n' "${gate[@]}" >&2
+    if [ ${#prod[@]} -gt 0 ]; then
+      printf '\n  production source in this diff:\n' >&2
+      printf '    %s\n' "${prod[@]}" >&2
+    fi
+    if [ ${#test[@]} -gt 0 ]; then
+      printf '\n  test files in this diff:\n' >&2
+      printf '    %s\n' "${test[@]}" >&2
+    fi
     fail "This pull request changes the lane gate itself and also changes source or tests.
 
   A change to ci/lane-gate.sh, .github/workflows/lane-gate.yml or the Tekton lane gate
