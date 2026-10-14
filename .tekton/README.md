@@ -225,9 +225,10 @@ workflow run is.
 Both executors give the same verdict when they see the same inputs. Three
 inputs change over time, so compare runs started close together:
 
-- **The base tip.** `test-erosion` counts tests at the tip of `main` as fetched,
-  not at the merge base. If `main` gained tests between the two runs, the
-  verdicts can differ. The `BASE` column shows the tip Tekton used.
+- **The base tip.** `test-erosion` counts tests at the `git merge-base` of the
+  tip of `main` as fetched and the checked-out revision, so a tip that moved
+  ahead between the two runs does not change the base count. The `BASE` column
+  shows the tip Tekton fetched.
 - **The advisory databases.** `just check` runs cargo-deny and cargo-audit
   against the latest RustSec data. A new advisory turns every commit red on
   both executors from the moment it is published.
