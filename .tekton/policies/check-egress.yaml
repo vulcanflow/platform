@@ -1,10 +1,12 @@
 # Egress policy for the check pods, the prerequisite README.md names (VFL-776)
 # for the webhook starting the pipelines (triggers/, VFL-777). The pods run
-# code from the revision under test: build scripts, proc macros and tests.
+# code from the revision under test: build scripts, proc macros and tests. Its
+# third rule covers the vf-ci-supersede pods (VFL-974).
 #
 # Not part of the kustomization: it is applied on its own, after the two
 # read-only checks in README.md, "Prerequisites", and before triggers/ starts
-# runs from the webhook. See README.md, "1. Apply".
+# runs from the webhook, from the same commit as triggers/. See README.md,
+# "1. Apply".
 #
 # The first rule selects every pod of a vf-lane-gate or vf-rust-check
 # PipelineRun, by the tekton.dev/pipeline label Tekton puts on each TaskRun and
@@ -43,6 +45,15 @@
 # Cilium merges a rule that allows port 53 to these pods with no DNS rule into
 # a lookup of any name. README.md, "1. Apply", has a probe that shows a lookup
 # outside the list fails.
+#
+# The third rule selects the pods of a vf-ci-supersede PipelineRun
+# (triggers/supersede-pipeline.yaml, VFL-974). They run none of the revision's
+# code, but they hold a token that may patch PipelineRuns. They may reach the
+# Kubernetes API server and nothing else, not even DNS: kubectl finds the API
+# server at the address in KUBERNETES_SERVICE_HOST, so it looks up no name. The
+# rule names no port: Cilium matches the API server after the Service address
+# is translated, and the port there is the API server's own, not the Service's
+# 443.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -108,3 +119,9 @@ specs:
           - ports:
               - port: "443"
                 protocol: TCP
+  - endpointSelector:
+      matchLabels:
+        tekton.dev/pipeline: vf-ci-supersede
+    egress:
+      - toEntities:
+          - kube-apiserver

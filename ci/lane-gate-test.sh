@@ -1498,7 +1498,7 @@ commit baseline-gains-test-after-fork
 git checkout -q main
 printf '# docs\nmore after fork\n' > README.md
 commit head-non-rust-change-after-fork
-check "baseline gains a test after the fork; head (forked earlier) touches only a non-Rust file" erosion pass
+check_contains "baseline gains a test after the fork; head (forked earlier) touches only a non-Rust file" erosion pass "(merge-base with"
 out="$(./ci/lane-gate.sh erosion baseline HEAD 2>&1)"
 base_n="$(printf '%s\n' "$out" | grep -oE '[0-9]+ at base' | grep -oE '[0-9]+' | head -1)"
 head_n="$(printf '%s\n' "$out" | grep -oE '[0-9]+ at head' | grep -oE '[0-9]+' | head -1)"
@@ -1553,15 +1553,7 @@ git checkout -q --orphan orphan-head
 printf 'orphan root, no shared history with baseline\n' > ORPHAN_MARKER.txt
 git add -A >/dev/null
 git commit -qm orphan-root
-out="$(./ci/lane-gate.sh erosion baseline HEAD 2>&1)"; rc=$?
-name="no merge-base between baseline and an orphan head"
-if [ $rc -ne 0 ]; then
-  printf 'ok    %-46s %s=%s\n' "$name" erosion fail; pass_count=$((pass_count+1))
-else
-  printf 'NOT OK %-45s %s: expected fail got pass\n' "$name" erosion
-  printf '%s\n' "$out" | sed 's/^/        | /'
-  fail_count=$((fail_count+1))
-fi
+check_contains "no merge-base between baseline and an orphan head" erosion fail "no merge-base between"
 
 #   The cases below (153-162) are new coverage for the VFL-490 bound itself
 #   (24662ad): cmd_pins now accepts exactly one line form, a pure comment or

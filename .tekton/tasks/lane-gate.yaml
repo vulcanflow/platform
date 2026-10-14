@@ -87,9 +87,10 @@ spec:
       description: The commit the check ran against (git rev-parse HEAD).
     - name: base-commit
       description: >-
-        The base branch tip the check compared with, or empty when the base was
-        not fetched. test-erosion counts tests at this commit, so two runs only
-        agree when they saw the same base tip.
+        The base branch tip that was fetched, or empty when the base was not
+        fetched. test-erosion counts tests at the merge-base of this tip and
+        the checked-out revision, not at this tip, so the comparison no longer
+        depends on which base tip a run saw.
 
   workspaces:
     - name: source
