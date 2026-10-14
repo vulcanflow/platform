@@ -179,10 +179,11 @@ succeeds. The caller then carries on with `PATH` unchanged, and the next step
 either fails on `cargo: command not found` or, worse, finds a system `cargo` and
 builds with a toolchain the bootstrap did not pin. Capturing stdout first and
 joining with `&&` keeps the status. The trailing `|| false` is for `set -e`
-scripts, which do not stop on a failure to the left of `&&`, only on the command
-after the last `||`. Do not declare the variable with `local` or `export` on the
-same line either: `local vf_env="$(…)"` returns the status of `local`, which is
-0.
+scripts, which ignore a failure in an `&&`/`||` list unless it is the list's
+last command; without `|| false`, a failed capture is not the last command and
+the script carries on. Do not declare the variable with `local` or `export` on
+the same line either: `local vf_env="$(…)"` returns the status of `local`, which
+is 0.
 
 ```
 just            # list recipes
