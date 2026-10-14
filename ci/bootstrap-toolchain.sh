@@ -201,6 +201,29 @@ unset __vf_git_var
 GITENV
 }
 
+# A published tree can still be damaged later, a compiler removed from it or
+# made non-executable, and nothing would notice until a build (VFL-858). So a
+# tree that is already present has both compilers report their version before
+# it is used. That is cheap, and is not the compile-and-run proof made before
+# publishing; it only catches a tree that has broken since. A tree that fails
+# is reported and left exactly as it is.
+#
+# Usage: cc_version <compiler>. Prints the first line of `<compiler>
+# --version`; if that fails or is empty, says so instead and fails.
+cc_version() {
+  local out
+  if out="$("$1" --version 2>/dev/null)" && out="${out%%$'\n'*}" && [[ -n "$out" ]]; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  echo "bootstrap-toolchain: $1 does not run; the C toolchain for lock $lock_digest is left as it is, remove $tree to rebuild it" >&2
+  return 1
+}
+
+# The two compilers themselves, not their shims. A gcc driver needs only libc,
+# which the image has, so these run without the shims' LD_LIBRARY_PATH.
+compilers=("$sysroot/usr/bin/$gnu_triple-gcc-14" "$sysroot/usr/bin/$cross_gnu_triple-gcc-14")
+
 if [[ "${1:-}" == "--env-only" ]]; then
   # Fail rather than print a PATH to a compiler that is not there: a branch
   # whose lock differs from the one last bootstrapped has no tree yet, and
@@ -210,6 +233,11 @@ if [[ "${1:-}" == "--env-only" ]]; then
     echo "  run ci/bootstrap-toolchain.sh without --env-only to build it" >&2
     exit 1
   fi
+  # Nor to one that is there but no longer runs: the compilers first, so the
+  # message names a missing one, then the shims the env names.
+  for compiler in "${compilers[@]}" "$shim_dir/cc" "$shim_dir/$cross_gnu_triple-cc"; do
+    cc_version "$compiler" >/dev/null || exit 1
+  done
   # The same for Rust. The C tree is published before rustup is installed, so
   # a bootstrap killed between the two leaves a tree and no cargo, and the env
   # would then put a PATH with no cargo on it.
@@ -245,15 +273,23 @@ mkdir -p "$prefix/c-toolchain" "$cache_dir"
 # and a Rust toolchain while holding this, which takes minutes, and a second
 # run that blocked on it in silence would read as a hang. The uncontended case
 # takes the lock without a word; only a run that is about to wait says so.
+#
+# flock exits 1 only when the lock is held, so any other status is flock itself
+# failing and is reported as that, not as a wait. A wait of 0 is not announced.
 lock_file="$prefix/.bootstrap.lock"
 exec 9>"$lock_file"
-if ! flock -n 9; then
+flock_rc=0
+flock -n 9 || flock_rc=$?
+if (( flock_rc == 1 && 10#$lock_wait > 0 )); then
   log "waiting up to ${lock_wait}s for another bootstrap to release $lock_file"
-  if ! flock -w "$lock_wait" 9; then
-    log "gave up after ${lock_wait}s waiting for $lock_file"
-    exit 1
-  fi
+  flock_rc=0
+  flock -w "$lock_wait" 9 || flock_rc=$?
 fi
+case "$flock_rc" in
+  0) ;;
+  1) log "gave up after ${lock_wait}s waiting for $lock_file"; exit 1 ;;
+  *) log "flock failed on $lock_file (exit $flock_rc)"; exit 1 ;;
+esac
 
 # Write one shim with a rename, never in place: bash reads a script as it runs
 # it, so a concurrent `cc` must see either the old file or the new one and
@@ -415,6 +451,12 @@ SHIM
 
 if [[ -d "$tree" ]]; then
   log "toolchain already present for lock $lock_digest"
+  # The compilers only: the shims may still name where a moved prefix used to
+  # be. Checked before the shims are rewritten, so a damaged tree is left as it
+  # was found.
+  for compiler in "${compilers[@]}"; do
+    cc_version "$compiler" >/dev/null || exit 1
+  done
   # Regenerated on every run, each file by rename, so a prefix that has been
   # moved or copied gets shims that point at where it now is.
   write_shims "$shim_dir" "$sysroot"
@@ -572,8 +614,10 @@ if [[ -f "$repo_root/rust-toolchain.toml" ]]; then
 fi
 
 # Both compilers are reported so the log says which pair this lock produced.
-# This line is a report, not a check: a command substitution that fails inside
-# an argument does not trip `set -e`. The checks are the one at the top of
-# write_shims and the one before the tree is published.
-log "ready — $(cd "$repo_root" && rustc --version 2>&1), $("$shim_dir/cc" --version | head -1), cross $("$shim_dir/$cross_gnu_triple-cc" --version | head -1)"
+# Their versions are taken first and checked: a command substitution that
+# fails inside an argument does not trip `set -e`, so inline they could log as
+# empty.
+host_cc_version="$(cc_version "$shim_dir/cc")" || exit 1
+cross_cc_version="$(cc_version "$shim_dir/$cross_gnu_triple-cc")" || exit 1
+log "ready — $(cd "$repo_root" && rustc --version 2>&1), $host_cc_version, cross $cross_cc_version"
 print_env
