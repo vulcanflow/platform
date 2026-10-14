@@ -106,8 +106,12 @@ straight to the recipes. On one that has neither — the agent runners are the
 case this exists for — bootstrap first:
 
 ```
-eval "$(just bootstrap)"   # or: eval "$(ci/bootstrap-toolchain.sh)"
+vf_env="$(just bootstrap)" && eval "$vf_env" || false
 ```
+
+`ci/bootstrap-toolchain.sh` works in place of `just bootstrap`. Keep the
+variable: the shorter `eval "$(just bootstrap)"` hides a failed bootstrap, as
+explained below.
 
 That is needed because nothing in this workspace compiles without a C
 toolchain: `serde_derive` and `thiserror-impl` are proc macros, so `cargo
@@ -166,6 +170,19 @@ The `justfile` clears `BASH_ENV` for its own recipes too, and `just audit`
 clears an empty `GIT_CONFIG_COUNT`, so `just` works either way; the `eval` is
 what fixes the plain `bash -c` and `cargo test` cases. If a runner reports "no
 rustc here", check this before concluding the toolchain is missing.
+
+Do not `eval` the output unless the bootstrap succeeded. A bootstrap that fails
+— a lock wait that times out, no `cargo`, an unsafe prefix — exits non-zero and
+prints nothing on stdout, and so does a failed `--env-only`. `eval "$(…)"`
+throws that status away: the line takes the status of the `eval`, and `eval ""`
+succeeds. The caller then carries on with `PATH` unchanged, and the next step
+either fails on `cargo: command not found` or, worse, finds a system `cargo` and
+builds with a toolchain the bootstrap did not pin. Capturing stdout first and
+joining with `&&` keeps the status. The trailing `|| false` is for `set -e`
+scripts, which do not stop on a failure to the left of `&&`, only on the command
+after the last `||`. Do not declare the variable with `local` or `export` on the
+same line either: `local vf_env="$(…)"` returns the status of `local`, which is
+0.
 
 ```
 just            # list recipes
