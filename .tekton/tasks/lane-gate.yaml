@@ -23,8 +23,9 @@
 #     checkout;
 #   - partition and erosion fail when the base branch was not fetched. GitHub's
 #     jobs and pipelines/lane-gate.yaml always fetch it, so this never fires
-#     there. It stops `fetch-base: "false"` from passing erosion, because
-#     ci/lane-gate.sh counts the tests at a missing base ref as zero.
+#     there. ci/lane-gate.sh fails on a missing base ref too (erosion reports
+#     "no merge-base"), so this changes no verdict. It fails first, before the
+#     script runs, with a message that says to set fetch-base to "true".
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -89,8 +90,8 @@ spec:
       description: >-
         The base branch tip that was fetched, or empty when the base was not
         fetched. test-erosion counts tests at the merge-base of this tip and
-        the checked-out revision, not at this tip, so the comparison no longer
-        depends on which base tip a run saw.
+        the checked-out revision, not at this tip, so two runs agree even when
+        the base tip moved ahead between them.
 
   workspaces:
     - name: source

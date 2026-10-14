@@ -15,8 +15,8 @@
 # Task can fetch a stale merge commit (VFL-696):
 #   - its base parent is an older tip of the base branch. PR #30 got one after
 #     a reopen, and test-erosion failed falsely because it counted the tests
-#     at the newer tip it fetched. VFL-696 makes ci/lane-gate.sh count at the
-#     merge base instead; until it lands, the same false red happens here;
+#     at the newer tip it fetched. VFL-696 landed: ci/lane-gate.sh now counts
+#     at the merge base, which removes that false red;
 #   - its head parent is the previous head, when the Task starts before GitHub
 #     has recomputed the ref after a push, or when the pull request conflicts
 #     with its base and GitHub keeps no current merge.
