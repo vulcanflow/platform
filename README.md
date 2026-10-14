@@ -270,13 +270,15 @@ the SHA names a commit and not a tag object, and records the old and new SHA on
 the task; no automated updater such as Dependabot or Renovate is used.
 
 The check reads lines, not YAML, and accepts one form, on one line:
-`[- ]uses: <owner>/<repo>[/<path>]@<40 hex>`, optionally followed by ` # <tag>`,
-with no quote on the line and no `,`, `[`, `]`, `{` or `}` in the value. Any
-other line under `.github/workflows/` whose bytes hold `uses` is refused unless
-it is a comment without a quote, so a step name or shell line that says "uses"
-must be reworded. A line ending in a backslash and a `\x`, `\u` or `\U` escape
-are refused anywhere: they are the only ways YAML can spell a key whose bytes
-do not stand on one line.
+`[- ]uses: <owner>/<repo>[/<path>]@<40 lowercase hex>[ # <tag>]`, with exactly
+one space after the `-` and after `uses:`, no quote on the line, no `,`, `[`,
+`]`, `{` or `}` in the value, and the next line that is not blank or a comment
+indented no deeper than `uses`, as YAML reads a deeper one as more of the value.
+Any other line under `.github/workflows/` whose bytes hold `uses` is refused
+unless it is a comment without a quote, so a step name or shell line that says
+"uses" must be reworded. A line ending in a backslash and a `\x`, `\u` or `\U`
+escape are refused anywhere: they are the only ways YAML can spell a key whose
+bytes do not stand on one line.
 
 ## Deferred
 

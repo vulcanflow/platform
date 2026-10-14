@@ -259,7 +259,9 @@ cmd_inline_tests() {
 #      a quoted scalar opened on an earlier line can carry a real key after the
 #      quote, behind what reads as a pin or a comment. The value holds no
 #      , [ ] { or }, which in a flow collection would end it early, leaving
-#      GitHub a prefix of what was checked.
+#      GitHub a prefix of what was checked. The next line that is not blank or
+#      a comment sits no deeper than the uses key: a deeper one continues the
+#      value, so GitHub would load `<pin> <that line>`.
 #   2. No line ends in a backslash, which inside double quotes joins the next
 #      line with nothing between.
 #   3. No \x, \u or \U, the only escapes that can spell a letter.
@@ -305,7 +307,7 @@ split_hit() {
 cmd_pins() {
   # Bytes, not characters, for git grep and for bash's own matching alike.
   local -x LC_ALL=C
-  local top listed path shown oid nul n=0 bad=() line ref
+  local top listed path shown oid nul n=0 bad=() line ref file key lead
   # Read from the tree at HEAD_REF, as inline-tests does, so the verdict is the
   # commit's and not the working copy's, and from the repository root, so the
   # pathspec does not shrink to nothing when run from a subdirectory.
@@ -334,8 +336,28 @@ cmd_pins() {
       n=$((n + 1)); ref="${BASH_REMATCH[2]}"
       [[ $ref =~ $PIN_RE ]] || bad+=("$LOC: $ref")
     else
-      bad+=("$LOC: <uses outside the form [- ]uses: <pin>>")
+      bad+=("$LOC: <uses outside the one form this check accepts>")
     fi
+  done <<< "$WF_OUT"
+
+  # Rule 1's next-line clause, over every line, in the same order and with the
+  # same CR stripped. On a line matching CANON_RE the first uses is the key, so
+  # key is its column. A leading tab counts as one column; YAML indents with
+  # spaces only, so that can only over-refuse.
+  wf_grep "$top" -n -e ''
+  file=; key=-1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    split_hit "$line"
+    TEXT="${TEXT%$'\r'}"
+    [ "${LOC%:*}" = "$file" ] || { file="${LOC%:*}"; key=-1; }
+    if [ "$key" -ge 0 ] && [[ $TEXT == *[![:space:]]* && ! $TEXT =~ $COMMENT_RE ]]; then
+      lead="${TEXT%%[![:space:]]*}"
+      [ "${#lead}" -le "$key" ] ||
+        bad+=("$LOC: <a line indented deeper than the uses key above it>")
+      key=-1
+    fi
+    if [[ $TEXT =~ $CANON_RE ]]; then lead="${TEXT%%uses*}"; key=${#lead}; fi
   done <<< "$WF_OUT"
 
   # git grep skips a symlink and a submodule, so neither may stand on the way to
@@ -385,14 +407,16 @@ cmd_pins() {
   A tag or branch is mutable, so re-pointing it upstream silently changes what CI
   executes. The check reads lines, not YAML, and accepts one form, on one line:
       [- ]uses: <owner>/<repo>[/<path>]@<40 lowercase hex>[ # <tag>]
-  with no quote on the line and no , [ ] { or } in the value. Resolve the SHA as
-  README.md '## Pins' describes. Any other line holding the bytes uses is
-  refused unless it is a comment without a quote; reword a step name or shell
-  line that says uses. Refused anywhere: a line ending in a backslash, a \\x, \\u
-  or \\U escape, a line break other than LF or CRLF, a file that is not text, a
-  symlink or submodule, and a path holding a colon. A local ./ action or a
-  docker:// image has no commit SHA and is refused too; admitting one is a
-  change to this gate, on its own pull request."
+  with exactly one space after the - and after uses:, no quote on the line, no
+  , [ ] { or } in the value, and the next line that is not blank or a comment
+  indented no deeper than uses, as YAML reads a deeper one as more of the value.
+  Resolve the SHA as README.md '## Pins' describes. Any other line holding the
+  bytes uses is refused unless it is a comment without a quote; reword a step
+  name or shell line that says uses. Refused anywhere: a line ending in a
+  backslash, a \\x, \\u or \\U escape, a line break other than LF or CRLF, a file
+  that is not text, a symlink or submodule, and a path holding a colon. A local
+  ./ action or a docker:// image has no commit SHA and is refused too; admitting
+  one is a change to this gate, on its own pull request."
   fi
 
   if [ "$n" -eq 0 ]; then
