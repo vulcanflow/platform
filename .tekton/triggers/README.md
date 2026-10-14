@@ -37,7 +37,7 @@ result to GitHub yet either (VFL-778).
 
 - A revision at or after the VFL-974 commit. VFL-974 adds the control that
   cancels a pull request's unfinished runs when a newer push supersedes them.
-  Without it, every push to a pull request starts six more pods and none stop
+  Without it, every push to a pull request starts seven more pods and none stop
   early (`../README.md`, "Not here yet"). Do not apply `triggers/` from a
   revision without it.
 - Tekton Pipelines serving `tekton.dev/v1` and Tekton Triggers serving
