@@ -87,8 +87,8 @@ reaches GitHub through one shared identity.
 
 Deleted paths and the old path of a rename are classified too, so deleting a
 GATE or TEST file, or renaming one away, counts the same as changing it. A path
-is classified by its real name even when it holds a non-ASCII byte, a quote, a
-tab or a newline.
+lands in the right lane even when it holds a non-ASCII byte, a quote, a tab or
+a newline.
 
 The gate also refuses `#[cfg(test)]` inside production source, and refuses
 diffs that ignore, delete or thin out existing tests. `just lane-gate` runs all
