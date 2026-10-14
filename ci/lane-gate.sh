@@ -33,6 +33,7 @@ classify_path() {
   case "$1" in
     # --- GATE: the enforcement mechanism itself ---
     ci/lane-gate.sh|ci/lane-gate-test.sh|.github/workflows/lane-gate.yml) echo GATE ;;
+    .tekton/tasks/lane-gate.yaml|.tekton/tasks/lane-gate-selftest.yaml|.tekton/pipelines/lane-gate.yaml|.tekton/kustomization.yaml|.tekton/kustomization.yml|.tekton/Kustomization) echo GATE ;;
 
     # --- TEST: owned by the test authors (Scribe, Ledger) ---
     tests/*|crates/*/tests/*|fuzz/*|conformance/*) echo TEST ;;
@@ -47,8 +48,20 @@ classify_path() {
   esac
 }
 
+# One path per line. A deleted path is listed, and a rename is listed under both
+# its old and its new path, so deleting a GATE or TEST file, or renaming one away
+# to a NEUTRAL name, is classified the same as changing it. -M turns rename
+# detection on whatever diff.renames is set to locally; a copy keeps its source,
+# so only the new path is listed.
 changed_files() {
-  git diff --name-only --diff-filter=ACMRT "$BASE_REF...$HEAD_REF"
+  git diff --name-status -M --diff-filter=ACDMRT "$BASE_REF...$HEAD_REF" \
+    | while IFS=$'\t' read -r status path dest; do
+        case "$status" in
+          R*) printf '%s\n%s\n' "$path" "$dest" ;;
+          C*) printf '%s\n' "$dest" ;;
+          *)  printf '%s\n' "$path" ;;
+        esac
+      done
 }
 
 # ---------------------------------------------------------------------------
@@ -95,11 +108,21 @@ cmd_partition() {
   fi
 
   if [ ${#gate[@]} -gt 0 ] && { [ ${#prod[@]} -gt 0 ] || [ ${#test[@]} -gt 0 ]; }; then
+    printf '\n  gate files in this diff:\n' >&2
+    printf '    %s\n' "${gate[@]}" >&2
+    if [ ${#prod[@]} -gt 0 ]; then
+      printf '\n  production source in this diff:\n' >&2
+      printf '    %s\n' "${prod[@]}" >&2
+    fi
+    if [ ${#test[@]} -gt 0 ]; then
+      printf '\n  test files in this diff:\n' >&2
+      printf '    %s\n' "${test[@]}" >&2
+    fi
     fail "This pull request changes the lane gate itself and also changes source or tests.
 
-  A change to ci/lane-gate.sh or .github/workflows/lane-gate.yml goes on its own pull
-  request, so that weakening the gate is never bundled with the change it would let
-  through. See ADR-0005."
+  A change to ci/lane-gate.sh, .github/workflows/lane-gate.yml or the Tekton lane gate
+  under .tekton/ goes on its own pull request, so that weakening the gate is never
+  bundled with the change it would let through. See ADR-0005."
   fi
 
   pass "partition: no lane crossing"

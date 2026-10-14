@@ -1,0 +1,48 @@
+# Manual PipelineRun for rust-check, and the one place where the leg's
+# architecture is decided. Created, not applied, like pipelineruns/lane-gate.yaml;
+# see .tekton/README.md, "Run by hand".
+#
+# `taskRunSpecs[].podTemplate.nodeSelector` pins the leg to a node of its
+# architecture. `kubernetes.io/arch` is a well-known label the kubelet sets on
+# every node, so nothing is labelled by hand. Every zolab node is arm64, so the
+# selector holds today; it is written out so that the leg keeps running on arm64
+# if a node of another architecture joins. See .tekton/README.md,
+# "Architectures".
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: vf-rust-check-
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  pipelineRef:
+    name: vf-rust-check
+  params:
+    - name: revision
+      value: "@REVISION@"
+  workspaces:
+    - name: source
+      emptyDir: {}
+    # Optional CARGO_TARGET_DIR carrier. Without it every run is a cold build.
+    # - name: cache-arm64
+    #   persistentVolumeClaim:
+    #     claimName: vf-ci-cargo-cache-arm64
+  taskRunTemplate:
+    podTemplate:
+      # No Kubernetes API access and no credential, as in lane-gate.yaml.
+      automountServiceAccountToken: false
+  # Tekton merges the leg's pod template over the one above, so the leg keeps
+  # automountServiceAccountToken: false.
+  taskRunSpecs:
+    - pipelineTaskName: check-arm64
+      podTemplate:
+        nodeSelector:
+          kubernetes.io/arch: arm64
+  # A cold run installs the nightly and compiles the workspace three times over
+  # (clippy, the unit tests, the fuzz crate). On GitHub, with a warm cache, a
+  # leg takes about 80 seconds. These bounds are generous, not targets; the
+  # measured runtime is recorded on VFL-125.
+  timeouts:
+    pipeline: 1h30m
+    tasks: 1h20m

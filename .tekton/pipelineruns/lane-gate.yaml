@@ -1,0 +1,35 @@
+# Manual PipelineRun for the lane gate, used for the VFL-125 acceptance runs.
+# Not part of the kustomization: it uses `generateName`, so it is created, not
+# applied, and the same file can be submitted any number of times. The
+# revision under test replaces the @REVISION@ placeholder on the way in; see
+# .tekton/README.md, "Run by hand", for the one-line command.
+#
+# For a pull request, @REVISION@ is the merge commit GitHub's run checked out
+# (refs/pull/N/merge at that time), and base-branch stays `main`.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: vf-lane-gate-
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  pipelineRef:
+    name: vf-lane-gate
+  params:
+    - name: revision
+      value: "@REVISION@"
+    - name: base-branch
+      value: main
+  workspaces:
+    - name: source
+      emptyDir: {}
+  taskRunTemplate:
+    podTemplate:
+      # The checks need no Kubernetes API access and hold no credential: the
+      # repository is public and the pods mount no Secret.
+      automountServiceAccountToken: false
+  # On GitHub each of the four jobs takes under 10 seconds. This bound is
+  # generous, not a target; the measured runtime is recorded on VFL-125.
+  timeouts:
+    pipeline: 20m
