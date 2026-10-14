@@ -67,15 +67,16 @@ result to GitHub yet either (VFL-778).
   pods to the Kubernetes API server. From step 1 on, every same-repository
   pull request update starts both pipelines, and their pods run the pull
   request's code. Without the Pipelines the runs fail at once; without the
-  policy their pods reach any host. Check all three. The last command must
-  print `{"tekton.dev/pipeline":"vf-ci-supersede"}`; empty output means the
-  policy is from a commit before VFL-974:
+  policy their pods reach any host. Check all three. The last command prints
+  one line per rule of the policy, and one of them must be
+  `vf-ci-supersede kube-apiserver`; without it, the policy is from a commit
+  before VFL-974:
 
   ```sh
   kubectl -n vf-ci get pipelines.tekton.dev vf-lane-gate vf-rust-check
   kubectl -n vf-ci get ciliumnetworkpolicies.cilium.io vf-ci-check-egress
   kubectl -n vf-ci get ciliumnetworkpolicies.cilium.io vf-ci-check-egress \
-    -o jsonpath='{.specs[2].endpointSelector.matchLabels}{"\n"}'
+    -o jsonpath='{range .specs[*]}{.endpointSelector.matchLabels.tekton\.dev/pipeline}{" "}{.egress[*].toEntities[*]}{"\n"}{end}'
   ```
 
   On a cluster without namespace `vf-ci`, create it first
@@ -282,20 +283,43 @@ is the head commit the push replaced. Trigger `pull-request-supersede` starts
 one `vf-ci-supersede` run for it, next to the two checks for the new head. That
 run sets `spec.status: CancelledRunFinally` on every unfinished run whose
 `vulcanflow.io/github-pr` is the pull request and whose
-`vulcanflow.io/github-head-sha` is `before`. Tekton then stops the checks
-still running and starts none of the others. A run that has finished keeps its
-result. `opened` and `reopened` deliveries cancel nothing.
+`vulcanflow.io/github-head-sha` is `before`, except the runs its own delivery
+started. Tekton then stops the checks still running and starts none of the
+others. A run that has finished keeps its result. `opened` and `reopened`
+deliveries cancel nothing.
 
 The key is the delivery's `before`, not which run is newer. A delivery
-redelivered from Recent Deliveries still carries its own `before`, so it
-cancels only a head that a later push already replaced, never the current
-head. Like any redelivery, it also starts the two checks for its own head
-again; nothing cancels those, and they finish on their own.
+redelivered from Recent Deliveries still carries its own `before`, so it names
+only the head that it replaced. Like any redelivery, it also starts the two
+checks for its own head again; nothing cancels those, and they finish on their
+own.
 
-Not covered: a `synchronize` delivery that never reaches the listener cancels
-nothing. The runs for the head it replaced then finish on their own, because
-the next push cancels only the head that push replaces. One lost delivery
-leaves one head's runs running.
+That head can be the current one again, when the branch is pushed back to it.
+So the run first takes the time the listener first saw its delivery, from the
+oldest run that carries the delivery's id; a redelivery keeps the id. If a run
+for `before` from another delivery was created at or after that time (to the
+second), the run cancels nothing and logs those runs.
+
+Not covered, and in each case the runs are left to finish on their own:
+
+- A `synchronize` delivery that never reaches the listener cancels nothing,
+  because the next push cancels only the head that push replaces. One lost
+  delivery leaves one head's runs running.
+- GitHub does not promise the order of deliveries. When an older delivery
+  reaches the listener after a newer one, or its runs are created after the
+  newer delivery's `vf-ci-supersede` run has looked, that run either does not
+  see them or takes them for a return to `before`. Telling the two
+  apart needs GitHub's own order, which the run cannot ask for: it may reach
+  only the Kubernetes API server.
+- Two pushes in the same second: the check counts a run from the same second
+  as newer, so it cancels nothing.
+
+What the check needs, and when it cancels the current head after all: the
+redelivered delivery's first runs must still exist. If they were deleted, or
+its first attempt never reached the listener, its redelivery after the branch
+returned to `before` cancels the current head's runs; push again to start new
+ones. A replayed delivery with a new X-GitHub-Delivery (the id is not signed,
+`trigger-template.yaml`) is not caught either, as without the check.
 
 Of the run pods in `vf-ci`, only the `vf-ci-supersede` pod holds a token with
 a grant: the `vf-ci-supersede` token. Its Role allows get, list and patch on
@@ -357,7 +381,10 @@ kubectl -n vf-ci get pods -l "vulcanflow.io/github-delivery=$delivery_id" \
 Every check pod must show `false` and `1`. The `vf-ci-supersede` pod of a
 `synchronize` delivery shows `true` and no ndots: it mounts the
 `vf-ci-supersede` token, and it looks up no name. Across the namespace, no
-other pod may show `true`:
+other pod may show `true`. This finds the pods that turn the token on
+themselves. A pod that leaves the field unset shows `<none>` and still mounts
+its account's token, as the `vf-ci-noop` pods mount `default`'s, which has no
+grant:
 
 ```sh
 kubectl -n vf-ci get pods \
@@ -390,8 +417,10 @@ its STATUS ends as `Cancelled`, or `Failed` if one of its checks had already
 failed. A run that had finished shows no SPEC and keeps its STATUS. An
 `opened` or `reopened` delivery starts the two checks and no
 `vf-ci-supersede` run. Redelivering an older `synchronize` from Recent
-Deliveries cancels only that delivery's `before`: the runs for the current
-head keep running.
+Deliveries cancels only that delivery's `before`, and nothing when the branch
+has since been pushed back to `before`; its log then lists the runs for
+`before` that came after the delivery. Either way the runs for the current
+head keep running, within the limits under Superseded runs.
 
 An unsigned POST is refused by the github interceptor and creates no run. The
 response carries the listener's `eventID`; the check is that no run carries

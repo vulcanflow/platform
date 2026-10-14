@@ -54,8 +54,10 @@ roleRef:
 # a pull request's checks for a head that a newer push replaced (VFL-974). Its
 # Role allows get, list and patch on PipelineRuns in vf-ci, and nothing else:
 # no create, update, delete or watch, no other resource, no other namespace.
-# The step lists the runs to cancel and patches each one; kubectl patch reads
-# the run first, and the step reads it again when a patch fails.
+# The step lists the pull request's runs (list) and patches each one it
+# cancels (patch). kubectl patch reads the run before it sends the patch
+# (kubectl 1.36.4, seen against a test API server), and the step reads a run
+# again when its patch fails (get).
 #
 # What patch can change. Tekton's admission webhook refuses every change to
 # the spec of an unfinished PipelineRun except spec.status, and every change
@@ -66,7 +68,7 @@ roleRef:
 # pipelineruns/status subresource, which the Role does not name. The webhook
 # does not check metadata, so the grant could also change a run's labels and
 # annotations. The step sends only the spec.status patch, and checks the form
-# of its two inputs before it puts them in the label selector.
+# of its three inputs before it uses them.
 #
 # Who gets the token. The ServiceAccount turns automount off, and only the pod
 # template in supersede-template.yaml turns it back on. Anyone who can make a

@@ -17,8 +17,7 @@
 # A `synchronize` delivery, a push to the pull request's branch, also matches
 # pull-request-supersede. Each trigger acts on the delivery on its own, so the
 # delivery starts the two checks for the new head and one vf-ci-supersede run,
-# which
-# cancels the unfinished checks for the head the push replaced
+# which cancels the unfinished checks for the head the push replaced
 # (supersede-pipeline.yaml). `opened` and `reopened` cancel nothing.
 #
 # The Secret is not in this directory. The owner creates it in the cluster, or

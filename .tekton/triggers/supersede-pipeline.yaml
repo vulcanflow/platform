@@ -3,15 +3,35 @@
 # pull-request-supersede trigger (event-listener.yaml), next to the two check
 # runs that the same delivery starts for the new head.
 #
-# It cancels every unfinished run in vf-ci that carries both labels
+# It cancels the unfinished runs in vf-ci that carry both labels
 #
 #   vulcanflow.io/github-pr=<pr-number>,vulcanflow.io/github-head-sha=<before>
 #
 # where `before` is the head commit the push replaced, as the delivery states
 # it. pull-request-template.yaml puts both labels on every check run. The key is
-# the delivery's `before`, not which run is newer: a delivery redelivered from
-# GitHub's Recent Deliveries still carries its own `before`, so it can only
-# cancel a head that a push already replaced, never the current one.
+# the delivery's `before`, not which run is newer, so a delivery redelivered
+# from GitHub's Recent Deliveries names only the head that it replaced.
+#
+# That head can be the current one again. Push a branch from A to B and then
+# back to A: A is the head, and a redelivery of the A-to-B delivery, or its own
+# pod starting late, still names A. So the step first takes the time the
+# listener first saw this delivery: the creation time of the oldest run that
+# carries its id. A redelivery keeps the id (X-GitHub-Delivery), so that is
+# the first arrival, not the redelivery. If a run for `before` from another
+# delivery was created at or after that time, `before` may be the head again,
+# and the step cancels nothing. Creation times are in whole seconds, so a run
+# from the same second counts. This check can only make the step cancel less.
+#
+# What the check cannot tell apart: a delivery that reaches the listener after
+# a newer one (GitHub does not promise the order) looks like a return to its
+# head, so that head's runs finish on their own, as after a lost delivery. The
+# check needs the delivery's first runs: if they were deleted, or its first
+# attempt never reached the listener, its redelivery after a return to
+# `before` cancels the current head's runs. The delivery id is not signed
+# (trigger-template.yaml), so a replay under a new id is not caught either; it
+# cancels the runs for its `before`, as it would without the check.
+#
+# The step never cancels a run that its own delivery started.
 #
 # The cancel sets spec.status to CancelledRunFinally. vf-lane-gate and
 # vf-rust-check have no `finally` tasks, so this is the same as Cancelled:
@@ -22,15 +42,18 @@
 # A run that has finished is left alone, as is one whose cancel or stop is
 # already under way. A run that finishes or is deleted between the list and the
 # patch is not an error, and no run to cancel is not one either. The step
-# fails only when an input is malformed, when an unfinished run could not be
-# cancelled, or when the API server cannot be asked. The pod runs nothing from
-# the revision under test. It has no workspace and no checkout. The pod
-# template in supersede-template.yaml gives it the vf-ci-supersede token
-# (rbac.yaml).
+# fails only when an input is malformed, when no run carries the delivery's
+# id, when an unfinished run could not be cancelled, or when the API server
+# cannot be asked. Then it has cancelled nothing, or only some of the runs.
+#
+# The pod runs nothing from the revision under test. It has no workspace and
+# no checkout. The pod template in supersede-template.yaml gives it the
+# vf-ci-supersede token (rbac.yaml).
 #
 # As in noop-pipeline.yaml, webhook fields reach the step through env, never by
-# $(params.*) substitution inside the script. They go into a label selector, so
-# the script checks their form before it uses them.
+# $(params.*) substitution inside the script. The pull request number goes into
+# a label selector, so the script checks the form of all three before it uses
+# them.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -51,6 +74,11 @@ spec:
       description: >-
         The head commit the push replaced: the `before` of the `synchronize`
         delivery, a full 40-character commit id.
+    - name: delivery-id
+      type: string
+      description: >-
+        The delivery's X-GitHub-Delivery, as on the runs' label
+        vulcanflow.io/github-delivery.
   steps:
     - name: cancel
       # kubectl 1.36.4 on Alpine 3.24.1, multi-arch index (amd64 and arm64
@@ -67,6 +95,8 @@ spec:
           value: $(params.pr-number)
         - name: BEFORE
           value: $(params.before)
+        - name: DELIVERY_ID
+          value: $(params.delivery-id)
         # kubectl writes its cache under $HOME. The root filesystem is
         # read-only. /tekton/home is the emptyDir Tekton mounts in every step.
         - name: HOME
@@ -90,8 +120,9 @@ spec:
       script: |
         #!/bin/sh
         set -eu
+        # At most 10 digits, so the selector's value stays a label value.
         case "$PR_NUMBER" in
-          '' | 0* | *[!0-9]*)
+          '' | 0* | *[!0-9]* | ???????????*)
             echo "vf-ci-supersede: pr-number '$PR_NUMBER' is not a pull request number" >&2
             exit 1 ;;
         esac
@@ -104,20 +135,56 @@ spec:
           echo "vf-ci-supersede: before '$BEFORE' is not a commit id" >&2
           exit 1
         fi
+        case "$DELIVERY_ID" in
+          '' | *[!0-9A-Za-z._-]*)
+            echo "vf-ci-supersede: delivery-id '$DELIVERY_ID' is not a delivery id" >&2
+            exit 1 ;;
+        esac
+        if [ "${#DELIVERY_ID}" -gt 63 ]; then
+          echo "vf-ci-supersede: delivery-id '$DELIVERY_ID' is not a delivery id" >&2
+          exit 1
+        fi
 
-        # One line per run: name, spec.status and the status of its
-        # Succeeded condition, separated by ':'. A field that is not set
-        # prints empty, so the separator cannot be a space.
+        # One line per run of the pull request: name, delivery, creation
+        # time, head, spec.status and the status of its Succeeded condition,
+        # separated by '|'. A field that is not set prints empty, and the time
+        # holds ':', so the separator is neither a space nor ':'.
         runs=$(kubectl -n vf-ci get pipelineruns.tekton.dev \
-          -l "vulcanflow.io/github-pr=$PR_NUMBER,vulcanflow.io/github-head-sha=$BEFORE" \
-          -o jsonpath='{range .items[*]}{.metadata.name}{":"}{.spec.status}{":"}{.status.conditions[?(@.type=="Succeeded")].status}{"\n"}{end}')
-        if [ -z "$runs" ]; then
+          -l "vulcanflow.io/github-pr=$PR_NUMBER" \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.labels.vulcanflow\.io/github-delivery}{"|"}{.metadata.creationTimestamp}{"|"}{.metadata.labels.vulcanflow\.io/github-head-sha}{"|"}{.spec.status}{"|"}{.status.conditions[?(@.type=="Succeeded")].status}{"\n"}{end}')
+
+        # When the listener first saw this delivery: its oldest run. This run
+        # carries the delivery's id, so there is one. The times are RFC 3339
+        # in UTC, which sort as text. `x ""` makes awk compare text, not
+        # numbers, here and below.
+        first_seen=$(printf '%s\n' "$runs" | awk -F'|' -v d="$DELIVERY_ID" '
+          $2 "" == d && (t == "" || $3 "" < t) { t = $3 "" }
+          END { print t }')
+        if [ -z "$first_seen" ]; then
+          echo "vf-ci-supersede: no run of pull request $PR_NUMBER carries delivery $DELIVERY_ID" >&2
+          exit 1
+        fi
+
+        # A run for `before` that another delivery started at or after that
+        # time means the branch may be back at `before`: cancel nothing.
+        again=$(printf '%s\n' "$runs" | awk -F'|' -v d="$DELIVERY_ID" -v b="$BEFORE" -v t="$first_seen" '
+          $4 "" == b && $2 "" != d && $3 "" >= t { print $1 }')
+        if [ -n "$again" ]; then
+          echo "vf-ci-supersede: runs for $BEFORE arrived with or after this delivery, so it may be the head again; nothing cancelled:"
+          printf '%s\n' "$again"
+          exit 0
+        fi
+
+        # The runs for `before`, but none that this delivery started.
+        todo=$(printf '%s\n' "$runs" | awk -F'|' -v d="$DELIVERY_ID" -v b="$BEFORE" '
+          $4 "" == b && $2 "" != d { print $1 "|" $5 "|" $6 }')
+        if [ -z "$todo" ]; then
           echo "vf-ci-supersede: pull request $PR_NUMBER has no run at $BEFORE; nothing to cancel"
           exit 0
         fi
 
         failed=0
-        while IFS=: read -r name spec_status succeeded; do
+        while IFS='|' read -r name spec_status succeeded; do
           case "$succeeded" in
             True | False)
               echo "$name: already finished"
@@ -144,7 +211,7 @@ spec:
               failed=1 ;;
           esac
         done <<EOF
-        $runs
+        $todo
         EOF
         exit "$failed"
 ---
@@ -161,6 +228,8 @@ spec:
       type: string
     - name: before
       type: string
+    - name: delivery-id
+      type: string
   tasks:
     - name: cancel-superseded
       taskRef:
@@ -170,3 +239,5 @@ spec:
           value: $(params.pr-number)
         - name: before
           value: $(params.before)
+        - name: delivery-id
+          value: $(params.delivery-id)

@@ -6,7 +6,8 @@
 #
 # Labels as in pull-request-template.yaml, except vulcanflow.io/github-head-sha:
 # the run is not a check of any commit, so nothing takes it for a verdict, and
-# it never matches its own selector.
+# it never matches its own selector. Its vulcanflow.io/github-delivery label
+# also tells the step when the delivery first arrived.
 #
 # Its pod mounts the vf-ci-supersede token (rbac.yaml), the only token with a
 # grant that a run pod in vf-ci holds. The check pods mount no token. The
@@ -47,6 +48,8 @@ spec:
             value: $(tt.params.pr-number)
           - name: before
             value: $(tt.params.before)
+          - name: delivery-id
+            value: $(tt.params.delivery-id)
         taskRunTemplate:
           serviceAccountName: vf-ci-supersede
           podTemplate:
