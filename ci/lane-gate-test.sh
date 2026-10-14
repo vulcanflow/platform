@@ -22,6 +22,9 @@ pass_count=0; fail_count=0
 setup() {
   rm -rf "$W/r"; mkdir -p "$W/r"; cd "$W/r" || exit 1
   git init -q -b main .
+  # Pinned so cases 46-47 (non-ASCII filenames) see the C-quoting bug/fix
+  # regardless of the runner's global gitconfig.
+  git config core.quotePath true
   mkdir -p ci crates/vf-core/src crates/vf-core/tests fuzz
   cp "$GATE" ci/lane-gate.sh; chmod +x ci/lane-gate.sh
   printf 'pub fn add(a:i32,b:i32)->i32{a+b}\n' > crates/vf-core/src/lib.rs
@@ -64,9 +67,16 @@ check_contains() {
     fail_count=$((fail_count+1))
     return
   fi
+  if [ "$#" -eq 0 ]; then
+    printf 'NOT OK %-45s %s: check_contains called with no substrings to verify\n' "$name" "$sub"
+    fail_count=$((fail_count+1))
+    return
+  fi
   local missing=() s
   for s in "$@"; do
-    printf '%s' "$out" | grep -qF "$s" || missing+=("$s")
+    if [ -z "$s" ] || ! grep -qF -- "$s" <<<"$out"; then
+      missing+=("$s")
+    fi
   done
   if [ ${#missing[@]} -eq 0 ]; then
     printf 'ok    %-46s %s=%s (output verified)\n' "$name" "$sub" "$got"
@@ -492,6 +502,75 @@ commit tekton-lane-gate-task-plus-test-names-paths
 check_contains "GATE + TEST refusal names the GATE and TEST paths" partition fail \
   'gate files in this diff:' '.tekton/tasks/lane-gate.yaml' \
   'test files in this diff:' 'crates/vf-core/tests/more.rs'
+
+# --- 46. a TEST file with a non-ASCII name, bundled with production source:
+#     refused (VFL-836 / VFL-819 LOW-1/LOW-2: with core.quotePath=true, git
+#     name-status C-quotes café.rs to "caf\303\251.rs"; its leading '"' made
+#     classify_path call it NEUTRAL, so this used to pass) -----------------
+setup
+printf '#[test]\nfn cafe(){assert!(true);}\n' > "crates/vf-core/tests/café.rs"
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit test-non-ascii-name-plus-prod
+check_contains "TEST file with a non-ASCII name (café.rs) + prod" partition fail \
+  'test files: 1'
+
+# --- 47. a PROD file with a non-ASCII name, bundled with a test edit:
+#     refused (same quoting bug on the PROD side) --------------------------
+setup
+printf 'pub fn mul(a:i32,b:i32)->i32{a*b}\n' > "crates/vf-core/src/café.rs"
+printf '#[test]\nfn adds(){assert_eq!(vf_core::add(1,2),3);}\n#[test]\nfn more(){assert!(true);}\n' > crates/vf-core/tests/add.rs
+commit prod-non-ascii-name-plus-test
+check_contains "PROD file with a non-ASCII name (café.rs) + test edit" partition fail \
+  'production files: 1'
+
+# --- 48. a TEST file whose name has a quote, bundled with production source:
+#     refused (core.quotePath=false alone would not help here: a '"', '\',
+#     tab or newline is quoted unconditionally, so this name is NEUTRAL on
+#     the parent gate regardless of that setting) --------------------------
+setup
+f='crates/vf-core/tests/has"quote.rs'
+printf '#[test]\nfn t(){assert!(true);}\n' > "$f"
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit test-quote-name-plus-prod
+check "TEST file with a quote in its name + prod" partition fail
+
+# --- 49. a PROD file under a directory whose name holds a newline, bundled
+#     with a test edit: refused (a split on that newline would read
+#     crates/a and b/src/lib.rs, both NEUTRAL, and hide the PROD file) -----
+setup
+nl=$'\n'
+mkdir -p "crates/a${nl}b/src"
+printf 'pub fn x()->i32{42}\n' > "crates/a${nl}b/src/lib.rs"
+printf '#[test]\nfn adds(){assert_eq!(vf_core::add(1,2),3);}\n#[test]\nfn more(){assert!(true);}\n' > crates/vf-core/tests/add.rs
+commit prod-newline-dir-plus-test
+check "PROD file under a newline-named directory + test edit" partition fail
+
+# --- 50. a rename from TEST to PROD: refused (VFL-819 LOW-3; the R record
+#     yields both the old TEST path and the new PROD path) ----------------
+setup
+git mv crates/vf-core/tests/more.rs crates/vf-core/src/more.rs
+commit rename-test-to-prod
+check "rename TEST file to a PROD path (tests/more.rs -> src/more.rs)" partition fail
+
+# --- 51. a TEST file deleted alone: allowed (TEST-side control for case 43,
+#     which is the GATE-side deletion-alone control) -----------------------
+setup
+rm crates/vf-core/tests/more.rs
+commit delete-test-file-alone
+check "delete TEST file alone (crates/vf-core/tests/more.rs)" partition pass
+
+# --- 52. two GATE files bundled with production source: refused, and the
+#     refusal names every GATE path, not just one (VFL-843 review LOW: no
+#     existing case had more than one GATE path in the diff) --------------
+setup
+mkdir -p .tekton/tasks
+printf 'kind: Task\n' > .tekton/tasks/lane-gate.yaml
+printf 'kind: Kustomization\n' > .tekton/kustomization.yaml
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit two-gate-files-plus-prod
+check_contains "two GATE files (.tekton/tasks/lane-gate.yaml, .tekton/kustomization.yaml) + prod" partition fail \
+  'gate files in this diff:' '.tekton/tasks/lane-gate.yaml' '.tekton/kustomization.yaml' \
+  'production source in this diff:' 'crates/vf-core/src/lib.rs'
 
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
