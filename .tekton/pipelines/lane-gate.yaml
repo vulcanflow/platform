@@ -7,9 +7,9 @@
 # VFL-126 reports to the PR commit.
 #
 # The PipelineTask names are the GitHub job names character for character:
-# lane-partition, test-erosion, inline-test-modules, uses-pins, gate-self-test.
-# These five names are the status contexts. All but uses-pins are required
-# contexts on `main`, so renaming one here renames a required check; uses-pins
+# lane-partition, test-erosion, inline-test-modules, action-pins, gate-self-test.
+# These five names are the status contexts. All but action-pins are required
+# contexts on `main`, so renaming one here renames a required check; action-pins
 # becomes required when VFL-126 rebinds the required contexts.
 apiVersion: tekton.dev/v1
 kind: Pipeline
@@ -118,7 +118,7 @@ spec:
           workspace: source
 
     # actions/checkout at its default depth, no base fetch.
-    - name: uses-pins
+    - name: action-pins
       taskRef:
         name: vf-lane-gate
       params:

@@ -14,7 +14,7 @@ stay in place until Tekton reports the same contexts.
 | `lane-partition` | `lane-gate.yml` | `lane-partition` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh partition` |
 | `test-erosion` | `lane-gate.yml` | `test-erosion` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh erosion` |
 | `inline-test-modules` | `lane-gate.yml` | `inline-test-modules` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh inline-tests` |
-| `uses-pins` | `lane-gate.yml` | `uses-pins` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh pins` |
+| `action-pins` | `lane-gate.yml` | `action-pins` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh pins` |
 | `gate-self-test` | `lane-gate.yml` | `gate-self-test` in `vf-lane-gate` | `vf-lane-gate-selftest` | `ci/lane-gate-test.sh ci/lane-gate.sh` |
 | `check (arm64)` | `rust-check.yml` | `check-arm64` in `vf-rust-check` | `vf-rust-check` | `just check`, `just test-unit`, `just fuzz-check` |
 | `check (amd64)` | `rust-check.yml` | `check-amd64` in `vf-rust-check` | `vf-rust-check` (`execution: cross-qemu`) | the same |
