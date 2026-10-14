@@ -270,7 +270,7 @@ kubectl -n vf-ci delete --ignore-not-found ciliumnetworkpolicies.cilium.io/vf-ci
 - Cancelling a pull request's runs when a newer push supersedes them. That
   control is VFL-974, and `triggers/` is applied only at or after its commit.
 - Pruning of finished runs, and a LimitRange or ResourceQuota on `vf-ci`. Each
-  pull request update starts six pods: the four `vf-lane-gate` checks, which
+  pull request update starts seven pods: the five `vf-lane-gate` checks, which
   run for up to 20m, and `check-amd64` and `check-arm64`, which request 2 CPU
   and 4Gi each and run for up to 1h30m. A run's timeouts count from its
   creation, not from when its pods are scheduled, so after a burst of pushes

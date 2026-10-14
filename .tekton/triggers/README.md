@@ -279,7 +279,7 @@ kubectl -n vf-ci logs deploy/el-vf-platform --tail=-1 --since=1h |
 ```
 
 A pull request delivery starts two runs, `vf-lane-gate-...` and
-`vf-rust-check-...`, with six checks between them. Each check's checkout
+`vf-rust-check-...`, with seven checks between them. Each check's checkout
 step logs the commit it tested as `HEAD <sha> <subject>`. GitHub's merge
 commits are titled `Merge <head> into <base>`, so `<head>` there must be the
 run's `HEAD-SHA`:
