@@ -1,23 +1,24 @@
 # vf-rust-check — the Tekton equivalent of .github/workflows/rust-check.yml.
 #
 # The workflow is one job run from a two-entry matrix, which GitHub reports as
-# `check (amd64)` and `check (arm64)`. This Pipeline has the arm64 leg only, as
-# PipelineTask `check-arm64` with display name `check (arm64)` (a Tekton task
-# name cannot hold parentheses or spaces).
+# `check (amd64)` and `check (arm64)`. This Pipeline has both legs, as
+# PipelineTasks `check-amd64` and `check-arm64` with those display names (a
+# Tekton task name cannot hold parentheses or spaces). Neither has a `runAfter`
+# on the other, so one architecture failing does not hide the other's result,
+# as with the workflow's `fail-fast: false`.
 #
-# The amd64 leg is not here yet. Every zolab node is arm64, so it cannot run
-# natively; Cortana decided on 2026-10-13 (VFL-125) to cross-build it on an
-# arm64 node with the unit tests under user-mode QEMU, as a follow-up (VFL-716).
-# Until then GitHub's rust-check.yml keeps running both legs. When it lands it
-# is a second PipelineTask with no `runAfter` on this one, so one architecture
-# failing does not hide the other's result, as with the workflow's
-# `fail-fast: false`.
+# Every zolab node is arm64, so `check (amd64)` cannot run natively. Cortana
+# decided on 2026-10-13 (VFL-125) to cross-build it on an arm64 node and run its
+# unit tests under user-mode QEMU (VFL-716). That is `execution: cross-qemu`;
+# tasks/rust-check.yaml explains it and lists what still differs from a native
+# amd64 runner.
 #
-# Where the leg runs is not decided here. A Pipeline cannot carry a pod
+# Where each leg runs is not decided here. A Pipeline cannot carry a pod
 # template, so the `kubernetes.io/arch` nodeSelector is set in the PipelineRun
-# (`taskRunSpecs`); see pipelineruns/rust-check.yaml. The Task asserts
-# `uname -m` against its `arch` parameter, so a run scheduled onto the wrong
-# architecture fails instead of reporting a false green.
+# (`taskRunSpecs`); see pipelineruns/rust-check.yaml. Both legs select arm64.
+# The Task asserts `uname -m` against `arch` and `execution`, so a run
+# scheduled onto the wrong architecture fails instead of reporting a false
+# green.
 #
 # Not one of the four required contexts on `main`, as the workflow is not; a red
 # result still blocks the merge under the same rule.
@@ -30,9 +31,10 @@ metadata:
     app.kubernetes.io/part-of: vf-ci
 spec:
   description: >-
-    `just check`, `just test-unit` and `just fuzz-check` on arm64. Same pinned
-    toolchain, same commands and same pass/fail rules as the arm64 leg of
-    .github/workflows/rust-check.yml.
+    `just check`, `just test-unit` and `just fuzz-check` for amd64 and arm64.
+    Same pinned toolchain, same commands and same pass/fail rules as the two
+    legs of .github/workflows/rust-check.yml; the amd64 leg is cross-built on
+    arm64 with its unit tests under qemu-x86_64.
 
   params:
     - name: repo-url
@@ -53,6 +55,11 @@ spec:
         Bind an emptyDir; each TaskRun gets its own checkout. Not a PVC: one
         PVC shared by several TaskRuns makes Tekton's affinity assistant put
         them all on one node.
+    - name: cache-amd64
+      description: >-
+        Optional. CARGO_TARGET_DIR for the amd64 leg (a PVC). Named per
+        architecture because object files are not portable between them.
+      optional: true
     - name: cache-arm64
       description: >-
         Optional. CARGO_TARGET_DIR for the arm64 leg (a PVC). Named per
@@ -60,6 +67,27 @@ spec:
       optional: true
 
   tasks:
+    - name: check-amd64
+      displayName: check (amd64)
+      taskRef:
+        name: vf-rust-check
+      params:
+        - name: repo-url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+        - name: arch
+          value: amd64
+        - name: execution
+          value: cross-qemu
+        - name: image
+          value: $(params.image)
+      workspaces:
+        - name: source
+          workspace: source
+        - name: cache
+          workspace: cache-amd64
+
     - name: check-arm64
       displayName: check (arm64)
       taskRef:
@@ -71,6 +99,8 @@ spec:
           value: $(params.revision)
         - name: arch
           value: arm64
+        - name: execution
+          value: native
         - name: image
           value: $(params.image)
       workspaces:

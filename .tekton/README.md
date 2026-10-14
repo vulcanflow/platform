@@ -1,12 +1,12 @@
-# CI pipelines on Tekton (VFL-125)
+# CI pipelines on Tekton (VFL-125, VFL-716)
 
 Tekton Tasks and Pipelines that reproduce, step for step, the GitHub Actions
-lane gate and the arm64 leg of rust-check. The amd64 leg follows (see
-"Architectures"). They run in namespace `vf-ci` next to the webhook listener
-from `triggers/` (VFL-124). For now they are started by hand. Starting them
-from the webhook and reporting their result to the pull request is later work
-(see "Not here yet"). The GitHub Actions workflows stay in place until Tekton
-reports the same contexts.
+lane gate and both legs of rust-check. The amd64 leg is cross-built on an
+arm64 node (see "Architectures"). They run in namespace `vf-ci` next to the
+webhook listener from `triggers/` (VFL-124). For now they are started by
+hand. Starting them from the webhook and reporting their result to the pull
+request is later work (see "Not here yet"). The GitHub Actions workflows stay
+in place until Tekton reports the same contexts.
 
 | GitHub job (status context) | Workflow | PipelineTask | Task | Command |
 |---|---|---|---|---|
@@ -15,7 +15,7 @@ reports the same contexts.
 | `inline-test-modules` | `lane-gate.yml` | `inline-test-modules` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh inline-tests` |
 | `gate-self-test` | `lane-gate.yml` | `gate-self-test` in `vf-lane-gate` | `vf-lane-gate-selftest` | `ci/lane-gate-test.sh ci/lane-gate.sh` |
 | `check (arm64)` | `rust-check.yml` | `check-arm64` in `vf-rust-check` | `vf-rust-check` | `just check`, `just test-unit`, `just fuzz-check` |
-| `check (amd64)` | `rust-check.yml` | not on Tekton yet (VFL-716) | | the same |
+| `check (amd64)` | `rust-check.yml` | `check-amd64` in `vf-rust-check` | `vf-rust-check` (`execution: cross-qemu`) | the same |
 
 The pass/fail logic is in the scripts and `just` recipes, which both executors
 call with the same command line. Each Task header lists its deliberate
@@ -46,8 +46,20 @@ kubectl get nodes -L kubernetes.io/arch
 
 `check (amd64)` cannot run natively here. Cortana decided on 2026-10-13
 (VFL-125) to cross-build it on an arm64 node and run its unit tests under
-user-mode QEMU in an unprivileged pod. That is follow-up VFL-716. Until it
-lands, GitHub's `rust-check.yml` keeps running both legs.
+user-mode QEMU in an unprivileged pod (VFL-716). Its `taskRunSpecs` entry
+therefore also selects arm64, and the Pipeline passes `execution: cross-qemu`.
+In that mode the Task requires an arm64 pod and `arch: amd64`. It unpacks a
+pinned x86_64 cross gcc and g++ and `qemu-x86_64-static` from Debian bookworm
+under /tmp. It sets `CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu`, and cargo
+runs every unit-test binary through qemu. Nothing is installed on the node,
+the pod is not privileged, and no binfmt_misc handler is registered. The
+header of `tasks/rust-check.yaml` lists what this still does not reproduce
+from a native amd64 runner. If an amd64 node joins later, the leg can run
+natively instead: `execution: native` in the Pipeline and
+`kubernetes.io/arch: amd64` in its `taskRunSpecs` entry.
+
+GitHub's `rust-check.yml` keeps running both legs until the workflows are
+retired (VFL-127).
 
 ## Prerequisites
 
@@ -57,9 +69,12 @@ lands, GitHub's `rust-check.yml` keeps running both legs.
   2026-10-09.
 - Egress from the pods to `github.com`, `objects.githubusercontent.com`,
   `release-assets.githubusercontent.com`, `static.rust-lang.org`,
-  `index.crates.io` and `static.crates.io`. Release downloads from
-  `github.com` redirect to `release-assets.githubusercontent.com`
-  (2026-10-13). The node pulls the images from Docker Hub, not the pod.
+  `index.crates.io`, `static.crates.io` and `deb.debian.org`. Release
+  downloads from `github.com` redirect to
+  `release-assets.githubusercontent.com` (2026-10-13). Only `check (amd64)`
+  uses `deb.debian.org`, for its cross packages; it serves them without a
+  redirect (2026-10-14). The node pulls the images from Docker Hub, not the
+  pod.
 - Before the webhook starts these pipelines, a default-deny egress policy on
   their pods. The pods run code from the revision under test (build scripts,
   proc macros, tests). They hold no credential and mount no token, but without
@@ -67,7 +82,7 @@ lands, GitHub's `rust-check.yml` keeps running both legs.
   `CiliumNetworkPolicy` `vf-ci-check-egress` in `vf-ci`. It selects the pods
   whose `tekton.dev/pipeline` label is `vf-lane-gate` or `vf-rust-check`, and
   allows egress only:
-  - to the six hosts above, by `toFQDNs` `matchName`;
+  - to the seven hosts above, by `toFQDNs` `matchName`;
   - to cluster DNS, the `k8s-app: kube-dns` pods in `kube-system` on port 53
     UDP and TCP, with a DNS rule (`rules.dns`, `matchPattern: "*"`).
 
@@ -139,6 +154,17 @@ inputs change over time, so compare runs started close together:
   If `just` publishes a new release, update the pin and digests in
   `tasks/rust-check.yaml`.
 
+Two more apply to `check (amd64)` only:
+
+- **Emulation.** Its build scripts run on arm64 and its unit tests run under
+  qemu. A failure on this leg alone that GitHub's amd64 leg does not show can
+  come from that. The header of `tasks/rust-check.yaml` lists what to look for.
+- **The Debian pool.** The cross packages are fetched by version from
+  `deb.debian.org`. When Debian replaces one of them in bookworm, the old file
+  leaves the pool and the leg fails at its download with a 404, before any
+  check runs. That is a missing check, not a verdict. Regenerate the list as
+  that header describes.
+
 ## Clean up
 
 The manual runs stay until deleted. Deleting a PipelineRun deletes its
@@ -159,7 +185,6 @@ kubectl -n vf-ci delete pipeline vf-lane-gate vf-rust-check; kubectl -n vf-ci de
 
 ## Not here yet
 
-- `check (amd64)`: VFL-716, see "Architectures".
 - Starting these pipelines from the webhook. `triggers/trigger-template.yaml`
   still starts `vf-ci-noop`. Before it starts a pipeline that checks out
   pull-request code, a policy for pull requests from forks is needed. The
