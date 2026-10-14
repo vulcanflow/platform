@@ -1610,5 +1610,15 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11
 commit add-workflow-comment-quote-mentions-uses
 check "comment line holding a quote and the word uses, unrelated to any key" pins fail
 
+# --- 163. pins: a double-quoted key with its first letter escaped as
+#     u ('u'), rule 3: refused (lowercase-u analog of case 150's
+#     \x75; dropped from the original batch by a transmission fault that
+#     stripped its escape, restored here) --------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - "\\u0075ses": evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-rule3-u0075-escaped-key
+check "double-quoted key with its first letter escaped as \\u0075 ('u')" pins fail
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
