@@ -67,7 +67,10 @@ retired (VFL-127).
 
 ## Prerequisites
 
-- `triggers/` applied, so namespace `vf-ci` exists.
+- Namespace `vf-ci`, from a `triggers/` revision before VFL-777 or from
+  `kubectl create namespace vf-ci`. The `triggers/` of this revision comes
+  last, after step 2: it starts these pipelines for every pull request update
+  (`triggers/README.md`, "Prerequisites").
 - `kubectl` with rights to create Tasks, Pipelines and PipelineRuns in `vf-ci`.
 - Tekton Pipelines with the `tekton.dev/v1` API. The cluster had v1.15.1 on
   2026-10-09.
@@ -202,10 +205,11 @@ Two more apply to `check (amd64)` only:
 ## Clean up
 
 The manual runs stay until deleted. Deleting a PipelineRun deletes its
-TaskRuns and pods:
+TaskRuns and pods. The selector skips the runs the webhook started, which
+carry the EventListener's label and may still be running for a pull request:
 
 ```sh
-kubectl -n vf-ci delete pipelinerun -l tekton.dev/pipeline=vf-lane-gate; kubectl -n vf-ci delete pipelinerun -l tekton.dev/pipeline=vf-rust-check
+kubectl -n vf-ci delete pipelinerun -l 'tekton.dev/pipeline in (vf-lane-gate,vf-rust-check),!triggers.tekton.dev/eventlistener'
 ```
 
 ## Roll back
@@ -229,6 +233,11 @@ kubectl -n vf-ci delete --ignore-not-found ciliumnetworkpolicies.cilium.io/vf-ci
 - Runs for pull requests from forks. The webhook starts these pipelines only
   for pull requests whose head branch is in this repository
   (`triggers/event-listener.yaml`); a fork's pull request starts nothing.
-- Pruning of finished runs, and a LimitRange or ResourceQuota on `vf-ci`.
+- Pruning of finished runs, cancelling a pull request's runs when a newer
+  push supersedes them, and a LimitRange or ResourceQuota on `vf-ci`. Each
+  pull request update starts five pods, `check-arm64` among them at 2 CPU and
+  4Gi, for up to 1h30m. A run's timeouts count from its creation, not from
+  when its pods are scheduled, so after a burst of pushes a check can time out
+  while its pod is still `Pending`. That red is not the code's.
 - Reporting each check to the PR commit as a status with the same context
   name, and switching the required contexts on `main` (VFL-126).

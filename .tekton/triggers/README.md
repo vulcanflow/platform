@@ -293,6 +293,17 @@ A different `<head>` means the check fetched a stale merge ref
 request from a fork starts no run: its delivery's id matches no
 PipelineRun.
 
+The pods must not mount the `vf-ci` `default` token. `check-arm64` has its
+own pod template in `pull-request-template.yaml`, which Tekton merges with
+the run's; this shows that the merge kept the token off:
+
+```sh
+kubectl -n vf-ci get pods -l "vulcanflow.io/github-delivery=$delivery_id" \
+  -o custom-columns='POD:.metadata.name,TOKEN:.spec.automountServiceAccountToken'
+```
+
+Every pod must show `false`.
+
 An unsigned POST is refused by the github interceptor and creates no run. The
 response carries the listener's `eventID`; the check is that no run carries
 it:
