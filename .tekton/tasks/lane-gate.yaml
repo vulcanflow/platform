@@ -1,11 +1,12 @@
-# vf-lane-gate — the Tekton equivalent of three of the four jobs in
+# vf-lane-gate — the Tekton equivalent of four of the five jobs in
 # .github/workflows/lane-gate.yml (`lane-partition`, `test-erosion`,
-# `inline-test-modules`). The fourth, `gate-self-test`, is a separate Task
-# because it runs a different script; see tasks/lane-gate-selftest.yaml.
+# `inline-test-modules`, `uses-pins`). The fifth, `gate-self-test`, is a
+# separate Task because it runs a different script; see
+# tasks/lane-gate-selftest.yaml.
 #
-# The three jobs in the workflow differ only in the argument handed to
+# The four jobs in the workflow differ only in the argument handed to
 # ci/lane-gate.sh and in how deep they check out, so they are one Task with
-# `subcommand`, `fetch-depth` and `fetch-base` parameters and three
+# `subcommand`, `fetch-depth` and `fetch-base` parameters and four
 # PipelineTasks. The verdict logic lives entirely in ci/lane-gate.sh, which is
 # invoked with exactly the workflow's command line. No argument is added, so the
 # script's own default (origin/${GITHUB_BASE_REF}...HEAD) decides pass or fail,
@@ -34,9 +35,10 @@ metadata:
     app.kubernetes.io/part-of: vf-ci
 spec:
   description: >-
-    Runs one subcommand of ci/lane-gate.sh (partition, erosion or inline-tests)
-    against a revision of vulcanflow/platform. Equivalent to the lane-partition,
-    test-erosion and inline-test-modules jobs of .github/workflows/lane-gate.yml.
+    Runs one subcommand of ci/lane-gate.sh (partition, erosion, inline-tests or
+    pins) against a revision of vulcanflow/platform. Equivalent to the
+    lane-partition, test-erosion, inline-test-modules and uses-pins jobs of
+    .github/workflows/lane-gate.yml.
 
   params:
     - name: repo-url
@@ -58,20 +60,20 @@ spec:
       default: main
     - name: subcommand
       type: string
-      description: partition | erosion | inline-tests
+      description: partition | erosion | inline-tests | pins
     - name: fetch-depth
       type: string
       description: >-
         actions/checkout's fetch-depth: "0" for full history (partition and
         erosion need the merge base), "1" for the default shallow checkout
-        (inline-test-modules).
+        (inline-test-modules and uses-pins).
       default: "0"
     - name: fetch-base
       type: string
       description: >-
         "true" runs the workflow's "Fetch base branch" step. The
-        inline-test-modules job has no such step, so it passes "false".
-        partition and erosion fail without the base branch.
+        inline-test-modules and uses-pins jobs have no such step, so they pass
+        "false". partition and erosion fail without the base branch.
       default: "true"
     - name: image
       type: string
@@ -203,7 +205,7 @@ spec:
               exit 1
             fi
             ;;
-          inline-tests) ;;
+          inline-tests|pins) ;;
           *) echo "unknown subcommand '$SUBCOMMAND'" >&2; exit 2 ;;
         esac
         ci/lane-gate.sh "$SUBCOMMAND"

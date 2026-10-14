@@ -5,9 +5,9 @@ name: lane-gate
 # Every agent in this organisation reaches GitHub through one shared identity, so
 # CODEOWNERS cannot tell a test author from a coding agent and "two required approving
 # reviews" is unsatisfiable. The lanes are therefore enforced by partitioning the diff
-# on paths rather than on people. These four checks are the gate.
+# on paths rather than on people. These five checks are the gate.
 #
-# Job names are the status-check names. Wire all four as required checks on main.
+# Job names are the status-check names. Wire all five as required checks on main.
 
 on:
   pull_request:
@@ -48,6 +48,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Production source may not contain #[cfg(test)] modules
         run: ci/lane-gate.sh inline-tests
+
+  uses-pins:
+    name: uses-pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Every action reference names a full commit SHA
+        run: ci/lane-gate.sh pins
 
   gate-self-test:
     name: gate-self-test
