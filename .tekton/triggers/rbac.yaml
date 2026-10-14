@@ -1,0 +1,49 @@
+# Identity of the EventListener pod. It gets exactly the two ClusterRoles that
+# Tekton Triggers ships for this purpose and nothing else:
+#
+#   tekton-triggers-eventlistener-roles         namespaced: read the Triggers
+#                                               objects in vf-ci, create the
+#                                               PipelineRuns the templates name
+#   tekton-triggers-eventlistener-clusterroles  cluster-wide read-only:
+#                                               ClusterInterceptors and
+#                                               ClusterTriggerBindings
+#
+# The first is bound with a RoleBinding, so it only takes effect in vf-ci.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vf-ci-triggers
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vf-ci-triggers-eventlistener
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+subjects:
+  - kind: ServiceAccount
+    name: vf-ci-triggers
+    namespace: vf-ci
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tekton-triggers-eventlistener-roles
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vf-ci-triggers-eventlistener
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+subjects:
+  - kind: ServiceAccount
+    name: vf-ci-triggers
+    namespace: vf-ci
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tekton-triggers-eventlistener-clusterroles

@@ -47,11 +47,31 @@
 # cannot pull a compiler out from under a run that is still building against
 # the old lock. Trees for superseded locks are left in place; remove one by
 # hand once nothing is using it.
+#
+# Because a published tree is trusted from then on, a tree is only published
+# once its compilers have been seen to work against the staged sysroot: the
+# host `cc` must compile, link and run a small C program, `ld` must start,
+# and the cross `cc` must compile and link the same program for the other
+# architecture. If any of that fails, nothing is published.
+#
+# Bootstraps on one prefix are serialised by a lock file. A bootstrap that has
+# to wait for it says so on stderr, and gives up after VF_TOOLCHAIN_LOCK_WAIT
+# seconds (default 1800) rather than blocking without a word for as long as the
+# other one takes.
 
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prefix="${VF_TOOLCHAIN_DIR:-$(cd "$repo_root/.." && pwd)/.vf-toolchain}"
+
+# The shims embed this path inside double quotes, so a character that is
+# special there would change what a shim runs, not just where it looks. Such a
+# prefix is refused rather than escaped, which keeps the shims plain to read.
+case "$prefix" in
+  *[\"\$\`\\]* | *$'\n'*)
+    echo "bootstrap-toolchain: the toolchain prefix may not contain \", \$, \`, \\ or a newline: $prefix" >&2
+    exit 1 ;;
+esac
 
 cache_dir="$prefix/cache"
 cargo_home="$prefix/cargo"
@@ -64,15 +84,29 @@ RUSTUP_VERSION="1.29.1"
 # `loader` is spelled out per architecture rather than derived from `uname -m`:
 # the two differ in both directory and suffix (/lib vs /lib64, .so.1 vs .so.2),
 # so there is no substitution that produces both.
+#
+# Each case also names the *other* architecture, because the sysroot carries two
+# compilers. §A5 has exactly two first-class Linux targets, so `just check-cross`
+# means "the one that is not this machine" and the cross_ variables below are
+# simply the host ones with the two architectures swapped.
 case "$(uname -m)" in
   aarch64)
     deb_arch=arm64; gnu_triple=aarch64-linux-gnu; rust_host=aarch64-unknown-linux-gnu
-    loader=/lib/ld-linux-aarch64.so.1 ;;
+    loader=/lib/ld-linux-aarch64.so.1
+    cross_gnu_triple=x86_64-linux-gnu; cross_rust_target=x86_64-unknown-linux-gnu
+    cross_loader=/lib64/ld-linux-x86-64.so.2 ;;
   x86_64)
     deb_arch=amd64; gnu_triple=x86_64-linux-gnu;  rust_host=x86_64-unknown-linux-gnu
-    loader=/lib64/ld-linux-x86-64.so.2 ;;
+    loader=/lib64/ld-linux-x86-64.so.2
+    cross_gnu_triple=aarch64-linux-gnu; cross_rust_target=aarch64-unknown-linux-gnu
+    cross_loader=/lib/ld-linux-aarch64.so.1 ;;
   *) echo "bootstrap-toolchain: unsupported machine $(uname -m)" >&2; exit 1 ;;
 esac
+
+# The env-var spelling cargo and the cc crate use for a per-target override:
+# the Rust target triple uppercased with dashes turned into underscores.
+cross_env_suffix="${cross_rust_target//-/_}"
+cross_env_suffix_upper="$(echo "$cross_env_suffix" | tr '[:lower:]' '[:upper:]')"
 
 # rustup-init is pinned by version *and* digest. The unversioned
 # /rustup/dist/ URL always serves the newest release, so it cannot be pinned;
@@ -106,6 +140,20 @@ print_env() {
   # CC as well as PATH: `cc` on PATH is enough for rustc's default linker, but
   # the cc crate resolves $CC first and some build scripts read it directly.
   printf 'export CC=%q\n' "$shim_dir/cc"
+  # The cross compiler has to be named explicitly, and `CC` being set is exactly
+  # why. The cc crate resolves a target compiler as CC_<target>, then TARGET_CC,
+  # then CC — so with only the host `CC` exported it silently uses the *host*
+  # gcc to compile ring's C for the other architecture, and reports
+  # `unrecognized command-line option '-m64'` (VFL-151). Naming CC_<target>
+  # takes the first branch instead. AR_<target> is set for symmetry with it, and
+  # so that a non-GNU archiver (llvm-ar, thin archives under LTO) can never pick
+  # up the host one; GNU `ar` itself reads any ELF, so today this is insurance
+  # rather than a necessity. The linker variable is cargo's own, not the cc
+  # crate's, and spelled in its uppercase form.
+  printf 'export CC_%s=%q\n' "$cross_env_suffix" "$shim_dir/$cross_gnu_triple-cc"
+  printf 'export AR_%s=%q\n' "$cross_env_suffix" "$shim_dir/$cross_gnu_triple-ar"
+  printf 'export CARGO_TARGET_%s_LINKER=%q\n' \
+    "$cross_env_suffix_upper" "$shim_dir/$cross_gnu_triple-cc"
   printf 'export PATH=%q:%q:"$PATH"\n' "$shim_dir" "$cargo_home/bin"
   # Exporting PATH is not enough on an agent runner. The harness sets BASH_ENV
   # to a generated .bashrc, so *every* non-interactive bash sources it on
@@ -162,8 +210,27 @@ if [[ "${1:-}" == "--env-only" ]]; then
     echo "  run ci/bootstrap-toolchain.sh without --env-only to build it" >&2
     exit 1
   fi
+  # The same for Rust. The C tree is published before rustup is installed, so
+  # a bootstrap killed between the two leaves a tree and no cargo, and the env
+  # would then put a PATH with no cargo on it.
+  if [[ ! -x "$cargo_home/bin/cargo" ]]; then
+    echo "bootstrap-toolchain: no cargo at $cargo_home/bin/cargo" >&2
+    echo "  run ci/bootstrap-toolchain.sh without --env-only to install it" >&2
+    exit 1
+  fi
   print_env
   exit 0
+fi
+
+log() { echo "bootstrap-toolchain: $*" >&2; }
+
+# At most nine digits: `flock -w` cannot arm a timer much past 2^63 ns and
+# fails at once if asked to, which would then be reported as a wait that timed
+# out. Nine digits is over thirty years, so no real value is turned away.
+lock_wait="${VF_TOOLCHAIN_LOCK_WAIT:-1800}"
+if [[ ! "$lock_wait" =~ ^[0-9]{1,9}$ ]]; then
+  echo "bootstrap-toolchain: VF_TOOLCHAIN_LOCK_WAIT must be a whole number of seconds, at most 9 digits, not '$lock_wait'" >&2
+  exit 1
 fi
 
 mkdir -p "$prefix/c-toolchain" "$cache_dir"
@@ -173,10 +240,20 @@ mkdir -p "$prefix/c-toolchain" "$cache_dir"
 # extract at once; the second one finds the published tree and no-ops. This
 # lock only orders bootstraps against each other — a run that is compiling
 # holds nothing — which is why a published tree must never change.
-exec 9>"$prefix/.bootstrap.lock"
-flock 9
-
-log() { echo "bootstrap-toolchain: $*" >&2; }
+#
+# The wait is bounded and announced. A first bootstrap downloads the whole lock
+# and a Rust toolchain while holding this, which takes minutes, and a second
+# run that blocked on it in silence would read as a hang. The uncontended case
+# takes the lock without a word; only a run that is about to wait says so.
+lock_file="$prefix/.bootstrap.lock"
+exec 9>"$lock_file"
+if ! flock -n 9; then
+  log "waiting up to ${lock_wait}s for another bootstrap to release $lock_file"
+  if ! flock -w "$lock_wait" 9; then
+    log "gave up after ${lock_wait}s waiting for $lock_file"
+    exit 1
+  fi
+fi
 
 # Write one shim with a rename, never in place: bash reads a script as it runs
 # it, so a concurrent `cc` must see either the old file or the new one and
@@ -208,13 +285,34 @@ link_shim() {
 # the shared glibc are the image's copies, and the lock pins libc6 to the
 # image's version precisely so that is the same glibc.
 #
-# Usage: write_shims <dir> <root>. The shims always name the published
-# $sysroot, even when they are written into the staging directory before it is
-# published; <root> is the tree to look in for which binutils exist, which is
-# the staging one in that case.
+# Usage: write_shims <dir> <root> [<sysroot>]. <root> is the tree to look in
+# for which programs exist; <sysroot> is the path the shims name, and defaults
+# to <root>. The two differ for the shims that get published: those are written
+# into the staging directory but name the published $sysroot, because that is
+# where they will run.
 write_shims() {
-  local dir="$1" root="$2" alias tool real
+  local dir="$1" root="$2" sysroot="${3:-$2}" alias tool real
+
+  # The two cross programs print_env names are checked before anything is
+  # written, because only the lock puts them here. Without the check, a lock
+  # that lost the cross set would still bootstrap cleanly and the fault would
+  # surface much later as the opaque `-m64` error inside `cargo check
+  # --target`. Checking first means a lock that fails it leaves <dir> exactly
+  # as it was.
+  for tool in gcc-14 ar; do
+    [[ -x "$root/usr/bin/$cross_gnu_triple-$tool" ]] && continue
+    echo "bootstrap-toolchain: no $cross_gnu_triple-$tool in the sysroot for lock $lock_digest" >&2
+    echo "  the lock is missing the cross set; regenerate it with ci/toolchain/resolve-debs.py --arch $deb_arch" >&2
+    exit 1
+  done
+
   mkdir -p "$dir"
+
+  # A run killed between creating a <name>.tmp.<pid> and renaming it leaves
+  # that file behind. Every writer of <dir> holds the bootstrap lock, so any
+  # such file found here now belongs to a run that is gone. No tool name
+  # contains `.tmp.`, so the pattern cannot match a real shim.
+  rm -f -- "$dir"/*.tmp.*
 
   write_shim "$dir/cc" <<SHIM
 #!/usr/bin/env bash
@@ -257,6 +355,62 @@ exec "$real" "\$@"
 SHIM
     link_shim "$tool" "$dir/$gnu_triple-$tool"
   done
+
+  # The cross compiler: the same shim idea pointed at the other architecture's
+  # gcc. It is always triple-prefixed and never plain `cc`, because `cc` is the
+  # host compiler and a build script that finds the wrong one there is the bug
+  # this is fixing (VFL-151).
+  #
+  # It needs strictly less than the host shim, and the difference is worth
+  # stating so nobody "restores" flags later:
+  #
+  #   * No -B. Debian's cross gcc keeps its private cc1, crtbegin.o and libgcc.a
+  #     under /usr/lib{,exec}/gcc-cross/<triple>/14 and its `ld`/`as` under
+  #     /usr/<triple>/bin, and it finds all of them by relocating from argv[0].
+  #     The host shim needs -B only because the *unprefixed* names it wants are
+  #     ambiguous with a system toolchain; these names are not.
+  #
+  #   * --sysroot is still required, for the same reason as the host: the
+  #     target's libc.so is a linker script naming absolute /usr/<triple>/lib
+  #     paths, and without --sysroot ld resolves them against the real root and
+  #     finds nothing. The target libraries are under $sysroot/usr/<triple>,
+  #     which is where this gcc looks once the sysroot is right, so the native
+  #     and cross library sets coexist in one tree without colliding.
+  #
+  # LD_LIBRARY_PATH names the *host* triple, not the cross one: these are gcc's
+  # own dependencies (libmpfr, libisl, libmpc), and the cross compiler is a host
+  # binary like any other.
+  #
+  # --dynamic-linker is asserted rather than relied on. It already comes out as
+  # the target's own unprefixed loader here, but that is a property of gcc's
+  # spec file, and a sysroot-relative default would silently produce binaries
+  # that depend on this prefix. The path is the *target's* loader: a
+  # cross-built binary never runs on this machine, so there is no local loader
+  # for it to agree with.
+  write_shim "$dir/$cross_gnu_triple-cc" <<SHIM
+#!/usr/bin/env bash
+# Generated by ci/bootstrap-toolchain.sh — do not edit.
+export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple:$sysroot/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "$sysroot/usr/bin/$cross_gnu_triple-gcc-14" \\
+  --sysroot="$sysroot" \\
+  -Wl,--dynamic-linker=$cross_loader \\
+  "\$@"
+SHIM
+  link_shim "$cross_gnu_triple-cc" "$dir/$cross_gnu_triple-gcc"
+
+  # The cross binutils, as scripts of their own rather than links into the host
+  # set: `as` and `ld` are per-architecture programs, and the host ones cannot
+  # assemble or link for the target. The rest come along so that every
+  # triple-prefixed name a build script asks for is the target's own tool.
+  for tool in ar ranlib nm strip objcopy objdump readelf ld ld.bfd as addr2line size strings; do
+    [[ -x "$root/usr/bin/$cross_gnu_triple-$tool" ]] || continue
+    write_shim "$dir/$cross_gnu_triple-$tool" <<SHIM
+#!/usr/bin/env bash
+# Generated by ci/bootstrap-toolchain.sh — do not edit.
+export LD_LIBRARY_PATH="$sysroot/usr/lib/$gnu_triple\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "$sysroot/usr/bin/$cross_gnu_triple-$tool" "\$@"
+SHIM
+  done
 }
 
 if [[ -d "$tree" ]]; then
@@ -271,6 +425,11 @@ else
   # discards; and nothing can see the published tree before it is complete.
   stage="$prefix/c-toolchain/.staging-$lock_digest"
   rm -rf "$stage"
+  # A bootstrap that fails from here on discards its staging directory on the
+  # way out, after its own error message. A broken lock is fixed by changing
+  # it, which changes the digest, so no later run would ever reuse or remove
+  # this directory. The cache keeps whatever was downloaded.
+  trap 'rm -rf "$stage"' EXIT
   mkdir -p "$stage/sysroot"
   log "unpacking $(grep -cv '^[[:space:]]*$' "$lock") packages for lock $lock_digest"
 
@@ -304,8 +463,36 @@ else
     ln -sfn "usr/$merged" "$stage/sysroot/$merged"
   done
 
+  # Prove the tree works before publishing it. A published tree is never
+  # rebuilt and `--env-only` trusts it on sight, so a lock whose closure lacks
+  # part of a compiler would otherwise be published and served from then on.
+  # `--version` alone is not that proof: it never reaches cc1, the crt*.o files
+  # or the libc headers, and a lock without libc6-dev passes it (VFL-204). So
+  # the host `cc` also compiles, links and runs a two-line program, `ld` stands
+  # for the binutils, and the cross `cc` compiles and links the same program
+  # for the other architecture. The cross program is not run; it cannot be.
+  # The program includes <errno.h> because that reaches the libc headers and,
+  # through <asm/errno.h>, the kernel's, which an include-free one would not.
+  #
+  # The published shims name $sysroot, which does not exist until the rename,
+  # so the check runs shims generated from the same template against the
+  # staging sysroot; they are then regenerated to name $sysroot.
   write_shims "$stage/bin" "$stage/sysroot"
+  probe="$stage/probe"
+  mkdir "$probe"
+  printf '#include <errno.h>\nint main(void) { return EINVAL == 0; }\n' > "$probe/probe.c"
+  if ! "$stage/bin/cc" --version >/dev/null \
+    || ! "$stage/bin/ld" --version >/dev/null \
+    || ! "$stage/bin/cc" "$probe/probe.c" -o "$probe/host" >&2 \
+    || ! "$probe/host" >&2 \
+    || ! "$stage/bin/$cross_gnu_triple-cc" "$probe/probe.c" -o "$probe/cross" >&2; then
+    log "the C toolchain for lock $lock_digest does not work; nothing was published"
+    exit 1
+  fi
+  rm -rf "$probe"
+  write_shims "$stage/bin" "$stage/sysroot" "$sysroot"
   mv -T "$stage" "$tree"
+  trap - EXIT
   log "toolchain ready for lock $lock_digest"
 fi
 
@@ -319,10 +506,35 @@ export RUSTUP_HOME="$rustup_home"
 # script exists to eliminate, so it must not appear in the bootstrap's own log.
 export PATH="$shim_dir:$cargo_home/bin:$PATH"
 
-if [[ -x "$cargo_home/bin/rustup" ]]; then
-  log "rustup already present ($("$cargo_home/bin/rustup" --version 2>/dev/null | head -1))"
+# The installed rustup's version, or nothing if there is none or it does not
+# run. Asked from /: `--version` also reports the active rustc, and outside
+# the checkout no rust-toolchain.toml is in scope for it to resolve.
+rustup_version() {
+  local out
+  out="$(cd / && "$cargo_home/bin/rustup" --version 2>/dev/null)" || return 0
+  read -r _ out _ <<<"$out"   # "rustup 1.29.1 (d95a37b6a 2026-08-13)"
+  printf '%s' "$out"
+}
+
+# rustup is kept by version, not by existence. Skipping whenever any rustup is
+# present would make a bump to RUSTUP_VERSION a no-op once the first install
+# had happened, and the pin and its digest would no longer be enforced.
+# rustup-init over an existing install replaces rustup and its proxies and
+# leaves the installed toolchains alone.
+#
+# The cargo proxy is checked as well, because `--env-only` refuses to run
+# without it. rustup-init writes rustup before the proxies, so one killed in
+# between leaves the right version and no cargo; skipping on the version alone
+# would leave that unrepaired, and `--env-only` failing for good.
+rustup_have="$(rustup_version)"
+if [[ "$rustup_have" == "$RUSTUP_VERSION" && -x "$cargo_home/bin/cargo" ]]; then
+  log "rustup $RUSTUP_VERSION already present"
 else
-  log "installing rustup $RUSTUP_VERSION"
+  if [[ "$rustup_have" == "$RUSTUP_VERSION" ]]; then
+    log "reinstalling rustup $RUSTUP_VERSION: no cargo at $cargo_home/bin/cargo"
+  else
+    log "installing rustup $RUSTUP_VERSION${rustup_have:+ in place of $rustup_have}"
+  fi
   init="$cache_dir/rustup-init-$RUSTUP_VERSION-$rust_host"
   if [[ ! -s "$init" ]] || [[ "$(sha256sum "$init" | cut -d' ' -f1)" != "$rustup_sha" ]]; then
     curl -fsS --retry 3 --retry-delay 2 -m 300 -L -o "$init.part" \
@@ -340,6 +552,15 @@ else
   # --no-modify-path: the env comes from print_env below, not from a dotfile a
   # runner would not source anyway.
   "$init" -y --no-modify-path --default-toolchain none --profile minimal >&2
+  rustup_have="$(rustup_version)"
+  if [[ "$rustup_have" != "$RUSTUP_VERSION" ]]; then
+    echo "bootstrap-toolchain: rustup is ${rustup_have:-missing} after installing $RUSTUP_VERSION" >&2
+    exit 1
+  fi
+  if [[ ! -x "$cargo_home/bin/cargo" ]]; then
+    echo "bootstrap-toolchain: no cargo at $cargo_home/bin/cargo after installing rustup $RUSTUP_VERSION" >&2
+    exit 1
+  fi
 fi
 
 # Materialise the pinned toolchain now rather than on whichever cargo command
@@ -350,5 +571,9 @@ if [[ -f "$repo_root/rust-toolchain.toml" ]]; then
   ( cd "$repo_root" && rustup show active-toolchain >&2 )
 fi
 
-log "ready — $(cd "$repo_root" && rustc --version 2>&1), $("$shim_dir/cc" --version | head -1)"
+# Both compilers are reported so the log says which pair this lock produced.
+# This line is a report, not a check: a command substitution that fails inside
+# an argument does not trip `set -e`. The checks are the one at the top of
+# write_shims and the one before the tree is published.
+log "ready — $(cd "$repo_root" && rustc --version 2>&1), $("$shim_dir/cc" --version | head -1), cross $("$shim_dir/$cross_gnu_triple-cc" --version | head -1)"
 print_env

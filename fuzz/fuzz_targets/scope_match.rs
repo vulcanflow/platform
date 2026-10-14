@@ -59,8 +59,8 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use vf_core::scope::{
-    check_candidate, check_run_scope, ApprovedScope, CanonicalHost, RunScope, ScopeType,
-    ScopeVerdict,
+    ApprovedScope, CanonicalHost, RunScope, ScopeType, ScopeVerdict, check_candidate,
+    check_run_scope,
 };
 
 /// Known-good registrable-domain bases, suffix-plus-one under the Public
@@ -122,7 +122,7 @@ fn derive(base_str: &str, related: &Related) -> String {
                 // `base_str` unchanged — indistinguishable from `Same` and
                 // not a descendant at all. Force at least one extra label
                 // so this arm always holds the "1..=3 extra labels" shape
-                // documented below.
+                // documented above.
                 parts.push(LABELS[0]);
             }
             parts.push(base_str);

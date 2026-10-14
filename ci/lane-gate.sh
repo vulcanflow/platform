@@ -34,6 +34,7 @@ classify_path() {
   case "$1" in
     # --- GATE: the enforcement mechanism itself ---
     ci/lane-gate.sh|ci/lane-gate-test.sh|.github/workflows/lane-gate.yml) echo GATE ;;
+    .tekton/tasks/lane-gate.yaml|.tekton/tasks/lane-gate-selftest.yaml|.tekton/pipelines/lane-gate.yaml|.tekton/kustomization.yaml|.tekton/kustomization.yml|.tekton/Kustomization) echo GATE ;;
 
     # --- TEST: owned by the test authors (Scribe, Ledger) ---
     tests/*|crates/*/tests/*|fuzz/*|conformance/*) echo TEST ;;
@@ -48,8 +49,40 @@ classify_path() {
   esac
 }
 
+# One path per line. A deleted path is listed, and a rename is listed under both
+# its old and its new path, so deleting a GATE or TEST file, or renaming one away
+# to a NEUTRAL name, is classified the same as changing it. -M turns rename
+# detection on whatever diff.renames is set to locally. -M never reports a copy (a
+# copied file is an ordinary A row), so R is the only record that carries two paths.
+#
+# -z makes every path reach classify_path as itself. Without it git C-quotes a
+# path that holds a non-ASCII byte, a '"', a '\' or a control character, so
+# crates/vf-core/tests/café.rs arrives as "crates/vf-core/tests/caf\303\251.rs"
+# and its leading '"' makes it NEUTRAL. -c core.quotePath=false is not enough: it
+# stops quoting only the non-ASCII bytes, and a '"', '\', tab or newline is still
+# quoted. With -z git prints each path verbatim and ends every field with a NUL,
+# which no path can contain.
+#
+# cmd_partition reads one path per line, so a newline inside a path is printed as
+# '?'. Otherwise crates/a<newline>b/src/lib.rs would split into crates/a and
+# b/src/lib.rs, both NEUTRAL, and hide a PROD file. No lane pattern contains a '?'
+# or a newline, so the class does not change. A status other than A, D, M, R or T,
+# or a record cut short, is a shape this parser does not know, so it fails closed
+# instead of reading the rest of the stream out of step.
 changed_files() {
-  git diff --name-only --diff-filter=ACMRT "$BASE_REF...$HEAD_REF"
+  git diff --name-status -z -M --diff-filter=ACDMRT "$BASE_REF...$HEAD_REF" \
+    | while IFS= read -r -d '' status; do
+        case "$status" in
+          R*)     n=2 ;;
+          [ADMT]) n=1 ;;
+          *)      fail "partition: git diff printed status '$status', which changed_files does not parse" ;;
+        esac
+        while [ "$n" -gt 0 ]; do
+          IFS= read -r -d '' path || fail "partition: git diff record for status '$status' ends early"
+          printf '%s\n' "${path//$'\n'/?}"
+          n=$((n - 1))
+        done
+      done
 }
 
 # ---------------------------------------------------------------------------
@@ -96,11 +129,21 @@ cmd_partition() {
   fi
 
   if [ ${#gate[@]} -gt 0 ] && { [ ${#prod[@]} -gt 0 ] || [ ${#test[@]} -gt 0 ]; }; then
+    printf '\n  gate files in this diff:\n' >&2
+    printf '    %s\n' "${gate[@]}" >&2
+    if [ ${#prod[@]} -gt 0 ]; then
+      printf '\n  production source in this diff:\n' >&2
+      printf '    %s\n' "${prod[@]}" >&2
+    fi
+    if [ ${#test[@]} -gt 0 ]; then
+      printf '\n  test files in this diff:\n' >&2
+      printf '    %s\n' "${test[@]}" >&2
+    fi
     fail "This pull request changes the lane gate itself and also changes source or tests.
 
-  A change to ci/lane-gate.sh or .github/workflows/lane-gate.yml goes on its own pull
-  request, so that weakening the gate is never bundled with the change it would let
-  through. See ADR-0005."
+  A change to ci/lane-gate.sh, .github/workflows/lane-gate.yml or the Tekton lane gate
+  under .tekton/ goes on its own pull request, so that weakening the gate is never
+  bundled with the change it would let through. See ADR-0005."
   fi
 
   pass "partition: no lane crossing"
