@@ -25,8 +25,9 @@ namespace `vf-ci`. Every request is signature-checked.
 | `route.yaml` | ReferenceGrant letting the aether-ci HTTPRoute reach `el-vf-platform` |
 
 The pipelines themselves are in `../` (VFL-125). Their pod settings in
-`pull-request-template.yaml` (emptyDir, no service account token, the arm64
-nodeSelector, the timeouts) copy `../pipelineruns/`; keep the two in step.
+`pull-request-template.yaml` (emptyDir, no service account token, ndots 1,
+the arm64 nodeSelector, the timeouts) copy `../pipelineruns/`; keep the two
+in step.
 
 Nothing here touches the GitHub Actions workflows, which keep gating `main`
 until Tekton reports the same check names (VFL-126). Nothing here reports a
@@ -298,17 +299,17 @@ A different `<head>` means the check fetched a stale merge ref
 request from a fork starts no run: its delivery's id matches no
 PipelineRun.
 
-The pods must not mount the `vf-ci` `default` token. `check-amd64` and
-`check-arm64` each have their own pod template in
-`pull-request-template.yaml`, which Tekton merges with the run's; this shows
-that the merge kept the token off:
+The pods must not mount the `vf-ci` `default` token, and must have ndots 1
+(`../README.md`, "Prerequisites"). `check-amd64` and `check-arm64` each have
+their own pod template in `pull-request-template.yaml`, which Tekton merges
+with the run's; this shows that the merge kept both settings:
 
 ```sh
 kubectl -n vf-ci get pods -l "vulcanflow.io/github-delivery=$delivery_id" \
-  -o custom-columns='POD:.metadata.name,TOKEN:.spec.automountServiceAccountToken'
+  -o custom-columns='POD:.metadata.name,TOKEN:.spec.automountServiceAccountToken,NDOTS:.spec.dnsConfig.options[?(@.name=="ndots")].value'
 ```
 
-Every pod must show `false`.
+Every pod must show `false` and `1`.
 
 An unsigned POST is refused by the github interceptor and creates no run. The
 response carries the listener's `eventID`; the check is that no run carries

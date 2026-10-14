@@ -107,10 +107,19 @@ retired (VFL-127).
   hosts change. Cilium's DNS proxy reads the pods' DNS answers and allows the
   addresses they return, so a `toFQDNs` rule matches nothing without the DNS
   rule. The proxy refuses a lookup of any other name, so a pod cannot pass
-  data out in the names it looks up (VFL-948). A pod first looks up the
-  search-domain forms of a host, such as `github.com.vf-ci.svc.cluster.local`;
-  glibc, the resolver in the check image, takes the refusal and then looks up
-  the name as given. The owner confirmed on 2026-10-13 that the cluster's
+  data out in the names it looks up (VFL-948). That includes the
+  search-domain forms of a host, such as `github.com.vf-ci.svc.cluster.local`.
+  With the kubelet's default `ndots:5` a pod looks those up first. musl stops
+  at the refusal and never looks up the name as given. It is the resolver
+  inside the static `cargo-deny` binary on every node, and inside
+  `cargo-audit` on an amd64 node, so `cargo deny check` could not fetch its
+  advisory database (VFL-982). So the PipelineRuns also set `ndots: 1` in
+  their `dnsConfig`. Every listed host has a dot, so glibc and musl both look
+  it up as given first, and no search-domain form is sent. The checks
+  therefore do not depend on the response code the proxy refuses with. A
+  `vf-rust-check` run created any other way keeps `ndots:5`, and its `deny`
+  step fails; it never passes. The owner
+  confirmed on 2026-10-13 that the cluster's
   Gateway `eg` is Cilium's, so the CNI is Cilium. The EventListener pod is not
   selected; it has no policy either (VFL-124 LOW-4).
 
@@ -146,22 +155,26 @@ commit=<commit>; kubectl apply -f "https://raw.githubusercontent.com/vulcanflow/
 ```
 
 Then check the DNS rule. This starts a pod from the check image, with the
-label the policy selects and no token, and looks up one listed host and one
-other host. Pod Security prints a `restricted` warning; `vf-ci` enforces only
-`baseline`:
+label the policy selects, no token and `ndots:1`, and looks up one listed
+host and one other host. Pod Security prints a `restricted` warning; `vf-ci`
+enforces only `baseline`:
 
 ```sh
-image=$(kubectl -n vf-ci get pipeline vf-lane-gate -o jsonpath='{.spec.params[?(@.name=="image")].default}'); kubectl -n vf-ci run vf-dns-probe --rm -i --restart=Never --labels=tekton.dev/pipeline=vf-lane-gate --image="$image" --overrides='{"apiVersion":"v1","spec":{"automountServiceAccountToken":false}}' -- sh -c 'getent hosts github.com; echo "github.com: $?"; getent hosts example.com; echo "example.com: $?"'
+image=$(kubectl -n vf-ci get pipeline vf-lane-gate -o jsonpath='{.spec.params[?(@.name=="image")].default}'); kubectl -n vf-ci run vf-dns-probe --rm -i --restart=Never --labels=tekton.dev/pipeline=vf-lane-gate --image="$image" --overrides='{"apiVersion":"v1","spec":{"automountServiceAccountToken":false,"dnsConfig":{"options":[{"name":"ndots","value":"1"}]}}}' -- sh -c 'grep ndots /etc/resolv.conf; getent hosts github.com; echo "github.com: $?"; getent hosts example.com; echo "example.com: $?"'
 ```
 
-It must print an address for `github.com` and `github.com: 0`, then
-`example.com: 2` and no address. An address for `example.com` means some
-other policy allows these pods port 53 with no DNS rule, which Cilium merges
-into a lookup of any name. Find that policy before going on.
+It must print `options ndots:1`, an address for `github.com` and
+`github.com: 0`, then `example.com: 2` and no address. An address for
+`example.com` means some other policy allows these pods port 53 with no DNS
+rule, which Cilium merges into a lookup of any name. Find that policy before
+going on.
 
-Start both pipelines by hand once (step 2) with the policy in place. Both
-must pass before `triggers/` starts them from the webhook; a host the policy
-lacks shows as a failed fetch in the step's log.
+`getent` resolves through glibc, so the probe does not cover musl. Step 2
+does: the `deny` step of both `vf-rust-check` legs runs the musl
+`cargo-deny`, which looks up `github.com`. Start both pipelines by hand once
+(step 2) with the policy in place. Both must pass before `triggers/` starts
+them from the webhook; a host the policy lacks shows as a failed fetch in
+the step's log.
 
 ## 2. Run by hand
 

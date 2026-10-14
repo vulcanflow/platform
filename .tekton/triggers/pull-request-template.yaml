@@ -1,8 +1,9 @@
 # The checks for one pull-request delivery: one PipelineRun of vf-lane-gate and
 # one of vf-rust-check, as GitHub starts lane-gate.yml and rust-check.yml for a
 # pull_request event. The pod settings are those of ../pipelineruns/: an
-# emptyDir per TaskRun, no service account token, the arm64 nodeSelector for
-# both rust-check legs, and the same timeouts. Keep the two in step.
+# emptyDir per TaskRun, no service account token, ndots 1, the arm64
+# nodeSelector for both rust-check legs, and the same timeouts. Keep the two in
+# step.
 #
 # One difference from GitHub: lane-gate.yml runs only for pull requests into
 # main, while both runs start here whatever the base branch is. The lane gate
@@ -71,6 +72,10 @@ spec:
         taskRunTemplate:
           podTemplate:
             automountServiceAccountToken: false
+            dnsConfig:
+              options:
+                - name: ndots
+                  value: "1"
         timeouts:
           pipeline: 20m
     - apiVersion: tekton.dev/v1
@@ -98,6 +103,10 @@ spec:
         taskRunTemplate:
           podTemplate:
             automountServiceAccountToken: false
+            dnsConfig:
+              options:
+                - name: ndots
+                  value: "1"
         taskRunSpecs:
           - pipelineTaskName: check-amd64
             podTemplate:

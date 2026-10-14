@@ -20,9 +20,12 @@
 #     rules below learn which addresses a host name has. Without this rule
 #     toFQDNs matches nothing. The proxy refuses a lookup of any other name,
 #     so a pod cannot pass data out in the names it looks up (VFL-948). That
-#     includes the search-domain forms a pod tries first, such as
-#     github.com.vf-ci.svc.cluster.local; glibc, the resolver in the check
-#     image, then looks up the name as given;
+#     includes search-domain forms such as github.com.vf-ci.svc.cluster.local.
+#     The PipelineRuns set ndots 1 on these pods, so each host is looked up as
+#     given first and no search-domain form is sent. Without it, musl stops at
+#     the refused search-domain lookup and never asks for the name as given;
+#     cargo-deny, a static musl binary, looks up github.com on every run
+#     (VFL-982);
 #   - HTTPS to the hosts the checks fetch from: github.com (the revision, the
 #     base branch, the advisory databases, release downloads), the host GitHub
 #     release downloads redirect to, rustup's static.rust-lang.org, and the
