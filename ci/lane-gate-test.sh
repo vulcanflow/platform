@@ -1701,5 +1701,123 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - "\\u0075ses": evil/act@v4
 commit add-workflow-rule3-u0075-escaped-key
 check "double-quoted key with its first letter escaped as \\u0075 ('u')" pins fail
 
+#   The cases below (168-179) are for VFL-1124 (eb64715), the architect's LOW-1
+#   ruling on VFL-490 (comment 561b0712): rule 1 now refuses the next non-blank,
+#   non-comment line after a canonical uses: line if it sits deeper than the
+#   uses key, since YAML would read that line as more of the same plain
+#   scalar. Cases 168-171 are LOW-1 fail fixtures, 172-174 are LOW-1 pass
+#   controls, 175 is the "-   uses:" over-refusal, and 176-179 add R-b
+#   (VFL-984 LOW-6) cover for the value class's other flow indicators ([ { ]),
+#   alongside case 159's ",".
+
+# --- 168. pins: a line indented deeper than the uses key, right after a
+#     canonical line, is refused (VFL-1124 LOW-1): GitHub would load
+#     `<pin> evil` as one plain scalar, so the next-line clause refuses the
+#     deeper line -------------------------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n          evil\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-deeper
+check_contains "line indented deeper than the uses key after a canonical line" pins fail \
+  '.github/workflows/ci.yml:7: <a line indented deeper than the uses key above it>'
+
+# --- 169. pins: the next-line clause skips a blank line between the
+#     canonical line and the deeper line, and still refuses the deeper
+#     line once it arrives: refused -------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n\n          evil\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-blank-then-deeper
+check_contains "next-line clause skips a blank line, then refuses the deeper line after it" pins fail \
+  '.github/workflows/ci.yml:8: <a line indented deeper than the uses key above it>'
+
+# --- 170. pins: the next line exactly one column deeper than the uses key
+#     (9 spaces, where `      - uses:` keys at column 8) is refused: the
+#     boundary is strict, not >= ------------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n         x\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-one-column-deeper
+check_contains "next line exactly one column deeper than the uses key" pins fail \
+  '.github/workflows/ci.yml:7: <a line indented deeper than the uses key above it>'
+
+# --- 171. pins: a job-level reusable workflow call (no leading dash) keys
+#     the next-line clause off the uses column itself, not off a dash: a
+#     deeper line after it is refused the same way: refused ---------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    uses: o/r/.github/workflows/w.yml@11d5960a326750d5838078e36cf38b85af677262\n      evil\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-job-level-next-line-deeper
+check_contains "job-level reusable workflow call followed by a deeper line" pins fail \
+  '.github/workflows/ci.yml:5: <a line indented deeper than the uses key above it>'
+
+# --- 172. pins: the next line at the uses key's own column passes, as a
+#     live workflow's with: block sits under a pinned step: allowed -------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n        with:\n          fetch-depth: 0\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-at-key-column
+check "next line at the uses key's own column, as with: under a pinned step" pins pass
+
+# --- 173. pins: a comment line deeper than the uses key, right after a
+#     canonical line, is skipped; the clause still passes once the first
+#     non-comment line lands at the key's column: allowed -----------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n          # note\n        with:\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-comment-then-key-column
+check "deeper comment line after a canonical line is skipped; with: at the key column still passes" pins pass
+
+# --- 174. pins: a whitespace-only line deeper than the uses key, right
+#     after a canonical line, is skipped the same as a blank line: allowed --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n            \n        with:\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-whitespace-only-then-key-column
+check "whitespace-only line deeper than the uses key is skipped like a blank line" pins pass
+
+# --- 175. pins: a dash and three spaces before uses: (`-   uses:`) is
+#     refused: GitHub still loads it as a pinned step, but rule 1 accepts
+#     exactly one space after the dash; a deliberate over-refusal, like
+#     case 116's TAB after the colon -----------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      -   uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-dash-three-spaces-before-uses
+check "dash and three spaces before uses: is refused" pins fail
+
+# --- 176. pins: a canonical value holding a } before the pin's @ is
+#     refused by rule 1's value class (VFL-984 LOW-6, R-b cover alongside
+#     case 159's ","): refused -------------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: a/b/x}y@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-value-class-closing-brace
+check "canonical value holding a } before the pin is refused" pins fail
+
+# --- 177. pins: a canonical value holding a [ before the pin's @ is
+#     refused by the same value class: refused ---------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: a/b/[x@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-value-class-opening-bracket
+check "canonical value holding a [ before the pin is refused" pins fail
+
+# --- 178. pins: a canonical value holding a { before the pin's @ is
+#     refused by the same value class: refused ---------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: a/b/x{y@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-value-class-opening-brace
+check "canonical value holding a { before the pin is refused" pins fail
+
+# --- 179. pins: a canonical value holding a ] before the pin's @ is
+#     refused by the same value class: refused ---------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: a/b/x]y@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-value-class-closing-bracket
+check "canonical value holding a ] before the pin is refused" pins fail
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
