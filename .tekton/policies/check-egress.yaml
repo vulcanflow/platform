@@ -15,20 +15,31 @@
 #
 # Once an egress rule selects a pod, Cilium denies all other egress from it.
 # What stays allowed:
-#   - DNS to the cluster DNS pods, through Cilium's DNS proxy. The proxy reads
-#     the answers, and that is how the toFQDNs rules below learn which
-#     addresses a host name has. Without this rule toFQDNs matches nothing;
+#   - DNS to the cluster DNS pods, through Cilium's DNS proxy, for the hosts
+#     below only. The proxy reads the answers, and that is how the toFQDNs
+#     rules below learn which addresses a host name has. Without this rule
+#     toFQDNs matches nothing. The proxy refuses a lookup of any other name,
+#     so a pod cannot pass data out in the names it looks up (VFL-948). That
+#     includes the search-domain forms a pod tries first, such as
+#     github.com.vf-ci.svc.cluster.local; glibc, the resolver in the check
+#     image, then looks up the name as given;
 #   - HTTPS to the hosts the checks fetch from: github.com (the revision, the
 #     base branch, the advisory databases, release downloads), the host GitHub
 #     release downloads redirect to, rustup's static.rust-lang.org, and the
 #     crates.io index and crate downloads;
-#   - for the check-amd64 pods only, HTTPS to deb.debian.org, where that leg
-#     fetches its cross packages (VFL-716). The second rule selects them by the
-#     tekton.dev/pipelineTask label Tekton also puts on each TaskRun and its
-#     pod. Cilium allows the union of the rules that select a pod, so these
-#     pods keep the first rule's DNS and hosts.
-# A host missing here fails the check that needs it, at its first fetch; it
-# never passes a check.
+#   - for the check-amd64 pods only, DNS and HTTPS for deb.debian.org, where
+#     that leg fetches its cross packages (VFL-716). The second rule selects
+#     them by the tekton.dev/pipelineTask label Tekton also puts on each
+#     TaskRun and its pod. Cilium allows the union of the rules that select a
+#     pod, DNS names included, so these pods keep the first rule's DNS and
+#     hosts.
+# In each rule the DNS names and the toFQDNs names are the same list; keep them
+# so. A host missing from either list fails the check that needs it, at its
+# first fetch; it never passes a check.
+#
+# Cilium merges a rule that allows port 53 to these pods with no DNS rule into
+# a lookup of any name. README.md, "1. Apply", has a probe that shows a lookup
+# outside the list fails.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -55,7 +66,11 @@ specs:
                 protocol: TCP
             rules:
               dns:
-                - matchPattern: "*"
+                - matchName: github.com
+                - matchName: release-assets.githubusercontent.com
+                - matchName: static.rust-lang.org
+                - matchName: index.crates.io
+                - matchName: static.crates.io
       - toFQDNs:
           - matchName: github.com
           - matchName: release-assets.githubusercontent.com
@@ -71,6 +86,19 @@ specs:
         tekton.dev/pipeline: vf-rust-check
         tekton.dev/pipelineTask: check-amd64
     egress:
+      - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: kube-system
+              k8s-app: kube-dns
+        toPorts:
+          - ports:
+              - port: "53"
+                protocol: UDP
+              - port: "53"
+                protocol: TCP
+            rules:
+              dns:
+                - matchName: deb.debian.org
       - toFQDNs:
           - matchName: deb.debian.org
         toPorts:

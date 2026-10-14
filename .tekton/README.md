@@ -98,16 +98,21 @@ retired (VFL-127).
     443. Only the `check-amd64` pods may reach `deb.debian.org`: a second
     rule selects them by their `tekton.dev/pipelineTask` label;
   - to cluster DNS, the `k8s-app: kube-dns` pods in `kube-system` on port 53
-    UDP and TCP, with a DNS rule (`rules.dns`, `matchPattern: "*"`).
+    UDP and TCP, with a DNS rule (`rules.dns`) that allows lookups of the same
+    hosts by `matchName`, and of no other name.
 
   Once an egress rule selects a pod, Cilium denies all other egress from it.
   Host names need Cilium: for destinations outside the cluster a Kubernetes
   `NetworkPolicy` can only match IP blocks, and the addresses behind these
   hosts change. Cilium's DNS proxy reads the pods' DNS answers and allows the
   addresses they return, so a `toFQDNs` rule matches nothing without the DNS
-  rule. The owner confirmed on 2026-10-13 that the cluster's Gateway `eg` is
-  Cilium's, so the CNI is Cilium. The EventListener pod is not selected; it
-  has no policy either (VFL-124 LOW-4).
+  rule. The proxy refuses a lookup of any other name, so a pod cannot pass
+  data out in the names it looks up (VFL-948). A pod first looks up the
+  search-domain forms of a host, such as `github.com.vf-ci.svc.cluster.local`;
+  glibc, the resolver in the check image, takes the refusal and then looks up
+  the name as given. The owner confirmed on 2026-10-13 that the cluster's
+  Gateway `eg` is Cilium's, so the CNI is Cilium. The EventListener pod is not
+  selected; it has no policy either (VFL-124 LOW-4).
 
   The policy assumes two things about the cluster. Check both, read-only,
   before applying it:
@@ -139,6 +144,20 @@ Then, once both checks under "Prerequisites" pass, the egress policy:
 ```sh
 commit=<commit>; kubectl apply -f "https://raw.githubusercontent.com/vulcanflow/platform/$commit/.tekton/policies/check-egress.yaml"
 ```
+
+Then check the DNS rule. This starts a pod from the check image, with the
+label the policy selects and no token, and looks up one listed host and one
+other host. Pod Security prints a `restricted` warning; `vf-ci` enforces only
+`baseline`:
+
+```sh
+image=$(kubectl -n vf-ci get pipeline vf-lane-gate -o jsonpath='{.spec.params[?(@.name=="image")].default}'); kubectl -n vf-ci run vf-dns-probe --rm -i --restart=Never --labels=tekton.dev/pipeline=vf-lane-gate --image="$image" --overrides='{"apiVersion":"v1","spec":{"automountServiceAccountToken":false}}' -- sh -c 'getent hosts github.com; echo "github.com: $?"; getent hosts example.com; echo "example.com: $?"'
+```
+
+It must print an address for `github.com` and `github.com: 0`, then
+`example.com: 2` and no address. An address for `example.com` means some
+other policy allows these pods port 53 with no DNS rule, which Cilium merges
+into a lookup of any name. Find that policy before going on.
 
 Start both pipelines by hand once (step 2) with the policy in place. Both
 must pass before `triggers/` starts them from the webhook; a host the policy
