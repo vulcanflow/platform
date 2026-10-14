@@ -1,5 +1,6 @@
-# One PipelineRun per accepted delivery. The GitHub delivery id is put on the
-# run as a label, so the run a given webhook delivery created is found with
+# One vf-ci-noop PipelineRun per accepted branch push; pull requests start the
+# checks instead (pull-request-template.yaml). The GitHub delivery id is put on
+# the run as a label, so the run a given webhook delivery created is found with
 #
 #   kubectl -n vf-ci get pipelineruns -l "vulcanflow.io/github-delivery=$delivery_id"
 #
