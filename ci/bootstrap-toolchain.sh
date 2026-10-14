@@ -59,10 +59,11 @@
 #
 # A tree that is already present gets a cheaper check each time it is used:
 # its two compilers must still report a version, and `--env-only` asks the
-# same of the two shims the env names. A failure exits 1 and leaves the tree
-# as it is. So `--env-only` fails not only when this lock has no tree yet, but
-# also when a compiler or shim of the tree it has does not run. A full run
-# regenerates the shims; a broken compiler stays until the tree is removed.
+# same of the two compiler shims the env names. A failure exits 1 and leaves
+# the tree as it is. So `--env-only` fails not only when this lock has no tree
+# yet, but also when a compiler or compiler shim of the tree it has does not
+# run. A full run regenerates the shims; a broken compiler stays until the
+# tree is removed.
 #
 # Bootstraps on one prefix are serialised by a lock file. A bootstrap that has
 # to wait for it says so on stderr, and gives up after VF_TOOLCHAIN_LOCK_WAIT
@@ -246,9 +247,9 @@ if [[ "${1:-}" == "--env-only" ]]; then
     exit 1
   fi
   # Nor to one that is there but no longer runs: the compilers first, so the
-  # message names a missing one, then the shims the env names. With the
-  # compilers working, a full run regenerates the shims, so that is the advice
-  # for them; a moved prefix is the usual way to break them.
+  # message names a missing one, then the compiler shims the env names. With
+  # the compilers working, a full run regenerates the shims, so that is the
+  # advice for them; a moved prefix is the usual way to break them.
   for compiler in "${compilers[@]}"; do
     cc_version "$compiler" >/dev/null || exit 1
   done
