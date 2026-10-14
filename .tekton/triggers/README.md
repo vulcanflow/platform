@@ -10,17 +10,23 @@ namespace `vf-ci`. Every request is signature-checked.
   of `vf-rust-check` (VFL-777). Both test the pull request's merge ref
   `refs/pull/N/merge`, as GitHub's `actions/checkout` does. A pull request from
   a fork creates nothing.
+- A `synchronize` among those, a push to the pull request's branch, also
+  creates one PipelineRun of `vf-ci-supersede`. It cancels the pull request's
+  unfinished runs for the head the push replaced (VFL-974, "Superseded runs"
+  below).
 - A signed branch push creates one PipelineRun of `vf-ci-noop`, which prints
   the event and exits.
 
 | File | Objects |
 | --- | --- |
 | `namespace.yaml` | Namespace `vf-ci` |
-| `rbac.yaml` | ServiceAccount `vf-ci-triggers`, its RoleBinding and ClusterRoleBinding |
+| `rbac.yaml` | ServiceAccount `vf-ci-triggers`, its RoleBinding and ClusterRoleBinding; ServiceAccount, Role and RoleBinding `vf-ci-supersede` |
 | `noop-pipeline.yaml` | Pipeline `vf-ci-noop` |
-| `trigger-bindings.yaml` | TriggerBindings `vf-github-pull-request`, `vf-github-push` |
+| `supersede-pipeline.yaml` | Task and Pipeline `vf-ci-supersede` |
+| `trigger-bindings.yaml` | TriggerBindings `vf-github-pull-request`, `vf-github-pull-request-supersede`, `vf-github-push` |
 | `trigger-template.yaml` | TriggerTemplate `vf-ci-noop` (pushes) |
 | `pull-request-template.yaml` | TriggerTemplate `vf-pull-request` (pull requests) |
+| `supersede-template.yaml` | TriggerTemplate `vf-pull-request-supersede` (`synchronize`) |
 | `event-listener.yaml` | EventListener `vf-platform` (Service `el-vf-platform`, port 8080) |
 | `route.yaml` | ReferenceGrant letting the aether-ci HTTPRoute reach `el-vf-platform` |
 
@@ -36,10 +42,10 @@ result to GitHub yet either (VFL-778).
 ## Prerequisites
 
 - A revision at or after the VFL-974 commit. VFL-974 adds the control that
-  cancels a pull request's unfinished runs when a newer push supersedes them.
-  Without it, every push to a pull request starts six more pods and none stop
-  early (`../README.md`, "Not here yet"). Do not apply `triggers/` from a
-  revision without it.
+  cancels a pull request's unfinished runs when a newer push supersedes them
+  ("Superseded runs"). Without it, every push to a pull request starts six
+  more pods and none stop early. Do not apply `triggers/` from a revision
+  without it.
 - Tekton Pipelines serving `tekton.dev/v1` and Tekton Triggers serving
   `triggers.tekton.dev/v1beta1`, with the `github` and `cel`
   ClusterInterceptors and the `tekton-triggers-eventlistener-roles` and
@@ -49,19 +55,27 @@ result to GitHub yet either (VFL-778).
   (Cilium's Gateway API support installs it).
 - Rights to create a Namespace and a ClusterRoleBinding (one-time, cluster
   admin), and to edit the HTTPRoute in `aether-ci`. Everything else is
-  namespaced to `vf-ci`. The checks in step 4 and under Check also read pod
-  logs in `tekton-pipelines`.
+  namespaced to `vf-ci`. The Role `vf-ci-supersede` grants `patch` on
+  PipelineRuns, and Kubernetes lets only someone who holds that right grant
+  it. The checks in step 4 and under Check also read pod logs in
+  `tekton-pipelines`.
 - In `vf-ci`, before this revision is applied: the Tasks and Pipelines from
   `../kustomization.yaml`, and the egress policy `vf-ci-check-egress` from
   `../policies/check-egress.yaml`, both applied and tried by hand as in
-  `../README.md`, "1. Apply". From step 1 on, every same-repository pull
-  request update starts both pipelines, and their pods run the pull request's
-  code. Without the Pipelines the runs fail at once; without the policy their
-  pods reach any host. Check both:
+  `../README.md`, "1. Apply". Apply the policy from the same commit as this
+  directory: VFL-974 adds its third rule, which limits the `vf-ci-supersede`
+  pods to the Kubernetes API server. From step 1 on, every same-repository
+  pull request update starts both pipelines, and their pods run the pull
+  request's code. Without the Pipelines the runs fail at once; without the
+  policy their pods reach any host. Check all three. The last command must
+  print `{"tekton.dev/pipeline":"vf-ci-supersede"}`; empty output means the
+  policy is from a commit before VFL-974:
 
   ```sh
   kubectl -n vf-ci get pipelines.tekton.dev vf-lane-gate vf-rust-check
   kubectl -n vf-ci get ciliumnetworkpolicies.cilium.io vf-ci-check-egress
+  kubectl -n vf-ci get ciliumnetworkpolicies.cilium.io vf-ci-check-egress \
+    -o jsonpath='{.specs[2].endpointSelector.matchLabels}{"\n"}'
   ```
 
   On a cluster without namespace `vf-ci`, create it first
@@ -261,6 +275,37 @@ one changes shared DNS or Gateway configuration, and the route from step 3
 must accept the new name. Then edit the webhook: the new Payload URL, SSL
 verification **Enable**. The Secret and the listener stay as they are.
 
+## Superseded runs
+
+A push to a pull request's branch sends a `synchronize` delivery. Its `before`
+is the head commit the push replaced. Trigger `pull-request-supersede` starts
+one `vf-ci-supersede` run for it, next to the two checks for the new head. That
+run sets `spec.status: CancelledRunFinally` on every unfinished run whose
+`vulcanflow.io/github-pr` is the pull request and whose
+`vulcanflow.io/github-head-sha` is `before`. Tekton then stops the checks
+still running and starts none of the others. A run that has finished keeps its
+result. `opened` and `reopened` deliveries cancel nothing.
+
+The key is the delivery's `before`, not which run is newer. A delivery
+redelivered from Recent Deliveries still carries its own `before`, so it
+cancels only a head that a later push already replaced, never the current
+head. Like any redelivery, it also starts the two checks for its own head
+again; nothing cancels those, and they finish on their own.
+
+Not covered: a `synchronize` delivery that never reaches the listener cancels
+nothing. The runs for the head it replaced then finish on their own, because
+the next push cancels only the head that push replaces. One lost delivery
+leaves one head's runs running.
+
+Of the run pods in `vf-ci`, only the `vf-ci-supersede` pod holds a token with
+a grant: the `vf-ci-supersede` token. Its Role allows get, list and patch on
+PipelineRuns in `vf-ci` and nothing else, and Tekton refuses every spec change
+but `spec.status` on a run that has not finished (`rbac.yaml`).
+The pod runs none of the revision's code and may reach only the Kubernetes API
+server (`../policies/check-egress.yaml`). The run is its own PipelineRun, so
+its outcome never changes a check's. It carries no
+`vulcanflow.io/github-head-sha`, so it is never taken for a check of a commit.
+
 ## Check
 
 A pull request delivery became a run. Set `delivery_id` to GitHub's
@@ -306,10 +351,47 @@ with the run's; this shows that the merge kept both settings:
 
 ```sh
 kubectl -n vf-ci get pods -l "vulcanflow.io/github-delivery=$delivery_id" \
-  -o custom-columns='POD:.metadata.name,TOKEN:.spec.automountServiceAccountToken,NDOTS:.spec.dnsConfig.options[?(@.name=="ndots")].value'
+  -o custom-columns='POD:.metadata.name,PIPELINE:.metadata.labels.tekton\.dev/pipeline,TOKEN:.spec.automountServiceAccountToken,NDOTS:.spec.dnsConfig.options[?(@.name=="ndots")].value'
 ```
 
-Every pod must show `false` and `1`.
+Every check pod must show `false` and `1`. The `vf-ci-supersede` pod of a
+`synchronize` delivery shows `true` and no ndots: it mounts the
+`vf-ci-supersede` token, and it looks up no name. Across the namespace, no
+other pod may show `true`:
+
+```sh
+kubectl -n vf-ci get pods \
+  -o custom-columns='POD:.metadata.name,PIPELINE:.metadata.labels.tekton\.dev/pipeline,TOKEN:.spec.automountServiceAccountToken' |
+  awk 'NR == 1 || $3 == "true"'
+```
+
+A `synchronize` delivery starts three runs: the two checks for the new head
+and one `vf-ci-supersede-...`. Take `pr` and `before` from that delivery's
+payload under Recent Deliveries (`pull_request.number`, `before`). The
+supersede run's log names each run it cancelled, and the runs for `before`
+show what happened to them:
+
+```sh
+delivery_id='delivery-id-of-a-synchronize'
+pr='pull-request-number'
+before='before-commit-from-the-payload'
+kubectl -n vf-ci get pipelineruns -l "vulcanflow.io/github-delivery=$delivery_id" \
+  -L tekton.dev/pipeline
+kubectl -n vf-ci logs \
+  -l "vulcanflow.io/github-delivery=$delivery_id,tekton.dev/pipeline=vf-ci-supersede" \
+  -c step-cancel --tail=-1
+kubectl -n vf-ci get pipelineruns \
+  -l "vulcanflow.io/github-pr=$pr,vulcanflow.io/github-head-sha=$before" \
+  -o custom-columns='RUN:.metadata.name,SPEC:.spec.status,STATUS:.status.conditions[0].reason'
+```
+
+Each run for `before` that had not finished shows `CancelledRunFinally`, and
+its STATUS ends as `Cancelled`, or `Failed` if one of its checks had already
+failed. A run that had finished shows no SPEC and keeps its STATUS. An
+`opened` or `reopened` delivery starts the two checks and no
+`vf-ci-supersede` run. Redelivering an older `synchronize` from Recent
+Deliveries cancels only that delivery's `before`: the runs for the current
+head keep running.
 
 An unsigned POST is refused by the github interceptor and creates no run. The
 response carries the listener's `eventID`; the check is that no run carries
@@ -341,16 +423,25 @@ reads as a pass.
 ## Roll back
 
 To stop pull requests from starting the pipelines (VFL-777) and keep the rest,
-apply the triggers revision before it as in step 1, then delete the template
-it no longer names and the runs it started:
+roll back the supersede control (VFL-974) with it, not on its own: without the
+control, every push starts six more pods and none stop early. Apply the
+triggers revision before VFL-777 as in step 1, then delete the objects it no
+longer names and the runs they started:
 
 ```sh
-commit='full-commit-id-of-the-previous-revision'
+commit='full-commit-id-of-the-revision-before-VFL-777'
 kubectl apply -k "https://github.com/vulcanflow/platform//.tekton/triggers?ref=$commit"
 kubectl -n vf-ci delete --ignore-not-found \
-  triggertemplates.triggers.tekton.dev/vf-pull-request
+  triggertemplates.triggers.tekton.dev/vf-pull-request \
+  triggertemplates.triggers.tekton.dev/vf-pull-request-supersede \
+  triggerbindings.triggers.tekton.dev/vf-github-pull-request-supersede \
+  pipelines.tekton.dev/vf-ci-supersede \
+  tasks.tekton.dev/vf-ci-supersede \
+  rolebindings.rbac.authorization.k8s.io/vf-ci-supersede \
+  roles.rbac.authorization.k8s.io/vf-ci-supersede \
+  serviceaccounts/vf-ci-supersede
 kubectl -n vf-ci delete --ignore-not-found pipelineruns.tekton.dev \
-  -l 'triggers.tekton.dev/eventlistener=vf-platform,tekton.dev/pipeline in (vf-lane-gate,vf-rust-check)'
+  -l 'triggers.tekton.dev/eventlistener=vf-platform,tekton.dev/pipeline in (vf-lane-gate,vf-rust-check,vf-ci-supersede)'
 ```
 
 The label selector leaves the runs started by hand (`../README.md`, "Run by
@@ -376,12 +467,19 @@ kubectl -n vf-ci delete --ignore-not-found pipelineruns.tekton.dev \
 kubectl -n vf-ci delete --ignore-not-found \
   triggertemplates.triggers.tekton.dev/vf-ci-noop \
   triggertemplates.triggers.tekton.dev/vf-pull-request \
+  triggertemplates.triggers.tekton.dev/vf-pull-request-supersede \
   triggerbindings.triggers.tekton.dev/vf-github-pull-request \
+  triggerbindings.triggers.tekton.dev/vf-github-pull-request-supersede \
   triggerbindings.triggers.tekton.dev/vf-github-push \
   pipelines.tekton.dev/vf-ci-noop \
+  pipelines.tekton.dev/vf-ci-supersede \
+  tasks.tekton.dev/vf-ci-supersede \
   referencegrants.gateway.networking.k8s.io/aether-ci-httproutes-to-el-vf-platform \
   rolebindings.rbac.authorization.k8s.io/vf-ci-triggers-eventlistener \
+  rolebindings.rbac.authorization.k8s.io/vf-ci-supersede \
+  roles.rbac.authorization.k8s.io/vf-ci-supersede \
   serviceaccounts/vf-ci-triggers \
+  serviceaccounts/vf-ci-supersede \
   secrets/vf-ci-webhook
 kubectl delete --ignore-not-found \
   clusterrolebindings.rbac.authorization.k8s.io/vf-ci-triggers-eventlistener

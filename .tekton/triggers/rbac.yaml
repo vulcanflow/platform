@@ -1,5 +1,7 @@
-# Identity of the EventListener pod. It gets exactly the two ClusterRoles that
-# Tekton Triggers ships for this purpose and nothing else:
+# Two identities: the EventListener's, here, and vf-ci-supersede's, at the end.
+#
+# The EventListener pod gets exactly the two ClusterRoles that Tekton Triggers
+# ships for this purpose and nothing else:
 #
 #   tekton-triggers-eventlistener-roles         namespaced: read the Triggers
 #                                               objects in vf-ci, create the
@@ -47,3 +49,63 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: tekton-triggers-eventlistener-clusterroles
+---
+# Identity of the vf-ci-supersede pod (supersede-pipeline.yaml), which cancels
+# a pull request's checks for a head that a newer push replaced (VFL-974). Its
+# Role allows get, list and patch on PipelineRuns in vf-ci, and nothing else:
+# no create, update, delete or watch, no other resource, no other namespace.
+# The step lists the runs to cancel and patches each one; kubectl patch reads
+# the run first, and the step reads it again when a patch fails.
+#
+# What patch can change. Tekton's admission webhook refuses every change to
+# the spec of an unfinished PipelineRun except spec.status, and every change
+# to the spec of a finished one (PipelineRunSpec.ValidateUpdate in
+# pkg/apis/pipeline/v1/pipelinerun_validation.go, Tekton Pipelines v1.15.1).
+# So the grant can cancel or stop a run but not retarget it: not its Pipeline,
+# params, workspaces, service account or pod template. A run's result is in the
+# pipelineruns/status subresource, which the Role does not name. The webhook
+# does not check metadata, so the grant could also change a run's labels and
+# annotations. The step sends only the spec.status patch, and checks the form
+# of its two inputs before it puts them in the label selector.
+#
+# Who gets the token. The ServiceAccount turns automount off, and only the pod
+# template in supersede-template.yaml turns it back on. Anyone who can make a
+# pod in vf-ci, directly or through a TaskRun, PipelineRun or other workload,
+# can name this account: the EventListener, through its templates only, and the
+# cluster's administrators.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vf-ci-supersede
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vf-ci-supersede
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vf-ci-supersede
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+subjects:
+  - kind: ServiceAccount
+    name: vf-ci-supersede
+    namespace: vf-ci
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vf-ci-supersede

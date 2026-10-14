@@ -1,0 +1,172 @@
+# Cancels a pull request's checks for a head that a newer push replaced
+# (VFL-974). A `synchronize` delivery starts it through the
+# pull-request-supersede trigger (event-listener.yaml), next to the two check
+# runs that the same delivery starts for the new head.
+#
+# It cancels every unfinished run in vf-ci that carries both labels
+#
+#   vulcanflow.io/github-pr=<pr-number>,vulcanflow.io/github-head-sha=<before>
+#
+# where `before` is the head commit the push replaced, as the delivery states
+# it. pull-request-template.yaml puts both labels on every check run. The key is
+# the delivery's `before`, not which run is newer: a delivery redelivered from
+# GitHub's Recent Deliveries still carries its own `before`, so it can only
+# cancel a head that a push already replaced, never the current one.
+#
+# The cancel sets spec.status to CancelledRunFinally. vf-lane-gate and
+# vf-rust-check have no `finally` tasks, so this is the same as Cancelled:
+# Tekton stops the running checks and starts no others. Once VFL-778 adds a
+# `finally` reporter, the superseded run still reports instead of leaving its
+# status pending.
+#
+# A run that has finished is left alone, as is one whose cancel or stop is
+# already under way. A run that finishes or is deleted between the list and the
+# patch is not an error, and no run to cancel is not one either. The step
+# fails only when an input is malformed, when an unfinished run could not be
+# cancelled, or when the API server cannot be asked. The pod runs nothing from
+# the revision under test. It has no workspace and no checkout. The pod
+# template in supersede-template.yaml gives it the vf-ci-supersede token
+# (rbac.yaml).
+#
+# As in noop-pipeline.yaml, webhook fields reach the step through env, never by
+# $(params.*) substitution inside the script. They go into a label selector, so
+# the script checks their form before it uses them.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: vf-ci-supersede
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  description: >-
+    Cancels the unfinished check runs of one pull request at one head commit
+    that a newer push replaced.
+  params:
+    - name: pr-number
+      type: string
+      description: The pull request's number.
+    - name: before
+      type: string
+      description: >-
+        The head commit the push replaced: the `before` of the `synchronize`
+        delivery, a full 40-character commit id.
+  steps:
+    - name: cancel
+      # kubectl 1.36.4 on Alpine 3.24.1, multi-arch index (amd64 and arm64
+      # included). It comes from the `alpine` organisation on Docker Hub
+      # (alpine-docker), not from Alpine Linux. Its kubectl binary is the same
+      # file as the Kubernetes v1.36.4 release, checked by sha256 against
+      # dl.k8s.io for amd64 and arm64 on 2026-10-14. Kubernetes' own
+      # registry.k8s.io/kubectl image has no shell, and the step needs one. It
+      # uses only `get` and a merge `patch`, which are the same on every
+      # Kubernetes version.
+      image: docker.io/alpine/kubectl:1.36.4@sha256:a2cd8ee034cbe04d651e565b3373299b31921de5c2af86490559e21b3e197808
+      env:
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: BEFORE
+          value: $(params.before)
+        # kubectl writes its cache under $HOME. The root filesystem is
+        # read-only. /tekton/home is the emptyDir Tekton mounts in every step.
+        - name: HOME
+          value: /tekton/home
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+      script: |
+        #!/bin/sh
+        set -eu
+        case "$PR_NUMBER" in
+          '' | 0* | *[!0-9]*)
+            echo "vf-ci-supersede: pr-number '$PR_NUMBER' is not a pull request number" >&2
+            exit 1 ;;
+        esac
+        case "$BEFORE" in
+          '' | *[!0-9a-f]*)
+            echo "vf-ci-supersede: before '$BEFORE' is not a commit id" >&2
+            exit 1 ;;
+        esac
+        if [ "${#BEFORE}" -ne 40 ]; then
+          echo "vf-ci-supersede: before '$BEFORE' is not a commit id" >&2
+          exit 1
+        fi
+
+        # One line per run: name, spec.status and the status of its
+        # Succeeded condition, separated by ':'. A field that is not set
+        # prints empty, so the separator cannot be a space.
+        runs=$(kubectl -n vf-ci get pipelineruns.tekton.dev \
+          -l "vulcanflow.io/github-pr=$PR_NUMBER,vulcanflow.io/github-head-sha=$BEFORE" \
+          -o jsonpath='{range .items[*]}{.metadata.name}{":"}{.spec.status}{":"}{.status.conditions[?(@.type=="Succeeded")].status}{"\n"}{end}')
+        if [ -z "$runs" ]; then
+          echo "vf-ci-supersede: pull request $PR_NUMBER has no run at $BEFORE; nothing to cancel"
+          exit 0
+        fi
+
+        failed=0
+        while IFS=: read -r name spec_status succeeded; do
+          case "$succeeded" in
+            True | False)
+              echo "$name: already finished"
+              continue ;;
+          esac
+          case "$spec_status" in
+            Cancelled | CancelledRunFinally | StoppedRunFinally)
+              echo "$name: already $spec_status"
+              continue ;;
+          esac
+          if kubectl -n vf-ci patch pipelineruns.tekton.dev "$name" --type=merge \
+              -p '{"spec":{"status":"CancelledRunFinally"}}'; then
+            continue
+          fi
+          # Tekton refuses every change to a finished run, so the patch also
+          # fails for a run that finished after the list.
+          state=$(kubectl -n vf-ci get pipelineruns.tekton.dev "$name" --ignore-not-found \
+            -o jsonpath='{.metadata.name}{":"}{.status.conditions[?(@.type=="Succeeded")].status}')
+          case "$state" in
+            '') echo "$name: deleted since the list" ;;
+            *:True | *:False) echo "$name: finished since the list" ;;
+            *)
+              echo "vf-ci-supersede: could not cancel $name" >&2
+              failed=1 ;;
+          esac
+        done <<EOF
+        $runs
+        EOF
+        exit "$failed"
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: vf-ci-supersede
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  params:
+    - name: pr-number
+      type: string
+    - name: before
+      type: string
+  tasks:
+    - name: cancel-superseded
+      taskRef:
+        name: vf-ci-supersede
+      params:
+        - name: pr-number
+          value: $(params.pr-number)
+        - name: before
+          value: $(params.before)

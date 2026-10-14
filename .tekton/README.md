@@ -68,9 +68,10 @@ retired (VFL-127).
 ## Prerequisites
 
 - Namespace `vf-ci`, from a `triggers/` revision before VFL-777 or from
-  `kubectl create namespace vf-ci`. `triggers/` comes last, after step 2, and
-  only at or after the VFL-974 commit: it starts these pipelines for every
-  pull request update (`triggers/README.md`, "Prerequisites").
+  `kubectl create namespace vf-ci`. `triggers/` comes last, after step 2, only
+  at or after the VFL-974 commit, and from the same commit as the egress
+  policy: it starts these pipelines for every pull request update
+  (`triggers/README.md`, "Prerequisites").
 - `kubectl` with rights to create Tasks, Pipelines and PipelineRuns in `vf-ci`.
 - Tekton Pipelines with the `tekton.dev/v1` API. The cluster had v1.15.1 on
   2026-10-09.
@@ -100,6 +101,11 @@ retired (VFL-127).
   - to cluster DNS, the `k8s-app: kube-dns` pods in `kube-system` on port 53
     UDP and TCP, with a DNS rule (`rules.dns`) that allows lookups of the same
     hosts by `matchName`, and of no other name.
+
+  A third rule selects the `vf-ci-supersede` pods (`triggers/`, VFL-974). They
+  run none of the revision's code but hold a token that may patch
+  PipelineRuns, so they may reach the Kubernetes API server
+  (`toEntities: kube-apiserver`) and nothing else.
 
   Once an egress rule selects a pod, Cilium denies all other egress from it.
   Host names need Cilium: for destinations outside the cluster a Kubernetes
@@ -148,7 +154,9 @@ This creates or updates three Tasks (`vf-lane-gate`, `vf-lane-gate-selftest`,
 `vf-rust-check`) and two Pipelines (`vf-lane-gate`, `vf-rust-check`) in
 `vf-ci`. It does not touch `triggers/`.
 
-Then, once both checks under "Prerequisites" pass, the egress policy:
+Then, once both checks under "Prerequisites" pass, the egress policy. Apply
+it from the commit you will apply `triggers/` from, so that it carries the
+rule for the `vf-ci-supersede` pods that `triggers/` adds:
 
 ```sh
 commit=<commit>; kubectl apply -f "https://raw.githubusercontent.com/vulcanflow/platform/$commit/.tekton/policies/check-egress.yaml"
@@ -266,14 +274,14 @@ kubectl -n vf-ci delete --ignore-not-found ciliumnetworkpolicies.cilium.io/vf-ci
 - Runs for pull requests from forks. The webhook starts these pipelines only
   for pull requests whose head branch is in this repository
   (`triggers/event-listener.yaml`); a fork's pull request starts nothing.
-- Cancelling a pull request's runs when a newer push supersedes them. That
-  control is VFL-974, and `triggers/` is applied only at or after its commit.
 - Pruning of finished runs, and a LimitRange or ResourceQuota on `vf-ci`. Each
   pull request update starts six pods: the four `vf-lane-gate` checks, which
   run for up to 20m, and `check-amd64` and `check-arm64`, which request 2 CPU
-  and 4Gi each and run for up to 1h30m. A run's timeouts count from its
-  creation, not from when its pods are scheduled, so after a burst of pushes
-  a check can time out while its pod is still `Pending`. That red is not the
-  code's.
+  and 4Gi each and run for up to 1h30m. A push cancels its pull request's
+  unfinished runs for the head it replaced (`triggers/README.md`, "Superseded
+  runs"), but the runs of different pull requests still compete for the
+  nodes. A run's timeouts count from its creation, not from when its pods are
+  scheduled, so after a burst of updates a check can time out while its pod
+  is still `Pending`. That red is not the code's.
 - Reporting each check to the PR commit as a status with the same context
   name, and switching the required contexts on `main` (VFL-126).
