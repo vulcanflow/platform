@@ -53,6 +53,9 @@ classify_path() {
 # to a NEUTRAL name, is classified the same as changing it. -M turns rename
 # detection on whatever diff.renames is set to locally. -M never reports a copy (a
 # copied file is an ordinary A row), so R is the only record that carries two paths.
+# C stays in --diff-filter with no C* branch below on purpose: a copy record, if
+# one ever appears, must be seen and rejected (fail closed) rather than dropped
+# from the listing (fail open).
 #
 # -z makes every path reach classify_path as itself. Without it git C-quotes a
 # path that holds a non-ASCII byte, a '"', a '\' or a control character, so
