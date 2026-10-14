@@ -40,10 +40,16 @@ default:
 
 # Toolchain bootstrap for a machine that has no C compiler and no Rust — the
 # agent runners. Prints the environment to stdout and its progress to stderr,
-# so the whole thing is `eval "$(just bootstrap)"`. Idempotent and cached: a
-# second run re-prints the environment without downloading anything. Not a
-# dependency of any other recipe, because on a normal developer machine the
-# toolchain is already there and this must not run behind their back.
+# so the whole thing is
+#
+#     vf_env="$(just bootstrap)" && eval "$vf_env" || false
+#
+# and not a bare `eval "$(just bootstrap)"`: a failed bootstrap prints nothing
+# and exits non-zero, `eval ""` succeeds, and the caller carries on without the
+# toolchain (README.md, "Working on it"). Idempotent and cached: a second run
+# re-prints the environment without downloading anything. Not a dependency of
+# any other recipe, because on a normal developer machine the toolchain is
+# already there and this must not run behind their back.
 bootstrap:
     @ci/bootstrap-toolchain.sh
 
