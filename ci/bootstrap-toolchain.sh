@@ -221,8 +221,10 @@ GITENV
 #
 # Usage: cc_version <compiler> [<advice>]. Prints the first line of
 # `<compiler> --version`; if that fails or is empty, says so instead, with
-# <advice> on what to do about it, and fails. The default advice is for a
-# compiler in the sysroot, which nothing but rebuilding the tree repairs.
+# <advice> on what to do about it, and fails. The default advice, to rebuild
+# the tree, is for a compiler in the sysroot, which nothing else repairs. It
+# is also right for the shims probed for the ready line: the full run has
+# just written them, so one that fails there fails through the tree.
 cc_version() {
   local out advice="${2:-the C toolchain for lock $lock_digest is left as it is, remove $tree to rebuild it}"
   if out="$("$1" --version 2>/dev/null)" && out="${out%%$'\n'*}" && [[ -n "$out" ]]; then
