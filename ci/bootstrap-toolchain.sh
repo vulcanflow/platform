@@ -31,8 +31,11 @@
 # The lock is regenerated, not hand-edited: see ci/toolchain/resolve-debs.py.
 #
 # Usage:
-#   eval "$(ci/bootstrap-toolchain.sh)"   # bootstrap, then export the env
-#   ci/bootstrap-toolchain.sh --env-only  # just print the env, no network
+#   vf_env="$(ci/bootstrap-toolchain.sh)" && eval "$vf_env" || false
+#       Bootstrap, then export the env. Not a bare `eval "$(…)"`, which hides
+#       a failed bootstrap: see README.md, "Working on it".
+#   ci/bootstrap-toolchain.sh --env-only
+#       Just print the env, no network. Eval it the same way.
 #
 # The prefix defaults to a sibling of the checkout so it survives `git clean`
 # and is shared by every task on the same workspace. Override with
@@ -53,6 +56,14 @@
 # host `cc` must compile, link and run a small C program, `ld` must start,
 # and the cross `cc` must compile and link the same program for the other
 # architecture. If any of that fails, nothing is published.
+#
+# A tree that is already present gets a cheaper check each time it is used:
+# its two compilers must still report a version, and `--env-only` asks the
+# same of the two compiler shims the env names. A failure exits 1 and leaves
+# the tree as it is. So `--env-only` fails not only when this lock has no tree
+# yet, but also when a compiler or compiler shim of the tree it has does not
+# run. A full run regenerates the shims; a broken compiler stays until the
+# tree is removed.
 #
 # Bootstraps on one prefix are serialised by a lock file. A bootstrap that has
 # to wait for it says so on stderr, and gives up after VF_TOOLCHAIN_LOCK_WAIT
@@ -208,15 +219,19 @@ GITENV
 # publishing; it only catches a tree that has broken since. A tree that fails
 # is reported and left exactly as it is.
 #
-# Usage: cc_version <compiler>. Prints the first line of `<compiler>
-# --version`; if that fails or is empty, says so instead and fails.
+# Usage: cc_version <compiler> [<advice>]. Prints the first line of
+# `<compiler> --version`; if that fails or is empty, says so instead, with
+# <advice> on what to do about it, and fails. The default advice, to rebuild
+# the tree, is for a compiler in the sysroot, which nothing else repairs. It
+# is also right for the shims probed for the ready line: the full run has
+# just written them, so one that fails there fails through the tree.
 cc_version() {
-  local out
+  local out advice="${2:-the C toolchain for lock $lock_digest is left as it is, remove $tree to rebuild it}"
   if out="$("$1" --version 2>/dev/null)" && out="${out%%$'\n'*}" && [[ -n "$out" ]]; then
     printf '%s\n' "$out"
     return 0
   fi
-  echo "bootstrap-toolchain: $1 does not run; the C toolchain for lock $lock_digest is left as it is, remove $tree to rebuild it" >&2
+  echo "bootstrap-toolchain: $1 does not run; $advice" >&2
   return 1
 }
 
@@ -234,9 +249,15 @@ if [[ "${1:-}" == "--env-only" ]]; then
     exit 1
   fi
   # Nor to one that is there but no longer runs: the compilers first, so the
-  # message names a missing one, then the shims the env names.
-  for compiler in "${compilers[@]}" "$shim_dir/cc" "$shim_dir/$cross_gnu_triple-cc"; do
+  # message names a missing one, then the compiler shims the env names. With
+  # the compilers working, a full run regenerates the shims, so that is the
+  # advice for them; a moved prefix is the usual way to break them.
+  for compiler in "${compilers[@]}"; do
     cc_version "$compiler" >/dev/null || exit 1
+  done
+  for shim in "$shim_dir/cc" "$shim_dir/$cross_gnu_triple-cc"; do
+    cc_version "$shim" "run ci/bootstrap-toolchain.sh without --env-only to regenerate the shims" \
+      >/dev/null || exit 1
   done
   # The same for Rust. The C tree is published before rustup is installed, so
   # a bootstrap killed between the two leaves a tree and no cargo, and the env
@@ -281,13 +302,13 @@ exec 9>"$lock_file"
 flock_rc=0
 flock -n 9 || flock_rc=$?
 if (( flock_rc == 1 && 10#$lock_wait > 0 )); then
-  log "waiting up to ${lock_wait}s for another bootstrap to release $lock_file"
+  log "waiting up to $((10#$lock_wait))s for another bootstrap to release $lock_file"
   flock_rc=0
   flock -w "$lock_wait" 9 || flock_rc=$?
 fi
 case "$flock_rc" in
   0) ;;
-  1) log "gave up after ${lock_wait}s waiting for $lock_file"; exit 1 ;;
+  1) log "gave up after $((10#$lock_wait))s waiting for $lock_file"; exit 1 ;;
   *) log "flock failed on $lock_file (exit $flock_rc)"; exit 1 ;;
 esac
 
