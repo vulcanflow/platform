@@ -95,7 +95,8 @@ retired (VFL-127).
   `tekton.dev/pipeline` label is `vf-lane-gate` or `vf-rust-check`, and allows
   egress only:
   - to the hosts in the bullet above, by `toFQDNs` `matchName`, on TCP port
-    443;
+    443. Only the `check-amd64` pods may reach `deb.debian.org`: a second
+    rule selects them by their `tekton.dev/pipelineTask` label;
   - to cluster DNS, the `k8s-app: kube-dns` pods in `kube-system` on port 53
     UDP and TCP, with a DNS rule (`rules.dns`, `matchPattern: "*"`).
 
@@ -235,9 +236,11 @@ kubectl -n vf-ci delete --ignore-not-found ciliumnetworkpolicies.cilium.io/vf-ci
   (`triggers/event-listener.yaml`); a fork's pull request starts nothing.
 - Pruning of finished runs, cancelling a pull request's runs when a newer
   push supersedes them, and a LimitRange or ResourceQuota on `vf-ci`. Each
-  pull request update starts five pods, `check-arm64` among them at 2 CPU and
-  4Gi, for up to 1h30m. A run's timeouts count from its creation, not from
-  when its pods are scheduled, so after a burst of pushes a check can time out
-  while its pod is still `Pending`. That red is not the code's.
+  pull request update starts six pods: the four `vf-lane-gate` checks, which
+  run for up to 20m, and `check-amd64` and `check-arm64`, which request 2 CPU
+  and 4Gi each and run for up to 1h30m. A run's timeouts count from its
+  creation, not from when its pods are scheduled, so after a burst of pushes
+  a check can time out while its pod is still `Pending`. That red is not the
+  code's.
 - Reporting each check to the PR commit as a status with the same context
   name, and switching the required contexts on `main` (VFL-126).

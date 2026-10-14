@@ -273,7 +273,7 @@ kubectl -n vf-ci logs deploy/el-vf-platform --tail=-1 --since=1h |
 ```
 
 A pull request delivery starts two runs, `vf-lane-gate-...` and
-`vf-rust-check-...`, with five checks between them. Each check's checkout
+`vf-rust-check-...`, with six checks between them. Each check's checkout
 step logs the commit it tested as `HEAD <sha> <subject>`. GitHub's merge
 commits are titled `Merge <head> into <base>`, so `<head>` there must be the
 run's `HEAD-SHA`:
@@ -293,9 +293,10 @@ A different `<head>` means the check fetched a stale merge ref
 request from a fork starts no run: its delivery's id matches no
 PipelineRun.
 
-The pods must not mount the `vf-ci` `default` token. `check-arm64` has its
-own pod template in `pull-request-template.yaml`, which Tekton merges with
-the run's; this shows that the merge kept the token off:
+The pods must not mount the `vf-ci` `default` token. `check-amd64` and
+`check-arm64` each have their own pod template in
+`pull-request-template.yaml`, which Tekton merges with the run's; this shows
+that the merge kept the token off:
 
 ```sh
 kubectl -n vf-ci get pods -l "vulcanflow.io/github-delivery=$delivery_id" \

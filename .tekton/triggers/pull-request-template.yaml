@@ -2,7 +2,7 @@
 # one of vf-rust-check, as GitHub starts lane-gate.yml and rust-check.yml for a
 # pull_request event. The pod settings are those of ../pipelineruns/: an
 # emptyDir per TaskRun, no service account token, the arm64 nodeSelector for
-# the rust-check leg, and the same timeouts. Keep the two in step.
+# both rust-check legs, and the same timeouts. Keep the two in step.
 #
 # One difference from GitHub: lane-gate.yml runs only for pull requests into
 # main, while both runs start here whatever the base branch is. The lane gate
@@ -29,7 +29,7 @@
 #
 #   kubectl -n vf-ci get taskruns -l "vulcanflow.io/github-delivery=$delivery_id"
 #
-# lists the five checks one delivery started.
+# lists the six checks one delivery started.
 apiVersion: triggers.tekton.dev/v1beta1
 kind: TriggerTemplate
 metadata:
@@ -90,8 +90,8 @@ spec:
         params:
           - name: revision
             value: $(tt.params.merge-ref)
-        # No cache-arm64 workspace: every run is a cold build, as in
-        # ../pipelineruns/rust-check.yaml.
+        # No cache-amd64 or cache-arm64 workspace: every run is a cold build,
+        # as in ../pipelineruns/rust-check.yaml.
         workspaces:
           - name: source
             emptyDir: {}
@@ -99,6 +99,10 @@ spec:
           podTemplate:
             automountServiceAccountToken: false
         taskRunSpecs:
+          - pipelineTaskName: check-amd64
+            podTemplate:
+              nodeSelector:
+                kubernetes.io/arch: arm64
           - pipelineTaskName: check-arm64
             podTemplate:
               nodeSelector:
