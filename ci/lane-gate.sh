@@ -51,16 +51,36 @@ classify_path() {
 # One path per line. A deleted path is listed, and a rename is listed under both
 # its old and its new path, so deleting a GATE or TEST file, or renaming one away
 # to a NEUTRAL name, is classified the same as changing it. -M turns rename
-# detection on whatever diff.renames is set to locally; a copy keeps its source,
-# so only the new path is listed.
+# detection on whatever diff.renames is set to locally. -M never reports a copy (a
+# copied file is an ordinary A row), so R is the only record that carries two paths.
+#
+# -z makes every path reach classify_path as itself. Without it git C-quotes a
+# path that holds a non-ASCII byte, a '"', a '\' or a control character, so
+# crates/vf-core/tests/café.rs arrives as "crates/vf-core/tests/caf\303\251.rs"
+# and its leading '"' makes it NEUTRAL. -c core.quotePath=false is not enough: it
+# stops quoting only the non-ASCII bytes, and a '"', '\', tab or newline is still
+# quoted. With -z git prints each path verbatim and ends every field with a NUL,
+# which no path can contain.
+#
+# cmd_partition reads one path per line, so a newline inside a path is printed as
+# '?'. Otherwise crates/a<newline>b/src/lib.rs would split into crates/a and
+# b/src/lib.rs, both NEUTRAL, and hide a PROD file. No lane pattern contains a '?'
+# or a newline, so the class does not change. A status other than A, D, M, R or T,
+# or a record cut short, is a shape this parser does not know, so it fails closed
+# instead of reading the rest of the stream out of step.
 changed_files() {
-  git diff --name-status -M --diff-filter=ACDMRT "$BASE_REF...$HEAD_REF" \
-    | while IFS=$'\t' read -r status path dest; do
+  git diff --name-status -z -M --diff-filter=ACDMRT "$BASE_REF...$HEAD_REF" \
+    | while IFS= read -r -d '' status; do
         case "$status" in
-          R*) printf '%s\n%s\n' "$path" "$dest" ;;
-          C*) printf '%s\n' "$dest" ;;
-          *)  printf '%s\n' "$path" ;;
+          R*)     n=2 ;;
+          [ADMT]) n=1 ;;
+          *)      fail "partition: git diff printed status '$status', which changed_files does not parse" ;;
         esac
+        while [ "$n" -gt 0 ]; do
+          IFS= read -r -d '' path || fail "partition: git diff record for status '$status' ends early"
+          printf '%s\n' "${path//$'\n'/?}"
+          n=$((n - 1))
+        done
       done
 }
 
