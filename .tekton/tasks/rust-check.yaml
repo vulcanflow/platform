@@ -70,20 +70,29 @@
 #     each binary. qemu runs in user mode and nothing is registered with the
 #     kernel (no binfmt_misc).
 #   - The runner is a small wrapper that also records each binary it runs.
-#     After `just test-unit` the step fails unless at least one binary ran
-#     through it. Without that check, a recipe that passed its own --target,
-#     or a config that dropped CARGO_BUILD_TARGET, would build and test arm64
-#     natively and still report a green `check (amd64)`. `just check` and
-#     `just fuzz-check` run no binary, so nothing like it checks them; they
-#     get the target from the same environment.
+#     After `just test-unit` the step asks cargo for the test executables it
+#     built for that recipe (`--no-run --message-format=json`; every unit is
+#     fresh by then, so nothing is rebuilt). The step fails unless there is at
+#     least one and every one of them ran through the runner. Without that
+#     check, a recipe that passed its own --target or ran a second cargo
+#     command without the target, or a config that dropped CARGO_BUILD_TARGET,
+#     would build and test some or all unit tests for arm64 natively and
+#     still report a green `check (amd64)`. The listing repeats the recipe's
+#     cargo command, so before `just test-unit` the step checks that `just
+#     --dry-run test-unit` prints exactly that command, and fails if the
+#     recipe changed. Runs before `just test-unit`, such as the C and C++
+#     smoke programs, are not counted. `just check` and `just fuzz-check` run
+#     no binary, so nothing like it checks them; they get the target from the
+#     same environment.
 #
 # The cross tools and qemu come from the `LOCK` list in the script: 22
 # packages from Debian bookworm's arm64 index, each pinned by name, version,
-# SHA-256 and URL, like ci/toolchain/debs-*.lock. They are unpacked with `dpkg-deb -x` under /tmp. No
-# maintainer script runs, so qemu is not registered either. The list is from
-# bookworm because the image is bookworm. The cross gcc 12.2.0-14 and binutils
-# 2.40-2 then match the image's own gcc and binutils, so they run on the
-# image's libraries. Packages the image already has are left out of the list.
+# SHA-256 and URL, like ci/toolchain/debs-*.lock. They are unpacked with
+# `dpkg-deb -x` under /tmp. No maintainer script runs, so qemu is not
+# registered either. The list is from bookworm because the image is bookworm.
+# The cross gcc 12.2.0-14 and binutils 2.40-2 then match the image's own gcc
+# and binutils, so they run on the image's libraries. Packages the image
+# already has are left out of the list.
 # To regenerate it (for a new image, or when Debian drops a listed version from
 # its pool and the download fails with 404), resolve the dependency closure of
 # gcc-12-x86-64-linux-gnu, g++-12-x86-64-linux-gnu, binutils-x86-64-linux-gnu,
@@ -493,18 +502,40 @@ spec:
         # --- just test-unit (workflow step) ---------------------------------
         banner "just test-unit"
         if [ "$EXECUTION" = cross-qemu ]; then
+          # See the runner in the header. The listing after the recipe runs
+          # this command, so the recipe must still be exactly this command.
+          unit_cmd=(cargo test --workspace --lib --bins)
+          recipe="$(just --color never --dry-run test-unit 2>&1)"
+          if [ "$recipe" != "${unit_cmd[*]}" ]; then
+            echo "the test-unit recipe now runs:" >&2
+            printf '%s\n' "$recipe" | sed 's/^/  /' >&2
+            echo "make unit_cmd in this step match it." >&2
+            exit 1
+          fi
           : > "$ran"
         fi
         just test-unit
         if [ "$EXECUTION" = cross-qemu ]; then
-          # See the runner in the header: no run through qemu means the unit
-          # tests were not built for x86_64.
-          ran_count="$(wc -l < "$ran")"
-          if [ "$ran_count" -eq 0 ]; then
-            echo "just test-unit ran no binary through qemu-x86_64, so it did not test x86_64." >&2
+          # Every test executable cargo built for the recipe must have run
+          # through the runner. The JSON is read with the image's python3.
+          built="$cross/built-for-x86_64"
+          "${unit_cmd[@]}" --no-run --message-format=json \
+            | python3 -c 'import json, sys; sys.stdout.writelines(
+                m["executable"] + "\n" for m in map(json.loads, sys.stdin)
+                if m.get("reason") == "compiler-artifact"
+                and m["profile"]["test"] and m["executable"])' \
+            | sort -u > "$built"
+          if [ ! -s "$built" ]; then
+            echo "cargo lists no unit-test executable, so just test-unit did not test x86_64." >&2
             exit 1
           fi
-          echo "$ran_count unit-test binaries ran under qemu-x86_64."
+          missing="$(sort -u "$ran" | comm -13 - "$built")"
+          if [ -n "$missing" ]; then
+            echo "these unit-test executables did not run through qemu-x86_64, so they were not tested as x86_64:" >&2
+            printf '%s\n' "$missing" | sed 's/^/  /' >&2
+            exit 1
+          fi
+          echo "all $(wc -l < "$built") unit-test executables cargo built ran under qemu-x86_64."
         fi
 
         # --- just fuzz-check (workflow step) --------------------------------
