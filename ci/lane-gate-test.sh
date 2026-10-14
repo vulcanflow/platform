@@ -1464,5 +1464,94 @@ printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - u
 commit add-workflow-pinned-quote-filename
 check "pinned UTF-8 workflow at a filename holding a double quote passes" pins pass
 
+#   The cases below (149-152) are regression fixtures for VFL-696 (the
+#   VFL-696 change): cmd_erosion used to count the base at $BASE_REF, the
+#   freshly fetched main tip, while $HEAD_REF can be a merge ref computed on
+#   an older main (a reopened PR reuses a stale merge ref; main can move
+#   before the job fetches it). Tests main added after that point then read
+#   as tests the PR removed. The VFL-696 change counts the base at
+#   git merge-base "$BASE_REF" "$HEAD_REF" instead, the same base the
+#   BASE...HEAD diff checks already use. None of the cases above ever move
+#   `baseline` forward after the fork, so none of them could have caught the
+#   regression the VFL-696 change fixes.
+
+# --- 149. erosion: baseline advances past the fork with a new test, head (forked earlier) touches only a non-Rust file: pass, counts equal --
+# This is the false-red shape from PR #30 run 37956828823: main (baseline)
+# keeps moving after the head forks. The old code counted the base at
+# baseline's tip (4 markers, one added after the fork) against the head's 3,
+# a false reduction. The fix counts the base at the fork point (3), so base
+# and head report equal counts.
+setup
+git checkout -q baseline
+printf '#[test]\nfn new_baseline_test(){assert!(true);}\n' > crates/vf-core/tests/new_baseline.rs
+commit baseline-gains-test-after-fork
+git checkout -q main
+printf '# docs\nmore after fork\n' > README.md
+commit head-non-rust-change-after-fork
+check "baseline gains a test after the fork; head (forked earlier) touches only a non-Rust file" erosion pass
+out="$(./ci/lane-gate.sh erosion baseline HEAD 2>&1)"
+base_n="$(printf '%s\n' "$out" | grep -oE '[0-9]+ at base' | grep -oE '[0-9]+' | head -1)"
+head_n="$(printf '%s\n' "$out" | grep -oE '[0-9]+ at head' | grep -oE '[0-9]+' | head -1)"
+name="note reports equal counts at base and head when baseline's post-fork test does not reach head"
+if [ -n "$base_n" ] && [ "$base_n" = "$head_n" ]; then
+  printf 'ok    %-46s note: %s==%s\n' "$name" "$base_n" "$head_n"; pass_count=$((pass_count+1))
+else
+  printf 'NOT OK %-45s expected equal base/head counts, got base=%s head=%s\n' "$name" "$base_n" "$head_n"
+  printf '%s\n' "$out" | sed 's/^/        | /'
+  fail_count=$((fail_count+1))
+fi
+
+# --- 150. erosion: baseline gains tests after the fork, head removes one #[test]: refused --
+# The base-drift fix must not mask a real regression: the head itself drops a
+# test declaration relative to the fork point, so this fails whether the base
+# is counted at the fork (3) or at baseline's drifted tip (4).
+setup
+git checkout -q baseline
+printf '#[test]\nfn new_baseline_test(){assert!(true);}\n' > crates/vf-core/tests/new_baseline.rs
+commit baseline-gains-test-after-fork-2
+git checkout -q main
+printf '#[test]\nfn two(){assert!(true);}\n' > crates/vf-core/tests/more.rs
+commit head-removes-one-test-after-fork
+check "baseline gains tests after the fork; head removes one #[test]" erosion fail
+
+# --- 151. erosion: head is a merge commit of an earlier baseline into the branch (GitHub merge-ref shape), baseline then gains more tests: pass --
+# Reproduces the PR #30 shape directly: the head is a merge of the PR branch
+# with the base as it stood at merge time (a stale `refs/pull/N/merge`), and
+# the base keeps moving afterward. merge-base(baseline, HEAD) is the base's
+# state at merge time, not baseline's current tip, so the counts match.
+setup
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit pr-branch-work
+git checkout -q baseline
+printf '#[test]\nfn merged_base_test(){assert!(true);}\n' > crates/vf-core/tests/merged_base.rs
+commit baseline-state-at-merge-time
+git checkout -q main
+git merge -q --no-ff baseline -m merge-ref
+git checkout -q baseline
+printf '#[test]\nfn new_after_merge_ref(){assert!(true);}\n' > crates/vf-core/tests/new_after_merge_ref.rs
+commit baseline-advances-after-merge-ref
+git checkout -q main
+check "head is a merge commit of baseline's earlier state (merge-ref); baseline then gains more tests" erosion pass
+
+# --- 152. erosion: no merge-base between base and an orphan head: refused --
+# Discretionary extra named in the task: an orphan head (unrelated history, as
+# from a shallow or history-rewritten checkout) has no merge-base with
+# baseline at all, so the fix must fail closed rather than fall back to some
+# other count.
+setup
+git checkout -q --orphan orphan-head
+printf 'orphan root, no shared history with baseline\n' > ORPHAN_MARKER.txt
+git add -A >/dev/null
+git commit -qm orphan-root
+out="$(./ci/lane-gate.sh erosion baseline HEAD 2>&1)"; rc=$?
+name="no merge-base between baseline and an orphan head"
+if [ $rc -ne 0 ]; then
+  printf 'ok    %-46s %s=%s\n' "$name" erosion fail; pass_count=$((pass_count+1))
+else
+  printf 'NOT OK %-45s %s: expected fail got pass\n' "$name" erosion
+  printf '%s\n' "$out" | sed 's/^/        | /'
+  fail_count=$((fail_count+1))
+fi
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
