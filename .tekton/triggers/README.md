@@ -313,8 +313,10 @@ their own:
 - Two pushes in the same second: the check counts a run from the same second
   as newer, so it cancels nothing.
 
-Not covered either, and in each case the current head's runs are cancelled;
-push again to start new ones:
+Not covered either, and in each case the current head's runs are cancelled.
+Push again, or redeliver from Recent Deliveries the pull request's
+`synchronize` delivery whose `after` is the current head, to start new ones:
+a delivery's run never cancels the runs that its own delivery started.
 
 - The older delivery's own run, when that delivery reaches the listener after
   a newer one and the newer push went back to the older delivery's `before`.
