@@ -1819,5 +1819,30 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: a/b/x]y@11d5960a326
 commit add-workflow-rule1-value-class-closing-bracket
 check "canonical value holding a ] before the pin is refused" pins fail
 
+# --- 180. pins: CRLF variant of case 168 - the deeper line right after a
+#     canonical line is still refused when every line ends in CRLF
+#     (VFL-1131): the next-line clause's own CR strip must run before the
+#     canonical line is matched, or the trailing CR keeps it from matching
+#     CANON_RE, the clause never starts, and GitHub would load
+#     `<pin> evil` as one plain scalar -------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\r\njobs:\r\n  build:\r\n    runs-on: ubuntu-latest\r\n    steps:\r\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\r\n          evil\r\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-deeper-crlf
+check_contains "CRLF variant of the deeper line after a canonical line" pins fail \
+  '.github/workflows/ci.yml:7: <a line indented deeper than the uses key above it>'
+
+# --- 181. pins: the next-line clause's state resets at a new file, so a
+#     pin on a.yml's last line does not carry its key column into b.yml's
+#     first line even though that line sits deeper (VFL-1131): dropping
+#     the file-change reset can only over-refuse, refusing b.yml's first
+#     line for no reason tied to a.yml -----------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/a.yml
+printf '          on: push\n          jobs:\n            b:\n              runs-on: ubuntu-latest\n              steps:\n                - run: echo ok\n' > .github/workflows/b.yml
+commit add-workflow-rule1-file-reset-a-then-b
+check "next-line state resets at a new file; b.yml's deeper first line is not refused" pins pass
+
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]
