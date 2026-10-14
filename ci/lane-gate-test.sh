@@ -1474,7 +1474,96 @@ printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - u
 commit add-workflow-pinned-quote-filename
 check "pinned UTF-8 workflow at a filename holding a double quote passes" pins pass
 
-#   The cases below (149-158) are new coverage for the VFL-490 bound itself
+#   The cases below (149-152) are regression fixtures for VFL-696 (the
+#   VFL-696 change): cmd_erosion used to count the base at $BASE_REF, the
+#   freshly fetched main tip, while $HEAD_REF can be a merge ref computed on
+#   an older main (a reopened PR reuses a stale merge ref; main can move
+#   before the job fetches it). Tests main added after that point then read
+#   as tests the PR removed. The VFL-696 change counts the base at
+#   git merge-base "$BASE_REF" "$HEAD_REF" instead, the same base the
+#   BASE...HEAD diff checks already use. None of the cases above ever move
+#   `baseline` forward after the fork, so none of them could have caught the
+#   regression the VFL-696 change fixes.
+
+# --- 149. erosion: baseline advances past the fork with a new test, head (forked earlier) touches only a non-Rust file: pass, counts equal --
+# This is the false-red shape from PR #30 run 37956828823: main (baseline)
+# keeps moving after the head forks. The old code counted the base at
+# baseline's tip (4 markers, one added after the fork) against the head's 3,
+# a false reduction. The fix counts the base at the fork point (3), so base
+# and head report equal counts.
+setup
+git checkout -q baseline
+printf '#[test]\nfn new_baseline_test(){assert!(true);}\n' > crates/vf-core/tests/new_baseline.rs
+commit baseline-gains-test-after-fork
+git checkout -q main
+printf '# docs\nmore after fork\n' > README.md
+commit head-non-rust-change-after-fork
+check "baseline gains a test after the fork; head (forked earlier) touches only a non-Rust file" erosion pass
+out="$(./ci/lane-gate.sh erosion baseline HEAD 2>&1)"
+base_n="$(printf '%s\n' "$out" | grep -oE '[0-9]+ at base' | grep -oE '[0-9]+' | head -1)"
+head_n="$(printf '%s\n' "$out" | grep -oE '[0-9]+ at head' | grep -oE '[0-9]+' | head -1)"
+name="note reports equal counts at base and head when baseline's post-fork test does not reach head"
+if [ -n "$base_n" ] && [ "$base_n" = "$head_n" ]; then
+  printf 'ok    %-46s note: %s==%s\n' "$name" "$base_n" "$head_n"; pass_count=$((pass_count+1))
+else
+  printf 'NOT OK %-45s expected equal base/head counts, got base=%s head=%s\n' "$name" "$base_n" "$head_n"
+  printf '%s\n' "$out" | sed 's/^/        | /'
+  fail_count=$((fail_count+1))
+fi
+
+# --- 150. erosion: baseline gains tests after the fork, head removes one #[test]: refused --
+# The base-drift fix must not mask a real regression: the head itself drops a
+# test declaration relative to the fork point, so this fails whether the base
+# is counted at the fork (3) or at baseline's drifted tip (4).
+setup
+git checkout -q baseline
+printf '#[test]\nfn new_baseline_test(){assert!(true);}\n' > crates/vf-core/tests/new_baseline.rs
+commit baseline-gains-test-after-fork-2
+git checkout -q main
+printf '#[test]\nfn two(){assert!(true);}\n' > crates/vf-core/tests/more.rs
+commit head-removes-one-test-after-fork
+check "baseline gains tests after the fork; head removes one #[test]" erosion fail
+
+# --- 151. erosion: head is a merge commit of an earlier baseline into the branch (GitHub merge-ref shape), baseline then gains more tests: pass --
+# Reproduces the PR #30 shape directly: the head is a merge of the PR branch
+# with the base as it stood at merge time (a stale `refs/pull/N/merge`), and
+# the base keeps moving afterward. merge-base(baseline, HEAD) is the base's
+# state at merge time, not baseline's current tip, so the counts match.
+setup
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit pr-branch-work
+git checkout -q baseline
+printf '#[test]\nfn merged_base_test(){assert!(true);}\n' > crates/vf-core/tests/merged_base.rs
+commit baseline-state-at-merge-time
+git checkout -q main
+git merge -q --no-ff baseline -m merge-ref
+git checkout -q baseline
+printf '#[test]\nfn new_after_merge_ref(){assert!(true);}\n' > crates/vf-core/tests/new_after_merge_ref.rs
+commit baseline-advances-after-merge-ref
+git checkout -q main
+check "head is a merge commit of baseline's earlier state (merge-ref); baseline then gains more tests" erosion pass
+
+# --- 152. erosion: no merge-base between base and an orphan head: refused --
+# Discretionary extra named in the task: an orphan head (unrelated history, as
+# from a shallow or history-rewritten checkout) has no merge-base with
+# baseline at all, so the fix must fail closed rather than fall back to some
+# other count.
+setup
+git checkout -q --orphan orphan-head
+printf 'orphan root, no shared history with baseline\n' > ORPHAN_MARKER.txt
+git add -A >/dev/null
+git commit -qm orphan-root
+out="$(./ci/lane-gate.sh erosion baseline HEAD 2>&1)"; rc=$?
+name="no merge-base between baseline and an orphan head"
+if [ $rc -ne 0 ]; then
+  printf 'ok    %-46s %s=%s\n' "$name" erosion fail; pass_count=$((pass_count+1))
+else
+  printf 'NOT OK %-45s %s: expected fail got pass\n' "$name" erosion
+  printf '%s\n' "$out" | sed 's/^/        | /'
+  fail_count=$((fail_count+1))
+fi
+
+#   The cases below (153-162) are new coverage for the VFL-490 bound itself
 #   (24662ad): cmd_pins now accepts exactly one line form, a pure comment or
 #   `^[[:space:]]*(- )?uses: <PIN_RE>([[:space:]]+#.*)?$` (rule 1), and
 #   refuses anywhere a line ending in `\` before LF/CRLF (rule 2) or any
@@ -1482,7 +1571,7 @@ check "pinned UTF-8 workflow at a filename holding a double quote passes" pins p
 #   rather than through the historical USES_SCOPE_RE/EXPLICIT_KEY_RE/etc.
 #   reasoning the removed cases 88-130-era comments used.
 
-# --- 149. pins: a double-quoted flow key split by an escaped line break,
+# --- 153. pins: a double-quoted flow key split by an escaped line break,
 #     rule 2 (ends in a backslash): refused ------------------------------
 setup
 mkdir -p .github/workflows
@@ -1490,7 +1579,7 @@ printf 'on: push\njobs:\n  build:\n    steps: [ { "us\\\n      es": evil/act@v4 
 commit add-workflow-rule2-flow-key-escaped-break
 check "flow key split by an escaped line break (rule 2: a line ending in a backslash)" pins fail
 
-# --- 150. pins: a double-quoted key with its first letter escaped as
+# --- 154. pins: a double-quoted key with its first letter escaped as
 #     \x75 ('u'), rule 3: refused ----------------------------------------
 setup
 mkdir -p .github/workflows
@@ -1498,8 +1587,8 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - "\\x75ses": evil/act@v4\n
 commit add-workflow-rule3-x75-escaped-key
 check "double-quoted key with its first letter escaped as \\x75 ('u')" pins fail
 
-# --- 151. pins: a double-quoted "uses" key with no escape at all: refused
-#     (rule 1: a line holding uses may carry no quote; paired with case 150
+# --- 155. pins: a double-quoted "uses" key with no escape at all: refused
+#     (rule 1: a line holding uses may carry no quote; paired with case 154
 #     to show the plain quoted key fails on its own, with no escape needed) --
 setup
 mkdir -p .github/workflows
@@ -1507,7 +1596,7 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - "uses": evil/act@v4\n' > 
 commit add-workflow-rule1-quoted-uses-key
 check "double-quoted \"uses\" key with no escape, unpinned value" pins fail
 
-# --- 152. pins: a fully-escaped "uses" key (\x75\x73\x65\x73), no line
+# --- 156. pins: a fully-escaped "uses" key (\x75\x73\x65\x73), no line
 #     holds the literal bytes uses, rule 3: refused ----------------------
 setup
 mkdir -p .github/workflows
@@ -1515,7 +1604,7 @@ printf 'on: push\njobs:\n  build:\n    steps: [ { "\\x75\\x73\\x65\\x73": evil/a
 commit add-workflow-rule3-fully-escaped-key
 check "fully-escaped \"uses\" key, no line holds the literal bytes uses" pins fail
 
-# --- 153. pins: a quote opened on a name: string closes on the canonical
+# --- 157. pins: a quote opened on a name: string closes on the canonical
 #     line's tag comment, unmasking a second uses: key behind it: refused
 #     (rule 1: a line holding uses may carry no quote, which is what keeps
 #     this probe, from Jorge's VFL-490 refinement, from passing) ---------
@@ -1525,7 +1614,7 @@ printf 'on: push\njobs:\n  build:\n    steps: [ { name: "foo\n      uses: a/b@11
 commit add-workflow-rule1-quote-closes-on-tag-comment
 check "quote opened on a name: string closes on the canonical line's tag comment" pins fail
 
-# --- 154. pins: a quote closes on what reads as a comment line, exposing a
+# --- 158. pins: a quote closes on what reads as a comment line, exposing a
 #     real uses: key behind it: refused (rule 1 forbids a quote on a comment
 #     line too, so the leading # does not save this line) ----------------
 setup
@@ -1534,7 +1623,7 @@ printf 'on: push\njobs:\n  build:\n    steps: [ { name: "foo\n      #", uses: ev
 commit add-workflow-rule1-quote-closes-on-comment-look
 check "quote closes on what reads as a comment line, exposing a real uses: key" pins fail
 
-# --- 155. pins: a job-level reusable workflow call, a flow indicator (,)
+# --- 159. pins: a job-level reusable workflow call, a flow indicator (,)
 #     trailing the pin on the same line: refused (rule 1: the canonical line
 #     ends right after the pin or its tag comment; a flow sibling on the
 #     same line is outside that form) ------------------------------------
@@ -1544,7 +1633,7 @@ printf 'on: push\njobs:\n  b: { name: x,\n    uses: o/r/.github/workflows/w.yml,
 commit add-workflow-rule1-flow-indicator-trailing-pin
 check "job-level reusable workflow call with a flow indicator trailing the pin" pins fail
 
-# --- 156. pins: a canonical uses: line standing alone inside a flow
+# --- 160. pins: a canonical uses: line standing alone inside a flow
 #     mapping, with no sibling content on the same line, passes ---------
 setup
 mkdir -p .github/workflows
@@ -1552,7 +1641,7 @@ printf 'on: push\njobs:\n  build:\n    steps: [ { name: x,\n      uses: actions/
 commit add-workflow-canonical-line-alone-in-flow-mapping
 check "canonical uses: line standing alone inside a flow mapping" pins pass
 
-# --- 157. pins: a quote-free comment line containing the word uses, above
+# --- 161. pins: a quote-free comment line containing the word uses, above
 #     a canonical pin: passes (rule 1's comment exception has no quote
 #     condition to trip here) ---------------------------------------------
 setup
@@ -1561,7 +1650,7 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      # this step uses a pinned a
 commit add-workflow-quoteless-comment-says-uses
 check "quote-free comment line containing the word uses, above a canonical pin" pins pass
 
-# --- 158. pins: a canonical but unpinned uses: line, refusal text checked
+# --- 162. pins: a canonical but unpinned uses: line, refusal text checked
 #     for the exact path:line and ref (VFL-490: an earlier build crashed
 #     under `set -u` on exactly this line shape and still exited 1, so a
 #     pass/fail-only case did not catch it; this pins the refusal text) --
@@ -1572,11 +1661,11 @@ commit add-workflow-canon-unpinned-refusal-text
 check_contains "canonical but unpinned uses: line, refusal names the exact path:line and ref" pins fail \
   '.github/workflows/ci.yml:6: actions/checkout@v4'
 
-#   The cases below (159-162) are discretionary extras for the same VFL-490
+#   The cases below (163-166) are discretionary extras for the same VFL-490
 #   bound: further rule-2/rule-3 encodings and two accepted over-refusals
 #   the architect called out as optional.
 
-# --- 159. pins: a double-quoted key with its first letter escaped via
+# --- 163. pins: a double-quoted key with its first letter escaped via
 #     \U00000075 (an 8-hex \U Unicode escape for 'u'), rule 3: refused ---
 setup
 mkdir -p .github/workflows
@@ -1584,7 +1673,7 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - "\\U00000075ses": evil/ac
 commit add-workflow-rule3-capital-u-escaped-key
 check "double-quoted key with its first letter escaped via \\U00000075 ('u')" pins fail
 
-# --- 160. pins: the rule-2 escaped flow key (ends in a backslash) in a
+# --- 164. pins: the rule-2 escaped flow key (ends in a backslash) in a
 #     CRLF workflow: refused ---------------------------------------------
 setup
 mkdir -p .github/workflows
@@ -1592,7 +1681,7 @@ printf 'on: push\r\njobs:\r\n  build:\r\n    steps: [ { "us\\\r\n      es": evil
 commit add-workflow-rule2-flow-key-escaped-break-crlf
 check "rule-2 escaped flow key (ends in a backslash) in a CRLF workflow" pins fail
 
-# --- 161. pins: a pinned step beside a run: | shell line continuation
+# --- 165. pins: a pinned step beside a run: | shell line continuation
 #     (ends in \): refused, an accepted over-refusal by design (rule 2
 #     reaches into a run: block's shell text, same trade as case 130) ----
 setup
@@ -1601,7 +1690,7 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11
 commit add-workflow-run-block-line-continuation
 check "pinned step beside a run: | shell line continuation ending in a backslash" pins fail
 
-# --- 162. pins: a comment line holding a quote and the word uses,
+# --- 166. pins: a comment line holding a quote and the word uses,
 #     unrelated to any key, is refused too: accepted over-refusal by design
 #     (rule 1 forbids a quote on any line holding uses, comments included) --
 setup
@@ -1610,8 +1699,8 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11
 commit add-workflow-comment-quote-mentions-uses
 check "comment line holding a quote and the word uses, unrelated to any key" pins fail
 
-# --- 163. pins: a double-quoted key with its first letter escaped as
-#     u ('u'), rule 3: refused (lowercase-u analog of case 150's
+# --- 167. pins: a double-quoted key with its first letter escaped as
+#     u ('u'), rule 3: refused (lowercase-u analog of case 154's
 #     \x75; dropped from the original batch by a transmission fault that
 #     stripped its escape, restored here) --------------------------------
 setup
