@@ -88,16 +88,24 @@ check_contains() {
   fi
 }
 
-# install_git_stub <printf-literal>
-# Writes an executable git stub under $W/stub, ahead of the real git on PATH,
-# that ignores every argument and prints the literal record given. Written
-# under $W, not inside the fixture repo, so the fixture's own git commands
-# never see it on disk.
+# install_git_stub <field>...
+# Writes $W/stub/record as the given fields, each appended with
+# printf '%s\0' so a field's own text — a quote, a '%', or an octal digit
+# sitting right after that \0 — is always data to printf's %s conversion
+# and never read back as part of a format string. Writes an executable git
+# stub under $W/stub, ahead of the real git on PATH, that ignores every
+# argument and cats that record. Written under $W, not inside the fixture
+# repo, so the fixture's own git commands never see it on disk.
 install_git_stub() {
   mkdir -p "$W/stub"
+  : > "$W/stub/record"
+  local f
+  for f in "$@"; do
+    printf '%s\0' "$f" >> "$W/stub/record"
+  done
   cat > "$W/stub/git" <<EOF
 #!/usr/bin/env bash
-printf '$1'
+cat "$W/stub/record"
 EOF
   chmod +x "$W/stub/git"
 }
@@ -110,9 +118,17 @@ EOF
 # cleared for this call: the agent runners export BASH_ENV pointing at a
 # .bashrc that resets PATH, and bash sources it when ./ci/lane-gate.sh
 # starts, which would otherwise drop the stub before partition ever calls
-# git.
+# git. Requires $W/stub/git to be executable (install_git_stub must have run
+# first): if it is missing or not executable, PATH would silently fall
+# through to the real git, so that case fails the check instead of running
+# against the real git and reporting a verdict that never touched the stub.
 check_contains_stubbed_git() {
   local name="$1" expect="$2"; shift 2
+  if [ ! -x "$W/stub/git" ]; then
+    printf 'NOT OK %-45s %s: %s is not executable, would fall back to the real git\n' "$name" partition "$W/stub/git"
+    fail_count=$((fail_count+1))
+    return
+  fi
   local out rc got=pass
   out="$(BASH_ENV= PATH="$W/stub:$PATH" ./ci/lane-gate.sh partition baseline HEAD 2>&1)"; rc=$?
   [ $rc -ne 0 ] && got=fail
@@ -123,7 +139,7 @@ check_contains_stubbed_git() {
     return
   fi
   if [ "$#" -eq 0 ]; then
-    printf 'NOT OK %-45s %s: check_contains called with no substrings to verify\n' "$name" partition
+    printf 'NOT OK %-45s %s: check_contains_stubbed_git called with no substrings to verify\n' "$name" partition
     fail_count=$((fail_count+1))
     return
   fi
@@ -588,7 +604,7 @@ printf '#[test]\nfn t(){assert!(true);}\n' > "$f"
 printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
 commit test-quote-name-plus-prod
 check_contains "TEST file with a quote in its name + prod" partition fail \
-  'test files: 1'
+  'test files: 1   gate files:'
 
 # --- 49. a PROD file under a directory whose name holds a newline, bundled
 #     with a test edit: refused (a split on that newline would read
@@ -600,7 +616,7 @@ printf 'pub fn x()->i32{42}\n' > "crates/a${nl}b/src/lib.rs"
 printf '#[test]\nfn adds(){assert_eq!(vf_core::add(1,2),3);}\n#[test]\nfn more(){assert!(true);}\n' > crates/vf-core/tests/add.rs
 commit prod-newline-dir-plus-test
 check_contains "PROD file under a newline-named directory + test edit" partition fail \
-  'production files: 1'
+  'production files: 1   test files:'
 
 # --- 50. a rename from TEST to PROD: refused (VFL-819 LOW-3; the R record
 #     yields both the old TEST path and the new PROD path) ----------------
@@ -608,7 +624,7 @@ setup
 git mv crates/vf-core/tests/more.rs crates/vf-core/src/more.rs
 commit rename-test-to-prod
 check_contains "rename TEST file to a PROD path (tests/more.rs -> src/more.rs)" partition fail \
-  'production files: 1' 'test files: 1'
+  'production files: 1   test files:' 'test files: 1   gate files:'
 
 # --- 51. a TEST file deleted alone: allowed (TEST-side control for case 43,
 #     which is the GATE-side deletion-alone control) -----------------------
@@ -616,7 +632,7 @@ setup
 rm crates/vf-core/tests/more.rs
 commit delete-test-file-alone
 check_contains "delete TEST file alone (crates/vf-core/tests/more.rs)" partition pass \
-  'test files: 1'
+  'test files: 1   gate files:'
 
 # --- 52. two GATE files bundled with production source: refused, and the
 #     refusal names every GATE path, not just one (VFL-843 review LOW: no
@@ -636,7 +652,7 @@ check_contains "two GATE files (.tekton/tasks/lane-gate.yaml, .tekton/kustomizat
 #     not R* and not one of A/D/M/T, so changed_files' case falls through to
 #     its fail-closed default instead of silently skipping the record ------
 setup
-install_git_stub 'C100\0a\0b\0'
+install_git_stub C100 a b
 check_contains_stubbed_git "changed_files fails closed on an unparsed status (C100 copy record)" fail \
   'changed_files does not parse'
 
@@ -645,7 +661,7 @@ check_contains_stubbed_git "changed_files fails closed on an unparsed status (C1
 #     read in changed_files' while loop hits end of stream before the path
 #     it expects, instead of silently reading the next record out of step --
 setup
-install_git_stub 'M\0'
+install_git_stub M
 check_contains_stubbed_git "changed_files fails closed on a record cut short (status with no path)" fail \
   'ends early'
 
