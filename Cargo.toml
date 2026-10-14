@@ -147,7 +147,7 @@ jsonwebtoken = "=11.1.0"
 openidconnect = "=4.0.1"
 
 # --- tls / crypto ---------------------------------------------------------
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 hmac = "=0.13.0"
 sha2 = "=0.11.0"
 rand = "=0.10.3"
