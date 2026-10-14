@@ -1,5 +1,6 @@
-# What each GitHub event contributes to a PipelineRun. Both bindings produce
-# the same parameter set so one TriggerTemplate serves both triggers.
+# What each GitHub event contributes to a PipelineRun. The pull-request
+# binding feeds pull-request-template.yaml, the push binding
+# trigger-template.yaml.
 #
 # Header names are written in Go's canonical form (X-Github-..., not
 # X-GitHub-...), which is how the EventListener stores request headers.
@@ -16,12 +17,14 @@ spec:
       value: $(header.X-Github-Event)
     - name: delivery-id
       value: $(header.X-Github-Delivery)
-    - name: repo-full-name
-      value: $(body.repository.full_name)
-    - name: git-ref
-      value: refs/pull/$(body.pull_request.number)/head
-    - name: revision
+    - name: pr-number
+      value: $(body.pull_request.number)
+    # The commit the result is for, and the ref that is tested: the merge of
+    # that head into the base branch (see pull-request-template.yaml).
+    - name: head-sha
       value: $(body.pull_request.head.sha)
+    - name: merge-ref
+      value: refs/pull/$(body.pull_request.number)/merge
     - name: base-branch
       value: $(body.pull_request.base.ref)
 ---

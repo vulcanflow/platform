@@ -7,6 +7,13 @@
 # creates nothing. The `cel` interceptor that follows only narrows which signed
 # events start a run.
 #
+# A pull request starts the checks (pull-request-template.yaml) only when its
+# head branch is in vulcanflow/platform itself. The checks run the pull
+# request's code, so a pull request from a fork starts nothing; it gets no
+# Tekton result, and a required check with no result blocks the merge. When the
+# fork has been deleted, head.repo is null, the filter fails to evaluate, and
+# that too starts nothing. A branch push still starts only vf-ci-noop.
+#
 # The Secret is not in this directory. The owner creates it in the cluster, or
 # has already created it, from the value set on the webhook; see README.md.
 apiVersion: triggers.tekton.dev/v1beta1
@@ -40,11 +47,12 @@ spec:
             - name: filter
               value: >-
                 body.repository.full_name == 'vulcanflow/platform' &&
+                body.pull_request.head.repo.full_name == 'vulcanflow/platform' &&
                 body.action in ['opened', 'synchronize', 'reopened']
       bindings:
         - ref: vf-github-pull-request
       template:
-        ref: vf-ci-noop
+        ref: vf-pull-request
     - name: push
       interceptors:
         - name: verify-github-signature
