@@ -1,15 +1,16 @@
 # vf-lane-gate — the Tekton equivalent of .github/workflows/lane-gate.yml.
 #
-# Four PipelineTasks with no `runAfter` between them, so they start together as
-# four GitHub jobs do (the workflow has no `needs:` either). Once one Task
+# Five PipelineTasks with no `runAfter` between them, so they start together as
+# five GitHub jobs do (the workflow has no `needs:` either). Once one Task
 # fails, Tekton starts no further Task but lets the running ones finish; all
-# four have started by then, so all four verdicts are recorded, which is what
+# five have started by then, so all five verdicts are recorded, which is what
 # VFL-126 reports to the PR commit.
 #
 # The PipelineTask names are the GitHub job names character for character:
-# lane-partition, test-erosion, inline-test-modules, gate-self-test. Those are
-# the four required status contexts on `main`, so renaming one here renames a
-# required check.
+# lane-partition, test-erosion, inline-test-modules, action-pins, gate-self-test.
+# These five names are the status contexts. All but action-pins are required
+# contexts on `main`, so renaming one here renames a required check; action-pins
+# becomes required when VFL-126 rebinds the required contexts.
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
@@ -19,7 +20,7 @@ metadata:
     app.kubernetes.io/part-of: vf-ci
 spec:
   description: >-
-    The VulcanFlow delivery-lane gate (ADR-0005) as a Tekton Pipeline. Same four
+    The VulcanFlow delivery-lane gate (ADR-0005) as a Tekton Pipeline. Same five
     checks, same scripts and same pass/fail rules as
     .github/workflows/lane-gate.yml.
 
@@ -43,7 +44,7 @@ spec:
   workspaces:
     - name: source
       description: >-
-        Bind an emptyDir. Tekton creates it per pod, so each of the four
+        Bind an emptyDir. Tekton creates it per pod, so each of the five
         TaskRuns gets its own checkout, as each GitHub job does.
 
   tasks:
@@ -106,6 +107,29 @@ spec:
           value: $(params.base-branch)
         - name: subcommand
           value: inline-tests
+        - name: fetch-depth
+          value: "1"
+        - name: fetch-base
+          value: "false"
+        - name: image
+          value: $(params.image)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # actions/checkout at its default depth, no base fetch.
+    - name: action-pins
+      taskRef:
+        name: vf-lane-gate
+      params:
+        - name: repo-url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+        - name: base-branch
+          value: $(params.base-branch)
+        - name: subcommand
+          value: pins
         - name: fetch-depth
           value: "1"
         - name: fetch-base

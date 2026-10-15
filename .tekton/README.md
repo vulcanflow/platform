@@ -14,6 +14,7 @@ stay in place until Tekton reports the same contexts.
 | `lane-partition` | `lane-gate.yml` | `lane-partition` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh partition` |
 | `test-erosion` | `lane-gate.yml` | `test-erosion` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh erosion` |
 | `inline-test-modules` | `lane-gate.yml` | `inline-test-modules` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh inline-tests` |
+| `action-pins` | `lane-gate.yml` | `action-pins` in `vf-lane-gate` | `vf-lane-gate` | `ci/lane-gate.sh pins` |
 | `gate-self-test` | `lane-gate.yml` | `gate-self-test` in `vf-lane-gate` | `vf-lane-gate-selftest` | `ci/lane-gate-test.sh ci/lane-gate.sh` |
 | `check (arm64)` | `rust-check.yml` | `check-arm64` in `vf-rust-check` | `vf-rust-check` | `just check`, `just test-unit`, `just fuzz-check` |
 | `check (amd64)` | `rust-check.yml` | `check-amd64` in `vf-rust-check` | `vf-rust-check` (`execution: cross-qemu`) | the same |
@@ -278,7 +279,7 @@ kubectl -n vf-ci delete --ignore-not-found ciliumnetworkpolicies.cilium.io/vf-ci
   for pull requests whose head branch is in this repository
   (`triggers/event-listener.yaml`); a fork's pull request starts nothing.
 - Pruning of finished runs, and a LimitRange or ResourceQuota on `vf-ci`. Each
-  pull request update starts six pods: the four `vf-lane-gate` checks, which
+  pull request update starts seven pods: the five `vf-lane-gate` checks, which
   run for up to 20m, and `check-amd64` and `check-arm64`, which request 2 CPU
   and 4Gi each and run for up to 1h30m. A push cancels its pull request's
   unfinished runs for the head it replaced (`triggers/README.md`, "Superseded

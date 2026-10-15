@@ -43,7 +43,7 @@ result to GitHub yet either (VFL-778).
 
 - A revision at or after the VFL-974 commit. VFL-974 adds the control that
   cancels a pull request's unfinished runs when a newer push supersedes them
-  ("Superseded runs"). Without it, every push to a pull request starts six
+  ("Superseded runs"). Without it, every push to a pull request starts seven
   more pods and none stop early. Do not apply `triggers/` from a revision
   without it.
 - Tekton Pipelines serving `tekton.dev/v1` and Tekton Triggers serving
@@ -360,7 +360,7 @@ kubectl -n vf-ci logs deploy/el-vf-platform --tail=-1 --since=1h |
 ```
 
 A pull request delivery starts two runs, `vf-lane-gate-...` and
-`vf-rust-check-...`, with six checks between them. Each check's checkout
+`vf-rust-check-...`, with seven checks between them. Each check's checkout
 step logs the commit it tested as `HEAD <sha> <subject>`. GitHub's merge
 commits are titled `Merge <head> into <base>`, so `<head>` there must be the
 run's `HEAD-SHA`:
@@ -465,7 +465,7 @@ reads as a pass.
 
 To stop pull requests from starting the pipelines (VFL-777) and keep the rest,
 roll back the supersede control (VFL-974) with it, not on its own: without the
-control, every push starts six more pods and none stop early. Apply the
+control, every push starts seven more pods and none stop early. Apply the
 triggers revision before VFL-777 as in step 1, then delete the objects it no
 longer names and the runs they started:
 

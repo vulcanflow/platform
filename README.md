@@ -90,9 +90,10 @@ GATE or TEST file, or renaming one away, counts the same as changing it. A path
 lands in the right lane even when it holds a non-ASCII byte, a quote, a tab or
 a newline.
 
-The gate also refuses `#[cfg(test)]` inside production source, and refuses
-diffs that ignore, delete or thin out existing tests. `just lane-gate` runs all
-three checks on this working tree against `origin/main`;
+The gate also refuses `#[cfg(test)]` inside production source, refuses diffs
+that ignore, delete or thin out existing tests, and refuses a workflow `uses:`
+not pinned to a full commit SHA (see "Pins"). `just lane-gate` runs all four
+checks on this working tree against `origin/main`;
 `just lane-gate-selftest` is a different thing — it replays fixture diffs
 through the gate in a throwaway repository to check the gate itself. `just gate`
 runs both.

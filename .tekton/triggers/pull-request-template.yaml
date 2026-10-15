@@ -30,7 +30,7 @@
 #
 #   kubectl -n vf-ci get taskruns -l "vulcanflow.io/github-delivery=$delivery_id"
 #
-# lists the six checks one delivery started.
+# lists the seven checks one delivery started.
 apiVersion: triggers.tekton.dev/v1beta1
 kind: TriggerTemplate
 metadata:
