@@ -59,6 +59,20 @@
 //! resolution risks a divergent oracle, not an independent check — it could
 //! disagree with `cargo deny check` without either reading being wrong.
 //!
+//! **2026-10-06, VFL-87.** `NO_IO_CRATES` listed 4 crates and the two io-free
+//! tests resolved `cargo metadata` once, unfiltered by target; `ci/graph-
+//! rules.sh` in the same F1 candidate checks 7 crates (it also bans `hyper`,
+//! `object_store`, `redis`) and checks `vf-core` on both Linux GNU targets
+//! separately via `cargo tree --target`, so the Rust test was a strict
+//! subset of the shell oracle it mirrors (CodeRabbit LOW on VFL-75,
+//! independently confirmed by the Arbiter, filed as VFL-87). `NO_IO_CRATES`
+//! now carries the same 7 names, asserted against `ci/graph-rules.sh`'s own
+//! `io_crates` array by `no_io_crates_matches_graph_rules_sh` below so the
+//! two cannot silently drift apart again; both io-free tests now resolve
+//! `cargo metadata --filter-platform <target>` per target, matching
+//! `io_free_crates` in `ci/graph-rules.sh` exactly (vf-core on both Linux GNU
+//! targets, vf-graph on wasm32).
+//!
 //! Several assertions here are written against the architecture document and
 //! Cortana's recorded VFL-9 rulings, not against whatever the candidate
 //! happens to contain.
@@ -88,31 +102,43 @@ fn read_platform_file(relative: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
-/// Runs `cargo metadata` against the `platform` workspace root and returns the
-/// parsed document, cached for the lifetime of the test binary so the six tests
-/// that need the dependency graph do not each pay for their own subprocess.
+/// Runs `cargo metadata` against the `platform` workspace root, optionally
+/// filtered to the dependency edges relevant to one `--filter-platform`
+/// target the way `cargo tree -p <crate> --target <triple>` filters in
+/// `ci/graph-rules.sh`, and returns the parsed document. `filter_platform:
+/// None` resolves the full, target-agnostic graph.
+fn cargo_metadata_filtered(filter_platform: Option<&str>) -> Value {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let manifest = platform_root().join("Cargo.toml");
+    let mut command = Command::new(cargo);
+    command
+        .arg("metadata")
+        .arg("--format-version=1")
+        .arg("--locked")
+        .arg("--all-features")
+        .arg("--manifest-path")
+        .arg(&manifest);
+    if let Some(target) = filter_platform {
+        command.arg("--filter-platform").arg(target);
+    }
+    let output = command
+        .output()
+        .expect("invoking `cargo metadata` on the platform workspace");
+    assert!(
+        output.status.success(),
+        "cargo metadata failed (status {:?}):\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("cargo metadata emits valid JSON")
+}
+
+/// The target-agnostic `cargo metadata` document, cached for the lifetime of
+/// the test binary so the tests that need the full dependency graph do not
+/// each pay for their own subprocess.
 fn cargo_metadata() -> &'static Value {
     static METADATA: OnceLock<Value> = OnceLock::new();
-    METADATA.get_or_init(|| {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-        let manifest = platform_root().join("Cargo.toml");
-        let output = Command::new(cargo)
-            .arg("metadata")
-            .arg("--format-version=1")
-            .arg("--locked")
-            .arg("--all-features")
-            .arg("--manifest-path")
-            .arg(&manifest)
-            .output()
-            .expect("invoking `cargo metadata` on the platform workspace");
-        assert!(
-            output.status.success(),
-            "cargo metadata failed (status {:?}):\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice(&output.stdout).expect("cargo metadata emits valid JSON")
-    })
+    METADATA.get_or_init(|| cargo_metadata_filtered(None))
 }
 
 fn extract_quoted(s: &str) -> Option<String> {
@@ -243,34 +269,67 @@ impl Graph {
     }
 }
 
-const NO_IO_CRATES: [&str; 4] = ["tokio", "sqlx", "reqwest", "kube"];
+/// Direct markers of I/O (§A1.4). Must match `io_crates` in
+/// `ci/graph-rules.sh` exactly; `no_io_crates_matches_graph_rules_sh` below
+/// asserts that so the two cannot drift apart silently.
+const NO_IO_CRATES: [&str; 7] = ["tokio", "sqlx", "reqwest", "kube", "hyper", "object_store", "redis"];
 
-#[test]
-fn vf_core_depends_on_no_io_crate() {
-    let graph = build_graph(cargo_metadata());
-    let id = graph.id_of("vf-core");
+fn assert_io_free(crate_name: &str, target: &str) {
+    let metadata = cargo_metadata_filtered(Some(target));
+    let graph = build_graph(&metadata);
+    let id = graph.id_of(crate_name);
     let reachable = graph.reachable_names(&id);
     for io_crate in NO_IO_CRATES {
         assert!(
             !reachable.contains(io_crate),
-            "§A1.4: vf-core must depend on no I/O crate, but its dependency \
-             closure reaches `{io_crate}`"
+            "§A1.4: {crate_name} ({target}) must depend on no I/O crate, but \
+             its dependency closure reaches `{io_crate}`"
         );
     }
 }
 
 #[test]
+fn vf_core_depends_on_no_io_crate() {
+    // Checked on both Linux GNU targets, matching `io_free_crates` in
+    // `ci/graph-rules.sh`: the project is architecture agnostic, and an
+    // unfiltered (target-agnostic) `cargo metadata` resolve is not the same
+    // graph either host target actually builds.
+    assert_io_free("vf-core", "aarch64-unknown-linux-gnu");
+    assert_io_free("vf-core", "x86_64-unknown-linux-gnu");
+}
+
+#[test]
 fn vf_graph_depends_on_no_io_crate() {
-    let graph = build_graph(cargo_metadata());
-    let id = graph.id_of("vf-graph");
-    let reachable = graph.reachable_names(&id);
-    for io_crate in NO_IO_CRATES {
-        assert!(
-            !reachable.contains(io_crate),
-            "§A1.4: vf-graph must depend on no I/O crate, but its dependency \
-             closure reaches `{io_crate}`"
-        );
-    }
+    // Checked on wasm32, matching `io_free_crates` in `ci/graph-rules.sh`:
+    // that is the build whose bundle size and browser portability this rule
+    // protects.
+    assert_io_free("vf-graph", "wasm32-unknown-unknown");
+}
+
+#[test]
+fn no_io_crates_matches_graph_rules_sh() {
+    let script = read_platform_file("ci/graph-rules.sh");
+    let needle = "io_crates=(";
+    let start = script
+        .find(needle)
+        .unwrap_or_else(|| panic!("no `{needle}...)` array in ci/graph-rules.sh"))
+        + needle.len();
+    let end = script[start..]
+        .find(')')
+        .unwrap_or_else(|| panic!("unterminated `{needle}...)` array in ci/graph-rules.sh"))
+        + start;
+    let mut shell_crates: Vec<&str> = script[start..end].split_whitespace().collect();
+    shell_crates.sort_unstable();
+
+    let mut rust_crates: Vec<&str> = NO_IO_CRATES.to_vec();
+    rust_crates.sort_unstable();
+
+    assert_eq!(
+        rust_crates, shell_crates,
+        "§A1.4: NO_IO_CRATES here must match ci/graph-rules.sh's `io_crates` \
+         exactly, so the Rust test and the shell check it mirrors cannot \
+         silently drift apart"
+    );
 }
 
 #[test]
