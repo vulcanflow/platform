@@ -53,6 +53,18 @@ default:
 bootstrap:
     @ci/bootstrap-toolchain.sh
 
+# The first dependency of `check`, `build`, `test-unit`, `test-integration`,
+# `wasm`, `wasm-release` and `check-cross`, and through `check` of the
+# fmt/clippy/deny/audit passes it runs. Without it they run whatever `cargo` is
+# first on PATH, so a caller who skipped the bootstrap, or whose eval of it
+# failed, builds with a system cargo and is never told. Not `fuzz-check`: its
+# nightly is pinned in fuzz/rust-toolchain.toml. See the header of the script
+# for the two checks.
+#
+# Refuse a cargo or rustc on PATH that is not the pinned toolchain.
+toolchain-provenance:
+    ci/toolchain-provenance.sh
+
 # ---------------------------------------------------------------------------
 # The local harness — architecture §A6.2
 #
@@ -323,7 +335,7 @@ kind-up:
 # graph resolved with `all-features` and filtered to the three §A5 targets,
 # while `audit` denies every informational class across the whole `Cargo.lock`,
 # unfiltered by target or feature. Dropping either loses coverage.
-check: fmt-check clippy deny audit
+check: toolchain-provenance fmt-check clippy deny audit
 
 fmt:
     cargo fmt --all
@@ -362,18 +374,18 @@ audit:
     cargo audit --deny warnings
     cargo audit --deny warnings --file fuzz/Cargo.lock
 
-build:
+build: toolchain-provenance
     cargo build --workspace --all-targets
 
 # Unit tests only — the crate-local pack. Needs no services.
-test-unit:
+test-unit: toolchain-provenance
     cargo test --workspace --lib --bins
 
 # Integration tests — needs the compose stand-ins from `just dev-up`
 # (Postgres 17 + PgBouncer + RustFS + Valkey). `--features integration` is the
 # §A6.2 switch; every crate declares it, and without it the suite compiles with
 # those tests cut out and still reports success.
-test-integration:
+test-integration: toolchain-provenance
     cargo test --workspace --test '*' --features integration
 
 # The pre-push gate. The lane gate runs first, because a diff that mixes
@@ -394,13 +406,13 @@ lane-gate-selftest:
 # vf-graph must stay portable to the browser: pure evaluation, no I/O crate.
 # Debug, because this is the portability check; `wasm-release` is the one the
 # §A5 size budget is measured on.
-wasm:
+wasm: toolchain-provenance
     cargo build -p vf-graph --target wasm32-unknown-unknown
 
 # The browser artefact, built with the size-optimised profile that carries §A5's
 # 300 KiB gzipped budget. Not part of `gate`: the budget belongs to the task
 # that owns the SPA bundle.
-wasm-release:
+wasm-release: toolchain-provenance
     cargo build -p vf-graph --target wasm32-unknown-unknown --profile wasm-release
 
 # Architecture agnosticism check: build the workspace for the Linux GNU target
@@ -410,7 +422,7 @@ wasm-release:
 # The host is detected inside the recipe, not in a top-level `just` variable:
 # just evaluates those on every invocation, so a backtick here would make
 # `just --list` fail on a machine without the toolchain on PATH.
-check-cross:
+check-cross: toolchain-provenance
     #!/usr/bin/env bash
     set -euo pipefail
     host="$(rustc -vV | sed -n 's/^host: //p')"
