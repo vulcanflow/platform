@@ -767,7 +767,9 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
     // Ratified on VFL-9 (Cortana, Decision 2): the MPL-2.0 pair is §A5 as written
     // ("MPL-2.0 for listed crates only"); the other four are deviations from the
     // §A5 allow-list, ratified per crate so a licence accepted for one dependency
-    // does not silently cover the next crate someone adds.
+    // does not silently cover the next crate someone adds. The seventh,
+    // libfuzzer-sys's NCSA exception, was ratified separately per the VFL-202
+    // ruling ("(MIT OR Apache-2.0) AND NCSA"; fuzz workspace, test lane only).
     let deny_toml = read_platform_file("deny.toml");
     let expected: &[(&str, &str)] = &[
         ("cssparser", "MPL-2.0"),
@@ -776,12 +778,13 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
         ("webpki-roots", "CDLA-Permissive-2.0"),
         ("webpki-root-certs", "CDLA-Permissive-2.0"),
         ("xxhash-rust", "BSL-1.0"),
+        ("libfuzzer-sys", "NCSA"),
     ];
 
     // Strip `#` comment lines before splitting: the policy comment above
     // `[licenses]` names the `[[licenses.exceptions]]` header literally, and a
     // naive substring split on the raw file would count that prose mention as
-    // a 7th block.
+    // an extra block.
     let without_comments: String = deny_toml
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
