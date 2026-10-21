@@ -830,10 +830,10 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
         ("libfuzzer-sys", "NCSA"),
     ];
 
-    // Strip `#` comment lines before splitting: the policy comment above
-    // `[licenses]` names the `[[licenses.exceptions]]` header literally, and a
-    // naive substring split on the raw file would count that prose mention as
-    // an extra block.
+    // Strip `#` comment lines before splitting: `deny.toml:72-75` forbids
+    // writing the exception table's `[[...]]` header form inside a comment,
+    // because a prose copy of it would be counted as a block; this filter
+    // keeps the count honest if that rule is ever broken.
     let without_comments: String = deny_toml
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
@@ -842,6 +842,14 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
     let blocks: Vec<&str> = without_comments
         .split("[[licenses.exceptions]]")
         .skip(1)
+        // Bound each block at the next top-level table or array-of-tables
+        // header (a line starting with `[` at column 0), so the final block
+        // ends before `[sources]` instead of running on to the end of the
+        // file and swallowing unrelated config under it.
+        .map(|block| match block.find("\n[") {
+            Some(end) => &block[..end],
+            None => block,
+        })
         .collect();
     assert_eq!(
         blocks.len(),
@@ -858,15 +866,23 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
         // key is simply unrecognised and ignored, not an error, so a config
         // using it would silently grant nothing rather than fail to parse).
         let name_line = format!("name = \"{crate_name}\"");
-        let licence_literal = format!("\"{licence}\"");
-        let found = blocks.iter().any(|block| {
-            let names_this_crate = block.lines().any(|l| l.trim() == name_line.as_str());
-            names_this_crate && block.contains(licence_literal.as_str())
+        let block = blocks
+            .iter()
+            .find(|block| block.lines().any(|l| l.trim() == name_line.as_str()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "§A5 (ratified): no `[[licenses.exceptions]]` block names `{crate_name}`"
+                )
+            });
+        let allow = extract_toml_string_array(block, "allow").unwrap_or_else(|| {
+            panic!("no `allow = [...]` array in the `{crate_name}` exception block")
         });
-        assert!(
-            found,
-            "§A5 (ratified): no `[[licenses.exceptions]]` block grants `{crate_name}` \
-             the `{licence}` licence"
+        assert_eq!(
+            allow,
+            vec![licence.to_string()],
+            "§A5 (ratified): the `{crate_name}` exception block must grant exactly \
+             `{licence}` and nothing else — a wider `allow` array would silently \
+             admit another licence for this crate"
         );
     }
 }
