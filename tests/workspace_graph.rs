@@ -123,14 +123,47 @@ fn extract_quoted(s: &str) -> Option<String> {
 }
 
 /// Extracts a `key = [ ... ]` TOML array of strings, tolerating the array
-/// spanning multiple lines. Not a general TOML parser: good enough for the
-/// specific files this suite reads.
+/// spanning multiple lines. `key` does not have to start its line — the
+/// `features = [...]` lookup inside a single-line `name = { ..., features =
+/// [...] }` workspace-dependency entry depends on that — so every line is
+/// first truncated at its first `#` (dropping both a whole-line comment and a
+/// trailing one) before the `key = [` search, which keeps a commented-out
+/// copy of `key` from ever being read as the real array, wherever in the
+/// block it falls relative to the genuine one. Still not a general TOML
+/// parser: a `#` inside a quoted string would be misread as a comment start
+/// (none of the strings these callers read contain one), and every array
+/// element must be a double-quoted string — anything else, including a
+/// single-quoted one, makes this panic rather than silently drop it, since a
+/// caller's `assert_eq!` on the result must not pass on a partially-read
+/// array.
 fn extract_toml_string_array(toml_text: &str, key: &str) -> Option<Vec<String>> {
+    let uncommented: String = toml_text
+        .lines()
+        .map(|line| match line.find('#') {
+            Some(hash) => &line[..hash],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     let needle = format!("{key} = [");
-    let start = toml_text.find(needle.as_str())? + needle.len();
-    let end = toml_text[start..].find(']')? + start;
-    let body = &toml_text[start..end];
-    Some(body.split(',').filter_map(extract_quoted).collect())
+    let start = uncommented.find(needle.as_str())? + needle.len();
+    let end = uncommented[start..].find(']')? + start;
+    let body = &uncommented[start..end];
+    Some(
+        body.split(',')
+            .map(str::trim)
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| {
+                extract_quoted(segment).unwrap_or_else(|| {
+                    panic!(
+                        "extract_toml_string_array: `{key}` array element `{segment}` \
+                         is not a double-quoted string"
+                    )
+                })
+            })
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -830,10 +863,13 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
         ("libfuzzer-sys", "NCSA"),
     ];
 
-    // Strip `#` comment lines before splitting: `deny.toml:72-75` forbids
-    // writing the exception table's `[[...]]` header form inside a comment,
-    // because a prose copy of it would be counted as a block; this filter
-    // keeps the count honest if that rule is ever broken.
+    // Strip only whole-line `#` comments before splitting (a line that is a
+    // comment after trimming leading whitespace), catching a prose copy of
+    // the `[[licenses.exceptions]]` header written on its own commented-out
+    // line. It does not, and is not meant to, catch a copy trailing after
+    // real content on the same line — `deny.toml:72-75`'s discipline (never
+    // write the header form inside any comment, anywhere in the file) is what
+    // keeps a trailing copy out.
     let without_comments: String = deny_toml
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
