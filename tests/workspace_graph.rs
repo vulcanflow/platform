@@ -716,6 +716,55 @@ fn aws_lc_rs_does_not_resolve() {
 }
 
 #[test]
+fn askama_features_exclude_config_per_vfl_1240() {
+    // RUSTSEC-2026-0374: `basic-toml` is unmaintained with no patched version,
+    // and it enters the resolved graph only through askama's default `config`
+    // feature. VFL-1240's ruling turns that feature off instead of adding a
+    // `deny.toml` `ignore` entry, so a later edit that restores askama's
+    // defaults — or adds `config` back for an `askama.toml` — must fail here,
+    // loudly, with the ruling's name on it, exactly as
+    // `reqwest_feature_is_rustls_no_provider` does for reqwest. Re-enabling
+    // `config` needs a new architecture ruling, not just a Cargo.toml edit.
+    let cargo_toml = read_platform_file("Cargo.toml");
+    let askama_entry = extract_workspace_dependency_entry(&cargo_toml, "askama");
+    assert!(
+        askama_entry.contains("default-features = false"),
+        "RUSTSEC-2026-0374 / VFL-1240: askama must set default-features = false \
+         to keep its `config` feature (and basic-toml) out of the graph; \
+         re-enabling askama's defaults needs an architecture ruling, found: \
+         {askama_entry}"
+    );
+
+    let mut features = extract_toml_string_array(&askama_entry, "features").unwrap_or_else(|| {
+        panic!(
+            "RUSTSEC-2026-0374 / VFL-1240: askama's workspace dependency entry has \
+             no `features = [...]` array, found: {askama_entry}"
+        )
+    });
+    features.sort();
+    let mut expected: Vec<String> = ["derive", "std", "urlencode"].into_iter().map(String::from).collect();
+    expected.sort();
+    assert_eq!(
+        features, expected,
+        "RUSTSEC-2026-0374 / VFL-1240: askama's features must be exactly derive, \
+         std, urlencode — no `config` and nothing else; adding `config` back \
+         (e.g. for an askama.toml) needs an architecture ruling, found: \
+         {askama_entry}"
+    );
+
+    let metadata = cargo_metadata();
+    let packages = metadata["packages"].as_array().expect("packages array");
+    let found_basic_toml = packages.iter().any(|p| p["name"].as_str() == Some("basic-toml"));
+    assert!(
+        !found_basic_toml,
+        "RUSTSEC-2026-0374 / VFL-1240: `basic-toml` (unmaintained, no patched \
+         version) must not appear anywhere in the resolved dependency graph; it \
+         only enters through askama's default `config` feature, which must stay \
+         off per the VFL-1240 ruling"
+    );
+}
+
+#[test]
 fn rust_toolchain_targets_match_a5() {
     // §A5 names three targets. Cortana's Decision 3 on VFL-9 required adding
     // `x86_64-unknown-linux-gnu` to the two the scaffold's first commit
