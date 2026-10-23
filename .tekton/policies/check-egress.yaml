@@ -1,0 +1,127 @@
+# Egress policy for the check pods, the prerequisite README.md names (VFL-776)
+# for the webhook starting the pipelines (triggers/, VFL-777). The pods run
+# code from the revision under test: build scripts, proc macros and tests. Its
+# third rule covers the vf-ci-supersede pods (VFL-974).
+#
+# Not part of the kustomization: it is applied on its own, after the two
+# read-only checks in README.md, "Prerequisites", and before triggers/ starts
+# runs from the webhook, from the same commit as triggers/. See README.md,
+# "1. Apply".
+#
+# The first rule selects every pod of a vf-lane-gate or vf-rust-check
+# PipelineRun, by the tekton.dev/pipeline label Tekton puts on each TaskRun and
+# its pod, whether the run came from the webhook or by hand. A TaskRun created
+# straight from one of the Tasks, with no PipelineRun, carries no such label
+# and is not selected; nothing here creates one. The EventListener and
+# vf-ci-noop pods are not selected either.
+#
+# Once an egress rule selects a pod, Cilium denies all other egress from it.
+# What stays allowed:
+#   - DNS to the cluster DNS pods, through Cilium's DNS proxy, for the hosts
+#     below only. The proxy reads the answers, and that is how the toFQDNs
+#     rules below learn which addresses a host name has. Without this rule
+#     toFQDNs matches nothing. The proxy refuses a lookup of any other name,
+#     so a pod cannot pass data out in the names it looks up (VFL-948). That
+#     includes search-domain forms such as github.com.vf-ci.svc.cluster.local.
+#     The PipelineRuns set ndots 1 on these pods, so each host is looked up as
+#     given first and no search-domain form is sent. Without it, musl stops at
+#     the refused search-domain lookup and never asks for the name as given;
+#     cargo-deny, a static musl binary, looks up github.com on every run
+#     (VFL-982);
+#   - HTTPS to the hosts the checks fetch from: github.com (the revision, the
+#     base branch, the advisory databases, release downloads), the host GitHub
+#     release downloads redirect to, rustup's static.rust-lang.org, and the
+#     crates.io index and crate downloads;
+#   - for the check-amd64 pods only, DNS and HTTPS for deb.debian.org, where
+#     that leg fetches its cross packages (VFL-716). The second rule selects
+#     them by the tekton.dev/pipelineTask label Tekton also puts on each
+#     TaskRun and its pod. Cilium allows the union of the rules that select a
+#     pod, DNS names included, so these pods keep the first rule's DNS and
+#     hosts.
+# In each rule the DNS names and the toFQDNs names are the same list; keep them
+# so. A host missing from either list fails the check that needs it, at its
+# first fetch; it never passes a check.
+#
+# Cilium merges a rule that allows port 53 to these pods with no DNS rule into
+# a lookup of any name. README.md, "1. Apply", has a probe that shows a lookup
+# outside the list fails.
+#
+# The third rule selects the pods of a vf-ci-supersede PipelineRun
+# (triggers/supersede-pipeline.yaml, VFL-974). They run none of the revision's
+# code, but they hold a token that may patch PipelineRuns. They may reach the
+# Kubernetes API server and nothing else, not even DNS: kubectl finds the API
+# server at the address in KUBERNETES_SERVICE_HOST, so it looks up no name. The
+# rule names no port: Cilium matches the API server after the Service address
+# is translated, and the port there is the API server's own, not the Service's
+# 443.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: vf-ci-check-egress
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+specs:
+  - endpointSelector:
+      matchExpressions:
+        - key: tekton.dev/pipeline
+          operator: In
+          values: [vf-lane-gate, vf-rust-check]
+    egress:
+      - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: kube-system
+              k8s-app: kube-dns
+        toPorts:
+          - ports:
+              - port: "53"
+                protocol: UDP
+              - port: "53"
+                protocol: TCP
+            rules:
+              dns:
+                - matchName: github.com
+                - matchName: release-assets.githubusercontent.com
+                - matchName: static.rust-lang.org
+                - matchName: index.crates.io
+                - matchName: static.crates.io
+      - toFQDNs:
+          - matchName: github.com
+          - matchName: release-assets.githubusercontent.com
+          - matchName: static.rust-lang.org
+          - matchName: index.crates.io
+          - matchName: static.crates.io
+        toPorts:
+          - ports:
+              - port: "443"
+                protocol: TCP
+  - endpointSelector:
+      matchLabels:
+        tekton.dev/pipeline: vf-rust-check
+        tekton.dev/pipelineTask: check-amd64
+    egress:
+      - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: kube-system
+              k8s-app: kube-dns
+        toPorts:
+          - ports:
+              - port: "53"
+                protocol: UDP
+              - port: "53"
+                protocol: TCP
+            rules:
+              dns:
+                - matchName: deb.debian.org
+      - toFQDNs:
+          - matchName: deb.debian.org
+        toPorts:
+          - ports:
+              - port: "443"
+                protocol: TCP
+  - endpointSelector:
+      matchLabels:
+        tekton.dev/pipeline: vf-ci-supersede
+    egress:
+      - toEntities:
+          - kube-apiserver

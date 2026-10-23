@@ -1,0 +1,543 @@
+# vf-rust-check — the Tekton equivalent of the `check` job in
+# .github/workflows/rust-check.yml, which GitHub runs twice from a matrix as
+# `check (amd64)` on ubuntu-latest and `check (arm64)` on ubuntu-24.04-arm.
+#
+# The pipeline runs it twice, once per leg. `check (arm64)` runs natively.
+# `check (amd64)` runs with `execution: cross-qemu` on an arm64 node, because
+# every zolab node is arm64 (VFL-716; see "check (amd64) on an arm64 node"
+# below). The node is not chosen by the Task. It is set in the PipelineRun's
+# `taskRunSpecs` (`nodeSelector: kubernetes.io/arch`); see
+# pipelineruns/rust-check.yaml. The Task checks `uname -m` against `arch` and
+# `execution`, so a run that lands on the wrong node fails instead of reporting
+# a green leg from another architecture.
+#
+# Why the work is one step and not six
+# ------------------------------------
+# Each Tekton step is a separate container that shares only the pod's volumes,
+# so what one step writes under /usr/local (a rustup component, an installed
+# binary, the nightly toolchain) is gone in the next. The workflow's "Show
+# toolchain", tool install, `just check`, `just test-unit` and `just
+# fuzz-check` steps therefore run in one step here, each behind the workflow's
+# step name as a `:::` log banner. The order, the commands and the stop at the
+# first failure are the workflow's; only the container boundary moved.
+#
+# Deliberate differences from the workflow, none of which can change a verdict:
+#   - no Swatinem/rust-cache. A cache changes how long a build takes, never its
+#     result. The optional `cache` workspace stands in for it by carrying
+#     CARGO_TARGET_DIR across runs; cargo's own fingerprints decide what is
+#     reused. Both advisory databases are cloned fresh on each run; on GitHub a
+#     restored clone is fetched forward before use, so both end at the same
+#     advisory set. With nothing restored, the workflow's "Show restored
+#     advisory databases" step has nothing to show and is left out.
+#     CARGO_INCREMENTAL=0 is set, as rust-cache does.
+#   - the components and targets of rust-toolchain.toml are added explicitly.
+#     On a GitHub runner the 1.99.0 toolchain is absent, so rustup installs it
+#     from the toolchain file with all of them. This image already has 1.99.0
+#     with the minimal profile, and rustup does not add a toolchain file's
+#     components to an installed toolchain, so `cargo fmt` and `cargo clippy`
+#     would be missing. The lists are read out of rust-toolchain.toml, which
+#     stays the only place they are written. The fuzz nightly is absent here
+#     too, so `just fuzz-check` auto-installs it exactly as on GitHub.
+#   - `just`, cargo-deny and cargo-audit come from the same upstream release
+#     archives taiki-e/install-action downloads (per architecture, the same
+#     musl or gnu build it picks), checked against the SHA-256 digests in its
+#     manifests at the pinned commit 183e4297. cargo-deny 0.20.2 and
+#     cargo-audit 0.22.2 are the workflow's pins; the workflow leaves `just`
+#     unpinned and resolved it to 1.58.0 on 2026-10-09 and 2026-10-13, which
+#     is pinned here. They go to $CARGO_HOME/bin, which is on PATH.
+#   - CARGO_BUILD_JOBS=4, the vCPU count of both GitHub runners, so a node with
+#     more cores does not run more rustc processes than the memory limit allows.
+#     RUST_TEST_THREADS=4 for the same reason: libtest sizes its thread pool
+#     from the cores it sees, and the step has a CPU request but no CPU limit,
+#     so without it `just test-unit` would use every core on the node.
+#   - the step runs as an unprivileged user. The image makes RUSTUP_HOME and
+#     CARGO_HOME writable for every user, which is all the step writes outside
+#     the checkout and /tmp.
+#
+# check (amd64) on an arm64 node: `execution: cross-qemu`
+# -------------------------------------------------------
+# Cortana chose this on 2026-10-13 (VFL-125, option B). It needs no privilege
+# and changes nothing on the node. The step runs the same three `just` commands
+# with these settings:
+#   - CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu, so every cargo command builds
+#     for amd64.
+#   - C and C++ for that target are compiled by Debian's x86_64 cross gcc and
+#     g++. ring needs the C compiler and libfuzzer-sys (the fuzz crate) needs
+#     the C++ one. Their names are given to the cc crate (CC_, CXX_, AR_<target>)
+#     and to cargo as the linker. The image's own gcc stays the host compiler.
+#   - The test binaries run through `qemu-x86_64-static -L <cross glibc>`, set
+#     as CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER. Cargo calls qemu for
+#     each binary. qemu runs in user mode and nothing is registered with the
+#     kernel (no binfmt_misc).
+#   - The runner is a small wrapper that also records each binary it runs.
+#     After `just test-unit` the step asks cargo for the test executables it
+#     built for that recipe (`--no-run --message-format=json`; every unit is
+#     fresh by then, so nothing is rebuilt). The step fails unless there is at
+#     least one and every one of them ran through the runner. Without that
+#     check, a recipe that passed its own --target or ran a second cargo
+#     command without the target, or a config that dropped CARGO_BUILD_TARGET,
+#     would build and test some or all unit tests for arm64 natively and
+#     still report a green `check (amd64)`. The listing repeats the recipe's
+#     cargo command, so before `just test-unit` the step checks that `just
+#     --dry-run test-unit` prints exactly that command, and fails if the
+#     recipe changed. Runs before `just test-unit`, such as the C and C++
+#     smoke programs, are not counted. `just check` and `just fuzz-check` run
+#     no binary, so nothing like it checks them; they get the target from the
+#     same environment.
+#
+# The cross tools and qemu come from the `LOCK` list in the script: 22
+# packages from Debian bookworm's arm64 index, each pinned by name, version,
+# SHA-256 and URL, like ci/toolchain/debs-*.lock. They are unpacked with
+# `dpkg-deb -x` under /tmp. No maintainer script runs, so qemu is not
+# registered either. The list is from bookworm because the image is bookworm.
+# The cross gcc 12.2.0-14 and binutils 2.40-2 then match the image's own gcc
+# and binutils, so they run on the image's libraries. Packages the image
+# already has are left out of the list.
+# To regenerate it (for a new image, or when Debian drops a listed version from
+# its pool and the download fails with 404), resolve the dependency closure of
+# gcc-12-x86-64-linux-gnu, g++-12-x86-64-linux-gnu, binutils-x86-64-linux-gnu,
+# libc6-dev-amd64-cross, libgcc-12-dev-amd64-cross,
+# libstdc++-12-dev-amd64-cross and qemu-user-static. Use the signed bookworm,
+# bookworm-updates and bookworm-security indexes for arm64, as
+# ci/toolchain/resolve-debs.py does for trixie, and leave out every
+# dependency the image's /var/lib/dpkg/status already satisfies. The list
+# below was resolved that way on 2026-10-13 against the image pinned here.
+#
+# What still differs from GitHub's native amd64 runner, so that a result on
+# this leg alone can be traced:
+#   - Build scripts and proc-macros are compiled for arm64 and run on arm64.
+#     On GitHub they are built for and run on amd64. A build script that
+#     looks at the machine it runs on, rather than CARGO_CFG_TARGET_*, could
+#     behave differently.
+#   - The unit tests run under emulation (QEMU 7.2, user mode). Its CPU
+#     model is not GitHub's, so code that picks an implementation at run time
+#     (SIMD, for example) can take another path. A test that executes an
+#     x86_64 program of its own fails here, because there is no binfmt_misc to
+#     route the exec through qemu; no unit test does so today. QEMU's own gaps
+#     (rare syscalls, signals, timing) can make a test fail here only. A
+#     failure on this leg alone that does not reproduce natively points at
+#     emulation.
+#   - With a target set, cargo applies RUSTFLAGS (`-D warnings`) only to the
+#     target's artefacts, not to build scripts or proc-macros. Today this
+#     changes nothing: no workspace crate has a build script or is a
+#     proc-macro, and cargo caps lints of registry dependencies anyway. It
+#     will matter once a workspace crate gains either.
+#   - With a target set, cargo does not run doctests. Today this changes
+#     nothing: `just test-unit` is `cargo test --workspace --lib --bins`,
+#     which runs no doctests on either executor. If it ever runs them, GitHub's
+#     amd64 leg will and this leg will skip them without a message.
+#   - The target's C and C++ are compiled by Debian's gcc 12 cross compiler
+#     and linked against its glibc 2.36. GitHub's runner uses Ubuntu's native
+#     gcc and glibc. The arm64 leg differs from GitHub in the same way, through
+#     the image's own gcc.
+#
+# Not a difference, but needed to weigh the emulation entries above: today
+# every unit-test binary holds 0 tests. The lane gate forbids inline
+# #[cfg(test)] modules in production source, and the workspace's tests are
+# integration-test targets, which `just test-unit` does not build. So a green
+# `just test-unit` here shows that each x86_64 test binary builds, loads and
+# exits 0 under qemu, not how any test behaves under emulation. The same holds
+# for GitHub's amd64 leg. Remove this paragraph once a lib or bin target gains
+# a unit test.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: vf-rust-check
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  description: >-
+    Runs `just check`, `just test-unit` and `just fuzz-check` on one
+    architecture against a revision of vulcanflow/platform. Equivalent to one
+    matrix leg of the check job of .github/workflows/rust-check.yml.
+
+  params:
+    - name: repo-url
+      type: string
+      description: Clone URL of the repository under test.
+      default: https://github.com/vulcanflow/platform.git
+    - name: revision
+      type: string
+      description: Full 40-character commit SHA, or a ref, to test.
+    - name: arch
+      type: string
+      description: >-
+        amd64 or arm64, the architecture this run claims to be. Asserted
+        against the pod's own `uname -m`; it does not select the node.
+    - name: execution
+      type: string
+      description: >-
+        `native`: build and test on the pod's own architecture, which must be
+        `arch`. `cross-qemu`: `arch` must be amd64 and the pod arm64; build for
+        x86_64 and run the unit tests under qemu-x86_64 (see the header).
+      default: native
+    - name: image
+      type: string
+      description: >-
+        Pinned toolchain image. The channel matches rust-toolchain.toml and the
+        digest is the multi-architecture index, so the same pin resolves to the
+        amd64 and to the arm64 image.
+      default: docker.io/library/rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6
+
+  results:
+    - name: commit
+      description: The commit the check ran against (git rev-parse HEAD).
+
+  workspaces:
+    - name: source
+      description: Where the repository is cloned. Bind an emptyDir.
+    - name: cache
+      description: >-
+        Optional. Carries CARGO_TARGET_DIR between runs, standing in for
+        Swatinem/rust-cache. Bind a separate PVC per architecture: object files
+        are not portable between them, which is why the workflow keys its cache
+        on the matrix architecture.
+      optional: true
+
+  stepTemplate:
+    env:
+      - name: HOME
+        value: /tmp
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      seccompProfile:
+        type: RuntimeDefault
+
+  steps:
+    # actions/checkout at its default depth of 1. Same script as in
+    # tasks/lane-gate.yaml; see the comments there.
+    - name: checkout
+      image: $(params.image)
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+      computeResources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 1Gi
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir repo
+        cd repo
+        git init -q -b vf-ci .
+        git remote add origin "$REPO_URL"
+        git fetch --no-tags --depth=1 origin "+${REVISION}:refs/vf-ci/head"
+        git checkout -q --detach refs/vf-ci/head
+        git --no-pager log -1 --format='HEAD %H %s'
+        git rev-parse HEAD | tr -d '\n' > "$(results.commit.path)"
+
+    # workingDir stays the workspace root and the script does `cd repo`. Naming
+    # the clone directory as workingDir makes Tekton create it before checkout,
+    # and `mkdir repo` then fails; see tasks/lane-gate.yaml.
+    - name: check
+      image: $(params.image)
+      workingDir: $(workspaces.source.path)
+      env:
+        # CARGO_TERM_COLOR and RUSTFLAGS are the workflow's top-level `env:`
+        # block, verbatim; RUSTFLAGS applies to every cargo invocation below, as
+        # it does to every step there. The other three are explained in the
+        # header.
+        - name: CARGO_TERM_COLOR
+          value: always
+        - name: RUSTFLAGS
+          value: -D warnings
+        - name: CARGO_INCREMENTAL
+          value: "0"
+        - name: CARGO_BUILD_JOBS
+          value: "4"
+        - name: RUST_TEST_THREADS
+          value: "4"
+        - name: ARCH
+          value: $(params.arch)
+        - name: EXECUTION
+          value: $(params.execution)
+      computeResources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+          ephemeral-storage: 10Gi
+        limits:
+          memory: 8Gi
+          ephemeral-storage: 20Gi
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        cd repo
+
+        banner() { printf '\n::: %s\n' "$1"; }
+
+        # --- the architecture this pod landed on ----------------------------
+        case "$(uname -m)" in
+          x86_64)  host_arch=amd64 ;;
+          aarch64) host_arch=arm64 ;;
+          *) echo "unsupported machine $(uname -m)" >&2; exit 1 ;;
+        esac
+        case "$EXECUTION" in
+          native)
+            if [ "$host_arch" != "$ARCH" ]; then
+              echo "this run claims arch '$ARCH' but the pod is $host_arch ($(uname -m))." >&2
+              echo "fix the nodeSelector in the PipelineRun's taskRunSpecs." >&2
+              exit 1
+            fi
+            banner "architecture: $ARCH ($(uname -m))"
+            target_dir_name="target-${ARCH}"
+            ;;
+          cross-qemu)
+            # The LOCK list below holds arm64 builds of an x86_64 cross
+            # toolchain, so this is the only pairing it can serve.
+            if [ "$ARCH" != amd64 ] || [ "$host_arch" != arm64 ]; then
+              echo "execution 'cross-qemu' checks amd64 on an arm64 pod; this run claims '$ARCH' and the pod is $host_arch ($(uname -m))." >&2
+              echo "fix the nodeSelector in the PipelineRun's taskRunSpecs." >&2
+              exit 1
+            fi
+            banner "architecture: $ARCH, cross-built on $host_arch ($(uname -m)), unit tests under qemu-x86_64"
+            # Holds arm64 build scripts beside x86_64 objects, so it is not
+            # shared with a native amd64 leg.
+            target_dir_name="target-${ARCH}-cross"
+            ;;
+          *)
+            echo "unknown execution '$EXECUTION'; expected native or cross-qemu." >&2
+            exit 1
+            ;;
+        esac
+
+        # --- optional stand-in for Swatinem/rust-cache ----------------------
+        if [ "$(workspaces.cache.bound)" = "true" ]; then
+          CARGO_TARGET_DIR="$(workspaces.cache.path)/${target_dir_name}"
+          export CARGO_TARGET_DIR
+          mkdir -p "$CARGO_TARGET_DIR"
+          banner "CARGO_TARGET_DIR=$CARGO_TARGET_DIR (cache workspace bound)"
+        fi
+
+        # --- components and targets from rust-toolchain.toml ----------------
+        # `components` is one line and `targets` spans several; the awk range
+        # handles both.
+        toml_array() {
+          awk "/^[[:space:]]*$1[[:space:]]*=/,/\]/" rust-toolchain.toml \
+            | grep -oE '"[^"]+"' | tr -d '"'
+        }
+        mapfile -t components < <(toml_array components)
+        mapfile -t targets < <(toml_array targets)
+        [ "${#components[@]}" -gt 0 ] || { echo "no components found in rust-toolchain.toml" >&2; exit 1; }
+        [ "${#targets[@]}" -gt 0 ]    || { echo "no targets found in rust-toolchain.toml" >&2; exit 1; }
+        banner "rustup component add ${components[*]}"
+        rustup component add "${components[@]}"
+        banner "rustup target add ${targets[*]}"
+        rustup target add "${targets[@]}"
+
+        # --- Show toolchain (workflow step) ---------------------------------
+        banner "Show toolchain"
+        rustc --version
+        cargo --version
+        rustup target list --installed
+
+        # --- Install just, cargo-deny, cargo-audit (workflow step) ----------
+        banner "Install just, cargo-deny, cargo-audit"
+        # Host tools, so the build for the machine the pod runs on.
+        case "$host_arch" in
+          amd64)
+            deny_asset=cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+            deny_sha=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+            audit_asset=cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz
+            audit_sha=7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428
+            just_asset=just-1.58.0-x86_64-unknown-linux-musl.tar.gz
+            just_sha=4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d
+            ;;
+          arm64)
+            deny_asset=cargo-deny-0.20.2-aarch64-unknown-linux-musl.tar.gz
+            deny_sha=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d
+            audit_asset=cargo-audit-aarch64-unknown-linux-gnu-v0.22.2.tgz
+            audit_sha=c6603814ddaa45e51263dafd31c0ac98808f688d26f7395804f9670b0fd599dd
+            just_asset=just-1.58.0-aarch64-unknown-linux-musl.tar.gz
+            just_sha=748237128c4c40cbdabc65e841d05ceba13cc23a91eaba395495894c1d9764df
+            ;;
+        esac
+        tmp="$(mktemp -d)"
+        fetch() { # fetch <url> <sha256>
+          curl -sSfL --retry 3 --retry-connrefused -o "$tmp/${1##*/}" "$1"
+          printf '%s  %s\n' "$2" "$tmp/${1##*/}" | sha256sum -c -
+        }
+        fetch "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$deny_asset" "$deny_sha"
+        fetch "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/$audit_asset" "$audit_sha"
+        fetch "https://github.com/casey/just/releases/download/1.58.0/$just_asset" "$just_sha"
+        # cargo-deny and cargo-audit ship inside one top-level directory; the
+        # just archive has its binary at the root.
+        bin="$CARGO_HOME/bin"
+        tar -xzf "$tmp/$deny_asset"  -C "$bin" --strip-components=1 --wildcards '*/cargo-deny'
+        tar -xzf "$tmp/$audit_asset" -C "$bin" --strip-components=1 --wildcards '*/cargo-audit'
+        tar -xzf "$tmp/$just_asset"  -C "$bin" just
+        rm -rf "$tmp"
+        just --version
+        cargo-deny --version
+        cargo-audit --version
+
+        # --- x86_64 cross toolchain and qemu (cross-qemu only) --------------
+        # See "check (amd64) on an arm64 node" in the header.
+        if [ "$EXECUTION" = cross-qemu ]; then
+          banner "x86_64 cross toolchain and qemu-x86_64"
+          # A fixed directory, not one from mktemp. The compiler, linker and
+          # runner paths below reach cargo's freshness checks, so a new path
+          # on each run would rebuild every x86_64 unit even with the cache
+          # workspace bound.
+          cross="${TMPDIR:-/tmp}/vf-x86_64-cross"
+          rm -rf "$cross"
+          root="$cross/root"
+          mkdir -p "$root" "$cross/bin"
+          while read -r name version digest url; do
+            curl -sSfL --retry 3 --retry-connrefused -o "$cross/pkg.deb" "$url"
+            if ! printf '%s  %s\n' "$digest" "$cross/pkg.deb" | sha256sum -c --status -; then
+              echo "digest mismatch for $name $version ($url)" >&2
+              exit 1
+            fi
+            dpkg-deb -x "$cross/pkg.deb" "$root"
+            echo "$name $version"
+          done <<'LOCK'
+        binutils-x86-64-linux-gnu 2.40-2 01db01c3506e3d135c1ee3156e8ec6717a31f1986b8187fdae0b3533243e0e25 https://deb.debian.org/debian/pool/main/b/binutils/binutils-x86-64-linux-gnu_2.40-2_arm64.deb
+        cpp-12-x86-64-linux-gnu 12.2.0-14cross1 920e889328a3165fcdbde222db0c2024adf66181d424941be6f8dd4eb66d59e7 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/cpp-12-x86-64-linux-gnu_12.2.0-14cross1_arm64.deb
+        g++-12-x86-64-linux-gnu 12.2.0-14cross1 0dadf9bd74cb208b9527ff33a110a509d5143520860e8bb0d44bcd8cfedecc33 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/g++-12-x86-64-linux-gnu_12.2.0-14cross1_arm64.deb
+        gcc-12-cross-base 12.2.0-14cross1 8dcb9dc293df9069f09dbe68d73f4a8ec2d4e3da4dcfbfe14a821d94e257e9d5 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/gcc-12-cross-base_12.2.0-14cross1_all.deb
+        gcc-12-x86-64-linux-gnu 12.2.0-14cross1 8ce1b9395390e513a0c1de952527e8ce362049eea58c5df25c39562868bf0172 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/gcc-12-x86-64-linux-gnu_12.2.0-14cross1_arm64.deb
+        gcc-12-x86-64-linux-gnu-base 12.2.0-14cross1 7c3f7dd786947e4782a20e1a1287c10cb2be1a03c10d7cbf14d8395e47df326c https://deb.debian.org/debian/pool/main/g/gcc-12-cross/gcc-12-x86-64-linux-gnu-base_12.2.0-14cross1_arm64.deb
+        libasan8-amd64-cross 12.2.0-14cross1 876b20dd4d6e00475211156163629c0e14d1e09dcbc831220f29c1a115708129 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libasan8-amd64-cross_12.2.0-14cross1_all.deb
+        libatomic1-amd64-cross 12.2.0-14cross1 f27d207736a491041b4a5815e326eb0d7066a4b84742504656f40b18f5833cbc https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libatomic1-amd64-cross_12.2.0-14cross1_all.deb
+        libc6-amd64-cross 2.36-8cross1 e410f3d2da35bccf757976d38e6a309d4d94d25c0dfde565a9662e3f75951b2c https://deb.debian.org/debian/pool/main/c/cross-toolchain-base/libc6-amd64-cross_2.36-8cross1_all.deb
+        libc6-dev-amd64-cross 2.36-8cross1 197b497ed91056e6c4093b0972296199260424f24943d7108a8124cc7de750d6 https://deb.debian.org/debian/pool/main/c/cross-toolchain-base/libc6-dev-amd64-cross_2.36-8cross1_all.deb
+        libgcc-12-dev-amd64-cross 12.2.0-14cross1 51934acb03f4345c98da94c6b759e6e3246b809f343f2d07795a132c072541ca https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libgcc-12-dev-amd64-cross_12.2.0-14cross1_all.deb
+        libgcc-s1-amd64-cross 12.2.0-14cross1 b432ba4cfc37d81fc9efe03da3c706eaa64859513f496397c56d11c08262994f https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libgcc-s1-amd64-cross_12.2.0-14cross1_all.deb
+        libgomp1-amd64-cross 12.2.0-14cross1 f3ae7df016ec6ed06f653635691ffeebdf1af327678faac9dc4142383f9eee68 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libgomp1-amd64-cross_12.2.0-14cross1_all.deb
+        libitm1-amd64-cross 12.2.0-14cross1 ba3fea5b302e65e88e9c937fe231478d63dec9a46e3faa59ad1886145c21e400 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libitm1-amd64-cross_12.2.0-14cross1_all.deb
+        liblsan0-amd64-cross 12.2.0-14cross1 ffe358486c406f9134c74ebf6c6763a964f0b42c0bdecc6b1c5772beb5f5054a https://deb.debian.org/debian/pool/main/g/gcc-12-cross/liblsan0-amd64-cross_12.2.0-14cross1_all.deb
+        libquadmath0-amd64-cross 12.2.0-14cross1 e7a8f1f9b599ff3819b2f658fec8dfa773b0fad26afbd2e56ea49a36531b8b6b https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libquadmath0-amd64-cross_12.2.0-14cross1_all.deb
+        libstdc++-12-dev-amd64-cross 12.2.0-14cross1 c002a33a10cbecffb4c5237692a34a77e0a4f9817d708713f74bd3d8f670efe0 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libstdc++-12-dev-amd64-cross_12.2.0-14cross1_all.deb
+        libstdc++6-amd64-cross 12.2.0-14cross1 ad91d29ea6b2a819fe6f79138fee2ce4c1a1dbe7fcd355c3a8f27e8c3d13dd88 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libstdc++6-amd64-cross_12.2.0-14cross1_all.deb
+        libtsan2-amd64-cross 12.2.0-14cross1 0eeef35ab003f38b71a28bced43028d02fb2c61405fdc73ddf6a94a197b6b0fd https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libtsan2-amd64-cross_12.2.0-14cross1_all.deb
+        libubsan1-amd64-cross 12.2.0-14cross1 02503858cdd30e0adae9105259723779355fd16ff1ee119e67c6618496a461f6 https://deb.debian.org/debian/pool/main/g/gcc-12-cross/libubsan1-amd64-cross_12.2.0-14cross1_all.deb
+        linux-libc-dev-amd64-cross 6.1.4-1cross1 b7ec9f95d20bd4669119201ec6a1ac372189fc222d35f21631bb79b723519293 https://deb.debian.org/debian/pool/main/c/cross-toolchain-base/linux-libc-dev-amd64-cross_6.1.4-1cross1_all.deb
+        qemu-user-static 1:7.2+dfsg-7+deb12u18+b3 e420c417c12b42ca774795b62888d5388da0e08c1ef263dea1490e5ce4e32a0b https://deb.debian.org/debian/pool/main/q/qemu/qemu-user-static_7.2+dfsg-7+deb12u18+b3_arm64.deb
+        LOCK
+          rm -f "$cross/pkg.deb"
+          # qemu-user-static carries an emulator for every architecture (about
+          # 370 MB); only the x86_64 one is used.
+          find "$root/usr/bin" -name 'qemu-*-static' ! -name qemu-x86_64-static -delete
+
+          # The cross binutils' own libraries (libbfd, libopcodes, libctf for
+          # amd64) unpack under $root, where the loader does not look, so every
+          # shim adds that directory. gcc passes it on to as and ld, which it
+          # runs itself. Everything else they link to (libisl, libmpc,
+          # libsframe, …) is the image's own copy, at the version the packages
+          # were built against. --sysroot is needed because libc6-dev's libc.so
+          # is a linker script naming absolute /usr/x86_64-linux-gnu paths.
+          # gcc finds cc1, as and ld relative to its own path, so nothing else
+          # is needed.
+          shim() { # shim <name> <program> [<arg>...]
+            local name="$1"
+            shift
+            {
+              echo '#!/usr/bin/env bash'
+              # The ${…} is written into the shim as is; it expands when the
+              # shim runs, not here.
+              # shellcheck disable=SC2016
+              printf 'export LD_LIBRARY_PATH=%q"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n' "$root/usr/lib/aarch64-linux-gnu"
+              printf 'exec'
+              printf ' %q' "$@"
+              printf ' "$@"\n'
+            } > "$cross/bin/$name"
+            chmod +x "$cross/bin/$name"
+          }
+          shim x86_64-linux-gnu-gcc "$root/usr/bin/x86_64-linux-gnu-gcc-12" "--sysroot=$root"
+          shim x86_64-linux-gnu-g++ "$root/usr/bin/x86_64-linux-gnu-g++-12" "--sysroot=$root"
+          shim x86_64-linux-gnu-ar "$root/usr/bin/x86_64-linux-gnu-ar"
+          PATH="$cross/bin:$PATH"
+
+          # The runner cargo calls for each test binary. -L makes qemu look up
+          # the x86_64 loader, glibc and libgcc_s under the cross packages'
+          # directory before the image's own paths. Each run is recorded in
+          # $ran, which is checked after `just test-unit`.
+          ran="$cross/ran-under-qemu"
+          {
+            echo '#!/usr/bin/env bash'
+            # As in shim, "$1" and "$@" expand when the runner runs.
+            # shellcheck disable=SC2016
+            printf 'printf "%%s\\n" "$1" >> %q\n' "$ran"
+            printf 'exec %q -L %q "$@"\n' "$root/usr/bin/qemu-x86_64-static" "$root/usr/x86_64-linux-gnu"
+          } > "$cross/bin/qemu-x86_64-runner"
+          chmod +x "$cross/bin/qemu-x86_64-runner"
+          export CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
+          export CC_x86_64_unknown_linux_gnu="$cross/bin/x86_64-linux-gnu-gcc"
+          export CXX_x86_64_unknown_linux_gnu="$cross/bin/x86_64-linux-gnu-g++"
+          export AR_x86_64_unknown_linux_gnu="$cross/bin/x86_64-linux-gnu-ar"
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$cross/bin/x86_64-linux-gnu-gcc"
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$cross/bin/qemu-x86_64-runner"
+
+          x86_64-linux-gnu-gcc --version | sed -n 1p
+          x86_64-linux-gnu-g++ --version | sed -n 1p
+          "$root/usr/bin/qemu-x86_64-static" --version | sed -n 1p
+          # A C and a C++ program, built and run the way cargo will, so a
+          # broken toolchain or runner fails here and not inside a build
+          # script or the first test.
+          printf '#include <stdio.h>\nint main(void) { puts("x86_64 C ok"); return 0; }\n' > "$cross/smoke.c"
+          printf '#include <iostream>\nint main() { std::cout << "x86_64 C++ ok" << std::endl; }\n' > "$cross/smoke.cc"
+          x86_64-linux-gnu-gcc -o "$cross/smoke-c" "$cross/smoke.c"
+          x86_64-linux-gnu-g++ -o "$cross/smoke-cc" "$cross/smoke.cc"
+          qemu-x86_64-runner "$cross/smoke-c"
+          qemu-x86_64-runner "$cross/smoke-cc"
+        fi
+
+        # --- just check (workflow step) -------------------------------------
+        banner "just check"
+        just check
+
+        # --- just test-unit (workflow step) ---------------------------------
+        banner "just test-unit"
+        if [ "$EXECUTION" = cross-qemu ]; then
+          # See the runner in the header. The listing after the recipe runs
+          # this command, so the recipe must still be exactly this command.
+          unit_cmd=(cargo test --workspace --lib --bins)
+          recipe="$(just --color never --dry-run test-unit 2>&1)"
+          if [ "$recipe" != "${unit_cmd[*]}" ]; then
+            echo "the test-unit recipe now runs:" >&2
+            printf '%s\n' "$recipe" | sed 's/^/  /' >&2
+            echo "make unit_cmd in this step match it." >&2
+            exit 1
+          fi
+          : > "$ran"
+        fi
+        just test-unit
+        if [ "$EXECUTION" = cross-qemu ]; then
+          # Every test executable cargo built for the recipe must have run
+          # through the runner. The JSON is read with the image's python3.
+          built="$cross/built-for-x86_64"
+          "${unit_cmd[@]}" --no-run --message-format=json \
+            | python3 -c 'import json, sys; sys.stdout.writelines(
+                m["executable"] + "\n" for m in map(json.loads, sys.stdin)
+                if m.get("reason") == "compiler-artifact"
+                and m["profile"]["test"] and m["executable"])' \
+            | sort -u > "$built"
+          if [ ! -s "$built" ]; then
+            echo "cargo lists no unit-test executable, so just test-unit did not test x86_64." >&2
+            exit 1
+          fi
+          missing="$(sort -u "$ran" | comm -13 - "$built")"
+          if [ -n "$missing" ]; then
+            echo "these unit-test executables did not run through qemu-x86_64, so they were not tested as x86_64:" >&2
+            printf '%s\n' "$missing" | sed 's/^/  /' >&2
+            exit 1
+          fi
+          echo "all $(wc -l < "$built") unit-test executables cargo built ran under qemu-x86_64."
+        fi
+
+        # --- just fuzz-check (workflow step) --------------------------------
+        banner "just fuzz-check"
+        just fuzz-check

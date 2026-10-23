@@ -1,0 +1,53 @@
+# cargo-fuzz harness crate for vf-core::scope (VFL-145, T2 addendum to C2 /
+# VFL-15). Test-lane: `ci/lane-gate.sh:38` classifies `fuzz/*` as TEST and its
+# `TEST_MARKER_RE` counts `fuzz_target!` as a test declaration, so this whole
+# directory is Halsey's (Test Writer) to author, not Kelly's / C2's.
+#
+# `[workspace]` below is empty on purpose: it makes this package its own
+# workspace root rather than an implicit member of the root workspace, which
+# is the standard `cargo fuzz init` shape and the only way to add a fuzz
+# crate without editing the root `Cargo.toml` (production-lane, §A5-governed,
+# not this task's to touch). `vf-core` itself stays a member of the root
+# workspace through its own manifest, so it still resolves its dependencies
+# against the root's pinned `[workspace.dependencies]` table.
+[package]
+name = "vf-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# Exact pins and the §A5 Testing-row rationale: VFL-202 ruling
+# (/VFL/issues/VFL-202#document-ruling). Newest patch on 2026-10-06, the day
+# the ruling and this pin were written; a bump is a reviewed change to the
+# §A5 table first, like every other row.
+libfuzzer-sys = "=0.4.13"
+arbitrary = { version = "=1.4.2", features = ["derive"] }
+
+[dependencies.vf-core]
+path = "../crates/vf-core"
+
+[[bin]]
+name = "canonical_host"
+path = "fuzz_targets/canonical_host.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scope_match"
+path = "fuzz_targets/scope_match.rs"
+test = false
+doc = false
+bench = false
+
+# Keeps a crash backtrace readable; this workspace is independent of the root
+# `[profile.release]` (strip = "symbols"), which exists for release artefacts
+# and does not apply here.
+[profile.release]
+debug = 1
+
+[workspace]
