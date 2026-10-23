@@ -1,0 +1,16 @@
+# The VFL-125 Tasks and Pipelines, applied into namespace vf-ci (created by
+# triggers/namespace.yaml):
+#
+#   kubectl apply -k "https://github.com/vulcanflow/platform//.tekton?ref=$commit"
+#
+# triggers/ is its own kustomization and is not included here. The files under
+# pipelineruns/ are not resources either: they use generateName and are
+# created by hand (README.md, "Run by hand").
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - tasks/lane-gate.yaml
+  - tasks/lane-gate-selftest.yaml
+  - tasks/rust-check.yaml
+  - pipelines/lane-gate.yaml
+  - pipelines/rust-check.yaml

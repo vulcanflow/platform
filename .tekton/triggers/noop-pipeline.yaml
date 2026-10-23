@@ -1,6 +1,7 @@
 # Placeholder pipeline for VFL-124: proves that a webhook delivery becomes a
-# PipelineRun. It prints what it was given and exits 0. VFL-125 replaces the
-# template's pipelineRef with the real lane-gate and rust-check pipelines.
+# PipelineRun. It prints what it was given and exits 0. Branch pushes still
+# start it; pull requests start the real lane-gate and rust-check pipelines
+# (pull-request-template.yaml).
 #
 # Webhook fields reach the step through env, never by $(params.*) substitution
 # inside the script: a branch name is chosen by whoever pushes it, and text

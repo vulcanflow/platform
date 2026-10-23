@@ -1,0 +1,64 @@
+# Manual PipelineRun for rust-check, and the one place where each leg's node
+# architecture is decided. Created, not applied, like pipelineruns/lane-gate.yaml;
+# see .tekton/README.md, "Run by hand".
+#
+# `taskRunSpecs[].podTemplate.nodeSelector` pins each leg to a node of the
+# architecture its Task expects. `kubernetes.io/arch` is a well-known label the
+# kubelet sets on every node, so nothing is labelled by hand. Both legs select
+# arm64: `check-arm64` runs natively, and `check-amd64` is cross-built there
+# (`execution: cross-qemu` in pipelines/rust-check.yaml). Every zolab node is
+# arm64, so both selectors hold today. They are written out so that both legs
+# keep running on arm64 if a node of another architecture joins. See
+# .tekton/README.md, "Architectures".
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: vf-rust-check-
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  pipelineRef:
+    name: vf-rust-check
+  params:
+    - name: revision
+      value: "@REVISION@"
+  workspaces:
+    - name: source
+      emptyDir: {}
+    # Optional CARGO_TARGET_DIR carriers. Without them every run is a cold build.
+    # - name: cache-amd64
+    #   persistentVolumeClaim:
+    #     claimName: vf-ci-cargo-cache-amd64
+    # - name: cache-arm64
+    #   persistentVolumeClaim:
+    #     claimName: vf-ci-cargo-cache-arm64
+  taskRunTemplate:
+    podTemplate:
+      # No Kubernetes API access and no credential, and ndots 1, as in
+      # lane-gate.yaml.
+      automountServiceAccountToken: false
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+  # Tekton merges each leg's pod template over the one above, so both legs keep
+  # automountServiceAccountToken: false and ndots 1.
+  taskRunSpecs:
+    - pipelineTaskName: check-amd64
+      podTemplate:
+        nodeSelector:
+          kubernetes.io/arch: arm64
+    - pipelineTaskName: check-arm64
+      podTemplate:
+        nodeSelector:
+          kubernetes.io/arch: arm64
+  # A cold run installs the nightly and compiles the workspace three times over
+  # (clippy, the unit tests, the fuzz crate). The amd64 leg also downloads about
+  # 106 MiB of cross packages and runs its unit tests under emulation. On
+  # GitHub, with a warm cache, a leg takes about 80 seconds. These bounds are
+  # generous, not targets. The measured runtimes are recorded on VFL-125
+  # (arm64) and VFL-716 (amd64).
+  timeouts:
+    pipeline: 1h30m
+    tasks: 1h20m
