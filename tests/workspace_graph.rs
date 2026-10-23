@@ -149,14 +149,47 @@ fn extract_quoted(s: &str) -> Option<String> {
 }
 
 /// Extracts a `key = [ ... ]` TOML array of strings, tolerating the array
-/// spanning multiple lines. Not a general TOML parser: good enough for the
-/// specific files this suite reads.
+/// spanning multiple lines. `key` does not have to start its line — the
+/// `features = [...]` lookup inside a single-line `name = { ..., features =
+/// [...] }` workspace-dependency entry depends on that — so every line is
+/// first truncated at its first `#` (dropping both a whole-line comment and a
+/// trailing one) before the `key = [` search, which keeps a commented-out
+/// copy of `key` from ever being read as the real array, wherever in the
+/// block it falls relative to the genuine one. Still not a general TOML
+/// parser: a `#` inside a quoted string would be misread as a comment start
+/// (none of the strings these callers read contain one), and every array
+/// element must be a double-quoted string — anything else, including a
+/// single-quoted one, makes this panic rather than silently drop it, since a
+/// caller's `assert_eq!` on the result must not pass on a partially-read
+/// array.
 fn extract_toml_string_array(toml_text: &str, key: &str) -> Option<Vec<String>> {
+    let uncommented: String = toml_text
+        .lines()
+        .map(|line| match line.find('#') {
+            Some(hash) => &line[..hash],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     let needle = format!("{key} = [");
-    let start = toml_text.find(needle.as_str())? + needle.len();
-    let end = toml_text[start..].find(']')? + start;
-    let body = &toml_text[start..end];
-    Some(body.split(',').filter_map(extract_quoted).collect())
+    let start = uncommented.find(needle.as_str())? + needle.len();
+    let end = uncommented[start..].find(']')? + start;
+    let body = &uncommented[start..end];
+    Some(
+        body.split(',')
+            .map(str::trim)
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| {
+                extract_quoted(segment).unwrap_or_else(|| {
+                    panic!(
+                        "extract_toml_string_array: `{key}` array element `{segment}` \
+                         is not a double-quoted string"
+                    )
+                })
+            })
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -775,6 +808,55 @@ fn aws_lc_rs_does_not_resolve() {
 }
 
 #[test]
+fn askama_features_exclude_config_per_vfl_1240() {
+    // RUSTSEC-2026-0374: `basic-toml` is unmaintained with no patched version,
+    // and it enters the resolved graph only through askama's default `config`
+    // feature. VFL-1240's ruling turns that feature off instead of adding a
+    // `deny.toml` `ignore` entry, so a later edit that restores askama's
+    // defaults — or adds `config` back for an `askama.toml` — must fail here,
+    // loudly, with the ruling's name on it, exactly as
+    // `reqwest_feature_is_rustls_no_provider` does for reqwest. Re-enabling
+    // `config` needs a new architecture ruling, not just a Cargo.toml edit.
+    let cargo_toml = read_platform_file("Cargo.toml");
+    let askama_entry = extract_workspace_dependency_entry(&cargo_toml, "askama");
+    assert!(
+        askama_entry.contains("default-features = false"),
+        "RUSTSEC-2026-0374 / VFL-1240: askama must set default-features = false \
+         to keep its `config` feature (and basic-toml) out of the graph; \
+         re-enabling askama's defaults needs an architecture ruling, found: \
+         {askama_entry}"
+    );
+
+    let mut features = extract_toml_string_array(&askama_entry, "features").unwrap_or_else(|| {
+        panic!(
+            "RUSTSEC-2026-0374 / VFL-1240: askama's workspace dependency entry has \
+             no `features = [...]` array, found: {askama_entry}"
+        )
+    });
+    features.sort();
+    let mut expected: Vec<String> = ["derive", "std", "urlencode"].into_iter().map(String::from).collect();
+    expected.sort();
+    assert_eq!(
+        features, expected,
+        "RUSTSEC-2026-0374 / VFL-1240: askama's features must be exactly derive, \
+         std, urlencode — no `config` and nothing else; adding `config` back \
+         (e.g. for an askama.toml) needs an architecture ruling, found: \
+         {askama_entry}"
+    );
+
+    let metadata = cargo_metadata();
+    let packages = metadata["packages"].as_array().expect("packages array");
+    let found_basic_toml = packages.iter().any(|p| p["name"].as_str() == Some("basic-toml"));
+    assert!(
+        !found_basic_toml,
+        "RUSTSEC-2026-0374 / VFL-1240: `basic-toml` (unmaintained, no patched \
+         version) must not appear anywhere in the resolved dependency graph; it \
+         only enters through askama's default `config` feature, which must stay \
+         off per the VFL-1240 ruling"
+    );
+}
+
+#[test]
 fn rust_toolchain_targets_match_a5() {
     // §A5 names three targets. Cortana's Decision 3 on VFL-9 required adding
     // `x86_64-unknown-linux-gnu` to the two the scaffold's first commit
@@ -826,7 +908,9 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
     // Ratified on VFL-9 (Cortana, Decision 2): the MPL-2.0 pair is §A5 as written
     // ("MPL-2.0 for listed crates only"); the other four are deviations from the
     // §A5 allow-list, ratified per crate so a licence accepted for one dependency
-    // does not silently cover the next crate someone adds.
+    // does not silently cover the next crate someone adds. The seventh,
+    // libfuzzer-sys's NCSA exception, was ratified separately per the VFL-202
+    // ruling ("(MIT OR Apache-2.0) AND NCSA"; fuzz workspace, test lane only).
     let deny_toml = read_platform_file("deny.toml");
     let expected: &[(&str, &str)] = &[
         ("cssparser", "MPL-2.0"),
@@ -835,12 +919,16 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
         ("webpki-roots", "CDLA-Permissive-2.0"),
         ("webpki-root-certs", "CDLA-Permissive-2.0"),
         ("xxhash-rust", "BSL-1.0"),
+        ("libfuzzer-sys", "NCSA"),
     ];
 
-    // Strip `#` comment lines before splitting: the policy comment above
-    // `[licenses]` names the `[[licenses.exceptions]]` header literally, and a
-    // naive substring split on the raw file would count that prose mention as
-    // a 7th block.
+    // Strip only whole-line `#` comments before splitting (a line that is a
+    // comment after trimming leading whitespace), catching a prose copy of
+    // the `[[licenses.exceptions]]` header written on its own commented-out
+    // line. It does not, and is not meant to, catch a copy trailing after
+    // real content on the same line — `deny.toml:72-75`'s discipline (never
+    // write the header form inside any comment, anywhere in the file) is what
+    // keeps a trailing copy out.
     let without_comments: String = deny_toml
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
@@ -849,6 +937,14 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
     let blocks: Vec<&str> = without_comments
         .split("[[licenses.exceptions]]")
         .skip(1)
+        // Bound each block at the next top-level table or array-of-tables
+        // header (a line starting with `[` at column 0), so the final block
+        // ends before `[sources]` instead of running on to the end of the
+        // file and swallowing unrelated config under it.
+        .map(|block| match block.find("\n[") {
+            Some(end) => &block[..end],
+            None => block,
+        })
         .collect();
     assert_eq!(
         blocks.len(),
@@ -865,15 +961,23 @@ fn deny_toml_licence_exceptions_match_ratified_set() {
         // key is simply unrecognised and ignored, not an error, so a config
         // using it would silently grant nothing rather than fail to parse).
         let name_line = format!("name = \"{crate_name}\"");
-        let licence_literal = format!("\"{licence}\"");
-        let found = blocks.iter().any(|block| {
-            let names_this_crate = block.lines().any(|l| l.trim() == name_line.as_str());
-            names_this_crate && block.contains(licence_literal.as_str())
+        let block = blocks
+            .iter()
+            .find(|block| block.lines().any(|l| l.trim() == name_line.as_str()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "§A5 (ratified): no `[[licenses.exceptions]]` block names `{crate_name}`"
+                )
+            });
+        let allow = extract_toml_string_array(block, "allow").unwrap_or_else(|| {
+            panic!("no `allow = [...]` array in the `{crate_name}` exception block")
         });
-        assert!(
-            found,
-            "§A5 (ratified): no `[[licenses.exceptions]]` block grants `{crate_name}` \
-             the `{licence}` licence"
+        assert_eq!(
+            allow,
+            vec![licence.to_string()],
+            "§A5 (ratified): the `{crate_name}` exception block must grant exactly \
+             `{licence}` and nothing else — a wider `allow` array would silently \
+             admit another licence for this crate"
         );
     }
 }
