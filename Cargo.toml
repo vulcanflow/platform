@@ -147,7 +147,7 @@ jsonwebtoken = "=11.1.0"
 openidconnect = "=4.0.1"
 
 # --- tls / crypto ---------------------------------------------------------
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 hmac = "=0.13.0"
 sha2 = "=0.11.0"
 rand = "=0.10.3"
@@ -190,8 +190,12 @@ chrono-tz = "=0.10.4"
 croner = "=4.0.1"
 
 # --- templating (M4) ------------------------------------------------------
-askama = "=0.16.1"
-ammonia = "=4.2.3"
+# askama's default feature set minus `config`. `config` only reads
+# `askama.toml` (there is none here) and pulls the unmaintained `basic-toml`
+# (RUSTSEC-2026-0374); turning it back on needs an architecture ruling
+# (VFL-1240).
+askama = { version = "=0.16.1", default-features = false, features = ["derive", "std", "urlencode"] }
+ammonia = "=4.2.4"
 
 # --- observability --------------------------------------------------------
 tracing = "=0.1.44"

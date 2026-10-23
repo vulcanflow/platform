@@ -35,10 +35,15 @@ spec:
     #     claimName: vf-ci-cargo-cache-arm64
   taskRunTemplate:
     podTemplate:
-      # No Kubernetes API access and no credential, as in lane-gate.yaml.
+      # No Kubernetes API access and no credential, and ndots 1, as in
+      # lane-gate.yaml.
       automountServiceAccountToken: false
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
   # Tekton merges each leg's pod template over the one above, so both legs keep
-  # automountServiceAccountToken: false.
+  # automountServiceAccountToken: false and ndots 1.
   taskRunSpecs:
     - pipelineTaskName: check-amd64
       podTemplate:

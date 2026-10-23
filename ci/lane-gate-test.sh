@@ -749,12 +749,13 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      # - uses: actions/checkout@
 commit add-workflow-commented-and-pinned
 check "commented-out uses: line is ignored" pins pass
 
-# --- 67. pins: a quoted key/value in a flow mapping: allowed ---------------
+# --- 67. pins: a quoted key/value in a flow mapping: refused (VFL-490 AC3:
+#     the bound rule 1 takes no quote on a line holding uses) --------------
 setup
 mkdir -p .github/workflows
 printf 'on: push\njobs:\n  build:\n    steps:\n      - { "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" }\n' > .github/workflows/ci.yml
 commit add-workflow-quoted-flow-mapping
-check "quoted uses: in a flow mapping" pins pass
+check "quoted uses: in a flow mapping" pins fail
 
 # --- 68. pins: a workflow with no uses: key at all: allowed ----------------
 setup
@@ -827,12 +828,13 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: evil/act@11d5960a32
 commit add-workflow-comma-suffix
 check "uses: value followed by ,v4 with no whitespace" pins fail
 
-# --- 76. pins: two valid uses: values on one line: allowed ------------------
+# --- 76. pins: two valid uses: values on one line, one quoted: refused
+#     (VFL-490 AC3: the bound rule 1 takes no quote on a line holding uses) --
 setup
 mkdir -p .github/workflows
 printf 'on: push\njobs:\n  build:\n    steps: [{ uses: a/b@11d5960a326750d5838078e36cf38b85af677262 }, { uses: "c/d@11d5960a326750d5838078e36cf38b85af677262" }]\n' > .github/workflows/ci.yml
 commit add-workflow-two-pinned-values
-check "two valid pinned uses: values on one line" pins pass
+check "two valid pinned uses: values on one line, one quoted" pins fail
 
 # --- 77. pins: uses: inside a flow-sequence bracket: refused ----------------
 setup
@@ -1166,12 +1168,14 @@ printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11
 commit add-workflow-nonascii-path
 check "non-ASCII workflow path (quoted by git), no colon" pins pass
 
-# --- 116. pins: a pinned uses: value separated by a literal TAB: allowed ---
+# --- 116. pins: a pinned uses: value separated by a literal TAB: refused
+#     (VFL-490 AC3: the bound rule 1 takes exactly one literal space after
+#     the colon, not a TAB) ---------------------------------------------
 setup
 mkdir -p .github/workflows
 printf 'on: push\njobs:\n  build:\n    steps:\n      - uses:\tactions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
 commit add-workflow-tab-after-uses-colon
-check "pinned uses: value separated by a literal TAB" pins pass
+check "pinned uses: value separated by a literal TAB" pins fail
 
 #   The cases below (117-125) are regression fixtures for VFL-122 review round 3
 #   (c74e16e, M3): the scanner assumes a key and its colon share a line, which
@@ -1226,19 +1230,25 @@ printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - u
 commit add-workflow-backslash-in-pinned-path
 check "backslash in a pinned path (a double-quoted value would decode it)" pins fail
 
-# --- 123. pins: a pinned flow step, key colon and value on one line: allowed --
+# --- 123. pins: a pinned flow step, key colon and value on one line: refused
+#     (VFL-490 AC3: this is not the canonical block line `[- ]uses: <pin>`;
+#     the surrounding `steps: [ { ... } ]` on the same line is outside the
+#     bound form) -------------------------------------------------------
 setup
 mkdir -p .github/workflows
 printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 } ]\n' > .github/workflows/ci.yml
 commit add-workflow-flow-step-one-line-pinned
-check "pinned flow step, key, colon and value all on one line" pins pass
+check "pinned flow step, key, colon and value all on one line" pins fail
 
-# --- 124. pins: a flow step split across lines, key+colon+value together: allowed --
+# --- 124. pins: a flow step split across lines, uses: <pin> } ] with the
+#     pin followed by flow closers on the same line: refused (VFL-490 AC3:
+#     the bound rule 1 matches `uses: <pin>` to the end of the line, so a
+#     trailing ` } ]` on the pin's own line is outside the canonical form) --
 setup
 mkdir -p .github/workflows
 printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps: [ { name: a,\n      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 } ]\n' > .github/workflows/ci.yml
 commit add-workflow-flow-step-split-colon-with-value
-check "flow step split across lines, with key, colon and value together" pins pass
+check "flow step split across lines, pin followed by flow closers on the same line" pins fail
 
 # --- 125. pins: a pinned step beside a run: printf holding an escaped quote: allowed --
 # Confirms the escaped-key and split-key rules do not reach into a run: block:
@@ -1463,6 +1473,376 @@ F='.github/workflows/a"b.yml'
 printf 'on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > "$F"
 commit add-workflow-pinned-quote-filename
 check "pinned UTF-8 workflow at a filename holding a double quote passes" pins pass
+
+#   The cases below (149-152) are regression fixtures for VFL-696 (the
+#   VFL-696 change): cmd_erosion used to count the base at $BASE_REF, the
+#   freshly fetched main tip, while $HEAD_REF can be a merge ref computed on
+#   an older main (a reopened PR reuses a stale merge ref; main can move
+#   before the job fetches it). Tests main added after that point then read
+#   as tests the PR removed. The VFL-696 change counts the base at
+#   git merge-base "$BASE_REF" "$HEAD_REF" instead, the same base the
+#   BASE...HEAD diff checks already use. None of the cases above ever move
+#   `baseline` forward after the fork, so none of them could have caught the
+#   regression the VFL-696 change fixes.
+
+# --- 149. erosion: baseline advances past the fork with a new test, head (forked earlier) touches only a non-Rust file: pass, counts equal --
+# This is the false-red shape from PR #30 run 37956828823: main (baseline)
+# keeps moving after the head forks. The old code counted the base at
+# baseline's tip (4 markers, one added after the fork) against the head's 3,
+# a false reduction. The fix counts the base at the fork point (3), so base
+# and head report equal counts.
+setup
+git checkout -q baseline
+printf '#[test]\nfn new_baseline_test(){assert!(true);}\n' > crates/vf-core/tests/new_baseline.rs
+commit baseline-gains-test-after-fork
+git checkout -q main
+printf '# docs\nmore after fork\n' > README.md
+commit head-non-rust-change-after-fork
+check_contains "baseline gains a test after the fork; head (forked earlier) touches only a non-Rust file" erosion pass "(merge-base with"
+out="$(./ci/lane-gate.sh erosion baseline HEAD 2>&1)"
+base_n="$(printf '%s\n' "$out" | grep -oE '[0-9]+ at base' | grep -oE '[0-9]+' | head -1)"
+head_n="$(printf '%s\n' "$out" | grep -oE '[0-9]+ at head' | grep -oE '[0-9]+' | head -1)"
+name="note reports equal counts at base and head when baseline's post-fork test does not reach head"
+if [ -n "$base_n" ] && [ "$base_n" = "$head_n" ]; then
+  printf 'ok    %-46s note: %s==%s\n' "$name" "$base_n" "$head_n"; pass_count=$((pass_count+1))
+else
+  printf 'NOT OK %-45s expected equal base/head counts, got base=%s head=%s\n' "$name" "$base_n" "$head_n"
+  printf '%s\n' "$out" | sed 's/^/        | /'
+  fail_count=$((fail_count+1))
+fi
+
+# --- 150. erosion: baseline gains tests after the fork, head removes one #[test]: refused --
+# The base-drift fix must not mask a real regression: the head itself drops a
+# test declaration relative to the fork point, so this fails whether the base
+# is counted at the fork (3) or at baseline's drifted tip (4).
+setup
+git checkout -q baseline
+printf '#[test]\nfn new_baseline_test(){assert!(true);}\n' > crates/vf-core/tests/new_baseline.rs
+commit baseline-gains-test-after-fork-2
+git checkout -q main
+printf '#[test]\nfn two(){assert!(true);}\n' > crates/vf-core/tests/more.rs
+commit head-removes-one-test-after-fork
+check "baseline gains tests after the fork; head removes one #[test]" erosion fail
+
+# --- 151. erosion: head is a merge commit of an earlier baseline into the branch (GitHub merge-ref shape), baseline then gains more tests: pass --
+# Reproduces the PR #30 shape directly: the head is a merge of the PR branch
+# with the base as it stood at merge time (a stale `refs/pull/N/merge`), and
+# the base keeps moving afterward. merge-base(baseline, HEAD) is the base's
+# state at merge time, not baseline's current tip, so the counts match.
+setup
+printf 'pub fn add(a:i32,b:i32)->i32{a+b}\npub fn sub(a:i32,b:i32)->i32{a-b}\n' > crates/vf-core/src/lib.rs
+commit pr-branch-work
+git checkout -q baseline
+printf '#[test]\nfn merged_base_test(){assert!(true);}\n' > crates/vf-core/tests/merged_base.rs
+commit baseline-state-at-merge-time
+git checkout -q main
+git merge -q --no-ff baseline -m merge-ref
+git checkout -q baseline
+printf '#[test]\nfn new_after_merge_ref(){assert!(true);}\n' > crates/vf-core/tests/new_after_merge_ref.rs
+commit baseline-advances-after-merge-ref
+git checkout -q main
+check "head is a merge commit of baseline's earlier state (merge-ref); baseline then gains more tests" erosion pass
+
+# --- 152. erosion: no merge-base between base and an orphan head: refused --
+# Discretionary extra named in the task: an orphan head (unrelated history, as
+# from a shallow or history-rewritten checkout) has no merge-base with
+# baseline at all, so the fix must fail closed rather than fall back to some
+# other count.
+setup
+git checkout -q --orphan orphan-head
+printf 'orphan root, no shared history with baseline\n' > ORPHAN_MARKER.txt
+git add -A >/dev/null
+git commit -qm orphan-root
+check_contains "no merge-base between baseline and an orphan head" erosion fail "no merge-base between"
+
+#   The cases below (153-162) are new coverage for the VFL-490 bound itself
+#   (24662ad): cmd_pins now accepts exactly one line form, a pure comment or
+#   `^[[:space:]]*(- )?uses: <PIN_RE>([[:space:]]+#.*)?$` (rule 1), and
+#   refuses anywhere a line ending in `\` before LF/CRLF (rule 2) or any
+#   `\x`, `\u` or `\U` escape (rule 3). These probe the new rules directly,
+#   rather than through the historical USES_SCOPE_RE/EXPLICIT_KEY_RE/etc.
+#   reasoning the removed cases 88-130-era comments used.
+
+# --- 153. pins: a double-quoted flow key split by an escaped line break,
+#     rule 2 (ends in a backslash): refused ------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps: [ { "us\\\n      es": evil/act@v4 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-rule2-flow-key-escaped-break
+check "flow key split by an escaped line break (rule 2: a line ending in a backslash)" pins fail
+
+# --- 154. pins: a double-quoted key with its first letter escaped as
+#     \x75 ('u'), rule 3: refused ----------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - "\\x75ses": evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-rule3-x75-escaped-key
+check "double-quoted key with its first letter escaped as \\x75 ('u')" pins fail
+
+# --- 155. pins: a double-quoted "uses" key with no escape at all: refused
+#     (rule 1: a line holding uses may carry no quote; paired with case 154
+#     to show the plain quoted key fails on its own, with no escape needed) --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - "uses": evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-quoted-uses-key
+check "double-quoted \"uses\" key with no escape, unpinned value" pins fail
+
+# --- 156. pins: a fully-escaped "uses" key (\x75\x73\x65\x73), no line
+#     holds the literal bytes uses, rule 3: refused ----------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps: [ { "\\x75\\x73\\x65\\x73": evil/act@v4 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-rule3-fully-escaped-key
+check "fully-escaped \"uses\" key, no line holds the literal bytes uses" pins fail
+
+# --- 157. pins: a quote opened on a name: string closes on the canonical
+#     line's tag comment, unmasking a second uses: key behind it: refused
+#     (rule 1: a line holding uses may carry no quote, which is what keeps
+#     this probe, from Jorge's VFL-490 refinement, from passing) ---------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps: [ { name: "foo\n      uses: a/b@11d5960a326750d5838078e36cf38b85af677262 # ", "uses": "docker://evil/img:latest" } ]\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-quote-closes-on-tag-comment
+check "quote opened on a name: string closes on the canonical line's tag comment" pins fail
+
+# --- 158. pins: a quote closes on what reads as a comment line, exposing a
+#     real uses: key behind it: refused (rule 1 forbids a quote on a comment
+#     line too, so the leading # does not save this line) ----------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps: [ { name: "foo\n      #", uses: evil/act@v4 } ]\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-quote-closes-on-comment-look
+check "quote closes on what reads as a comment line, exposing a real uses: key" pins fail
+
+# --- 159. pins: a job-level reusable workflow call, a flow indicator (,)
+#     trailing the pin on the same line: refused (rule 1: the canonical line
+#     ends right after the pin or its tag comment; a flow sibling on the
+#     same line is outside that form) ------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b: { name: x,\n    uses: o/r/.github/workflows/w.yml,strategy:{matrix:{x:[y@11d5960a326750d5838078e36cf38b85af677262\n    ]}} }\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-flow-indicator-trailing-pin
+check "job-level reusable workflow call with a flow indicator trailing the pin" pins fail
+
+# --- 160. pins: a canonical uses: line standing alone inside a flow
+#     mapping, with no sibling content on the same line, passes ---------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps: [ { name: x,\n      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      } ]\n' > .github/workflows/ci.yml
+commit add-workflow-canonical-line-alone-in-flow-mapping
+check "canonical uses: line standing alone inside a flow mapping" pins pass
+
+# --- 161. pins: a quote-free comment line containing the word uses, above
+#     a canonical pin: passes (rule 1's comment exception has no quote
+#     condition to trip here) ---------------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      # this step uses a pinned action\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-quoteless-comment-says-uses
+check "quote-free comment line containing the word uses, above a canonical pin" pins pass
+
+# --- 162. pins: a canonical but unpinned uses: line, refusal text checked
+#     for the exact path:line and ref (VFL-490: an earlier build crashed
+#     under `set -u` on exactly this line shape and still exited 1, so a
+#     pass/fail-only case did not catch it; this pins the refusal text) --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n' > .github/workflows/ci.yml
+commit add-workflow-canon-unpinned-refusal-text
+check_contains "canonical but unpinned uses: line, refusal names the exact path:line and ref" pins fail \
+  '.github/workflows/ci.yml:6: actions/checkout@v4'
+
+#   The cases below (163-166) are discretionary extras for the same VFL-490
+#   bound: further rule-2/rule-3 encodings and two accepted over-refusals
+#   the architect called out as optional.
+
+# --- 163. pins: a double-quoted key with its first letter escaped via
+#     \U00000075 (an 8-hex \U Unicode escape for 'u'), rule 3: refused ---
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - "\\U00000075ses": evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-rule3-capital-u-escaped-key
+check "double-quoted key with its first letter escaped via \\U00000075 ('u')" pins fail
+
+# --- 164. pins: the rule-2 escaped flow key (ends in a backslash) in a
+#     CRLF workflow: refused ---------------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\r\njobs:\r\n  build:\r\n    steps: [ { "us\\\r\n      es": evil/act@v4 } ]\r\n' > .github/workflows/ci.yml
+commit add-workflow-rule2-flow-key-escaped-break-crlf
+check "rule-2 escaped flow key (ends in a backslash) in a CRLF workflow" pins fail
+
+# --- 165. pins: a pinned step beside a run: | shell line continuation
+#     (ends in \): refused, an accepted over-refusal by design (rule 2
+#     reaches into a run: block's shell text, same trade as case 130) ----
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - run: |\n          echo foo \\\n            bar\n' > .github/workflows/ci.yml
+commit add-workflow-run-block-line-continuation
+check "pinned step beside a run: | shell line continuation ending in a backslash" pins fail
+
+# --- 166. pins: a comment line holding a quote and the word uses,
+#     unrelated to any key, is refused too: accepted over-refusal by design
+#     (rule 1 forbids a quote on any line holding uses, comments included) --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      # a comment that "uses" quotes, not a key\n' > .github/workflows/ci.yml
+commit add-workflow-comment-quote-mentions-uses
+check "comment line holding a quote and the word uses, unrelated to any key" pins fail
+
+# --- 167. pins: a double-quoted key with its first letter escaped as
+#     u ('u'), rule 3: refused (lowercase-u analog of case 154's
+#     \x75; dropped from the original batch by a transmission fault that
+#     stripped its escape, restored here) --------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - "\\u0075ses": evil/act@v4\n' > .github/workflows/ci.yml
+commit add-workflow-rule3-u0075-escaped-key
+check "double-quoted key with its first letter escaped as \\u0075 ('u')" pins fail
+
+#   The cases below (168-179) are for VFL-1124 (eb64715), the architect's LOW-1
+#   ruling on VFL-490 (comment 561b0712): rule 1 now refuses the next non-blank,
+#   non-comment line after a canonical uses: line if it sits deeper than the
+#   uses key, since YAML would read that line as more of the same plain
+#   scalar. Cases 168-171 are LOW-1 fail fixtures, 172-174 are LOW-1 pass
+#   controls, 175 is the "-   uses:" over-refusal, and 176-179 add R-b
+#   (VFL-984 LOW-6) cover for the value class's other flow indicators ([ { ]),
+#   alongside case 159's ",".
+
+# --- 168. pins: a line indented deeper than the uses key, right after a
+#     canonical line, is refused (VFL-1124 LOW-1): GitHub would load
+#     `<pin> evil` as one plain scalar, so the next-line clause refuses the
+#     deeper line -------------------------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n          evil\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-deeper
+check_contains "line indented deeper than the uses key after a canonical line" pins fail \
+  '.github/workflows/ci.yml:7: <a line indented deeper than the uses key above it>'
+
+# --- 169. pins: the next-line clause skips a blank line between the
+#     canonical line and the deeper line, and still refuses the deeper
+#     line once it arrives: refused -------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n\n          evil\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-blank-then-deeper
+check_contains "next-line clause skips a blank line, then refuses the deeper line after it" pins fail \
+  '.github/workflows/ci.yml:8: <a line indented deeper than the uses key above it>'
+
+# --- 170. pins: the next line exactly one column deeper than the uses key
+#     (9 spaces, where `      - uses:` keys at column 8) is refused: the
+#     boundary is strict, not >= ------------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n         x\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-one-column-deeper
+check_contains "next line exactly one column deeper than the uses key" pins fail \
+  '.github/workflows/ci.yml:7: <a line indented deeper than the uses key above it>'
+
+# --- 171. pins: a job-level reusable workflow call (no leading dash) keys
+#     the next-line clause off the uses column itself, not off a dash: a
+#     deeper line after it is refused the same way: refused ---------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  b:\n    uses: o/r/.github/workflows/w.yml@11d5960a326750d5838078e36cf38b85af677262\n      evil\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-job-level-next-line-deeper
+check_contains "job-level reusable workflow call followed by a deeper line" pins fail \
+  '.github/workflows/ci.yml:5: <a line indented deeper than the uses key above it>'
+
+# --- 172. pins: the next line at the uses key's own column passes, as a
+#     live workflow's with: block sits under a pinned step: allowed -------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n        with:\n          fetch-depth: 0\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-at-key-column
+check "next line at the uses key's own column, as with: under a pinned step" pins pass
+
+# --- 173. pins: a comment line deeper than the uses key, right after a
+#     canonical line, is skipped; the clause still passes once the first
+#     non-comment line lands at the key's column: allowed -----------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n          # note\n        with:\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-comment-then-key-column
+check "deeper comment line after a canonical line is skipped; with: at the key column still passes" pins pass
+
+# --- 174. pins: a whitespace-only line deeper than the uses key, right
+#     after a canonical line, is skipped the same as a blank line: allowed --
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n            \n        with:\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-whitespace-only-then-key-column
+check "whitespace-only line deeper than the uses key is skipped like a blank line" pins pass
+
+# --- 175. pins: a dash and three spaces before uses: (`-   uses:`) is
+#     refused: GitHub still loads it as a pinned step, but rule 1 accepts
+#     exactly one space after the dash; a deliberate over-refusal, like
+#     case 116's TAB after the colon -----------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      -   uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-dash-three-spaces-before-uses
+check "dash and three spaces before uses: is refused" pins fail
+
+# --- 176. pins: a canonical value holding a } before the pin's @ is
+#     refused by rule 1's value class (VFL-984 LOW-6, R-b cover alongside
+#     case 159's ","): refused -------------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: a/b/x}y@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-value-class-closing-brace
+check "canonical value holding a } before the pin is refused" pins fail
+
+# --- 177. pins: a canonical value holding a [ before the pin's @ is
+#     refused by the same value class: refused ---------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: a/b/[x@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-value-class-opening-bracket
+check "canonical value holding a [ before the pin is refused" pins fail
+
+# --- 178. pins: a canonical value holding a { before the pin's @ is
+#     refused by the same value class: refused ---------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: a/b/x{y@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-value-class-opening-brace
+check "canonical value holding a { before the pin is refused" pins fail
+
+# --- 179. pins: a canonical value holding a ] before the pin's @ is
+#     refused by the same value class: refused ---------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    steps:\n      - uses: a/b/x]y@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-value-class-closing-bracket
+check "canonical value holding a ] before the pin is refused" pins fail
+
+# --- 180. pins: CRLF variant of case 168 - the deeper line right after a
+#     canonical line is still refused when every line ends in CRLF
+#     (VFL-1131): the next-line clause's own CR strip must run before the
+#     canonical line is matched, or the trailing CR keeps it from matching
+#     CANON_RE, the clause never starts, and GitHub would load
+#     `<pin> evil` as one plain scalar -------------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\r\njobs:\r\n  build:\r\n    runs-on: ubuntu-latest\r\n    steps:\r\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\r\n          evil\r\n' > .github/workflows/ci.yml
+commit add-workflow-rule1-next-line-deeper-crlf
+check_contains "CRLF variant of the deeper line after a canonical line" pins fail \
+  '.github/workflows/ci.yml:7: <a line indented deeper than the uses key above it>'
+
+# --- 181. pins: the next-line clause's state resets at a new file, so a
+#     pin on a.yml's last line does not carry its key column into b.yml's
+#     first line even though that line sits deeper (VFL-1131): dropping
+#     the file-change reset can only over-refuse, refusing b.yml's first
+#     line for no reason tied to a.yml -----------------------------------
+setup
+mkdir -p .github/workflows
+printf 'on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' > .github/workflows/a.yml
+printf '          on: push\n          jobs:\n            b:\n              runs-on: ubuntu-latest\n              steps:\n                - run: echo ok\n' > .github/workflows/b.yml
+commit add-workflow-rule1-file-reset-a-then-b
+check "next-line state resets at a new file; b.yml's deeper first line is not refused" pins pass
 
 printf '\n%s passed, %s failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ]

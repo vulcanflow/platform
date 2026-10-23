@@ -1,11 +1,12 @@
-# vf-lane-gate — the Tekton equivalent of three of the four jobs in
+# vf-lane-gate — the Tekton equivalent of four of the five jobs in
 # .github/workflows/lane-gate.yml (`lane-partition`, `test-erosion`,
-# `inline-test-modules`). The fourth, `gate-self-test`, is a separate Task
-# because it runs a different script; see tasks/lane-gate-selftest.yaml.
+# `inline-test-modules`, `action-pins`). The fifth, `gate-self-test`, is a
+# separate Task because it runs a different script; see
+# tasks/lane-gate-selftest.yaml.
 #
-# The three jobs in the workflow differ only in the argument handed to
+# The four jobs in the workflow differ only in the argument handed to
 # ci/lane-gate.sh and in how deep they check out, so they are one Task with
-# `subcommand`, `fetch-depth` and `fetch-base` parameters and three
+# `subcommand`, `fetch-depth` and `fetch-base` parameters and four
 # PipelineTasks. The verdict logic lives entirely in ci/lane-gate.sh, which is
 # invoked with exactly the workflow's command line. No argument is added, so the
 # script's own default (origin/${GITHUB_BASE_REF}...HEAD) decides pass or fail,
@@ -23,8 +24,9 @@
 #     checkout;
 #   - partition and erosion fail when the base branch was not fetched. GitHub's
 #     jobs and pipelines/lane-gate.yaml always fetch it, so this never fires
-#     there. It stops `fetch-base: "false"` from passing erosion, because
-#     ci/lane-gate.sh counts the tests at a missing base ref as zero.
+#     there. ci/lane-gate.sh fails on a missing base ref too (erosion reports
+#     "no merge-base"), so this changes no verdict. It fails first, before the
+#     script runs, with a message that says to set fetch-base to "true".
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -34,9 +36,10 @@ metadata:
     app.kubernetes.io/part-of: vf-ci
 spec:
   description: >-
-    Runs one subcommand of ci/lane-gate.sh (partition, erosion or inline-tests)
-    against a revision of vulcanflow/platform. Equivalent to the lane-partition,
-    test-erosion and inline-test-modules jobs of .github/workflows/lane-gate.yml.
+    Runs one subcommand of ci/lane-gate.sh (partition, erosion, inline-tests or
+    pins) against a revision of vulcanflow/platform. Equivalent to the
+    lane-partition, test-erosion, inline-test-modules and action-pins jobs of
+    .github/workflows/lane-gate.yml.
 
   params:
     - name: repo-url
@@ -58,20 +61,20 @@ spec:
       default: main
     - name: subcommand
       type: string
-      description: partition | erosion | inline-tests
+      description: partition | erosion | inline-tests | pins
     - name: fetch-depth
       type: string
       description: >-
         actions/checkout's fetch-depth: "0" for full history (partition and
         erosion need the merge base), "1" for the default shallow checkout
-        (inline-test-modules).
+        (inline-test-modules and action-pins).
       default: "0"
     - name: fetch-base
       type: string
       description: >-
         "true" runs the workflow's "Fetch base branch" step. The
-        inline-test-modules job has no such step, so it passes "false".
-        partition and erosion fail without the base branch.
+        inline-test-modules and action-pins jobs have no such step, so they pass
+        "false". partition and erosion fail without the base branch.
       default: "true"
     - name: image
       type: string
@@ -87,9 +90,10 @@ spec:
       description: The commit the check ran against (git rev-parse HEAD).
     - name: base-commit
       description: >-
-        The base branch tip the check compared with, or empty when the base was
-        not fetched. test-erosion counts tests at this commit, so two runs only
-        agree when they saw the same base tip.
+        The base branch tip that was fetched, or empty when the base was not
+        fetched. test-erosion counts tests at the merge-base of this tip and
+        the checked-out revision, not at this tip, so two runs agree even when
+        the base tip moved ahead between them.
 
   workspaces:
     - name: source
@@ -203,7 +207,7 @@ spec:
               exit 1
             fi
             ;;
-          inline-tests) ;;
+          inline-tests|pins) ;;
           *) echo "unknown subcommand '$SUBCOMMAND'" >&2; exit 2 ;;
         esac
         ci/lane-gate.sh "$SUBCOMMAND"

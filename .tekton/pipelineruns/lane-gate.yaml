@@ -29,6 +29,14 @@ spec:
       # The checks need no Kubernetes API access and hold no credential: the
       # repository is public and the pods mount no Secret.
       automountServiceAccountToken: false
+      # Every host the checks fetch from has a dot in its name, so with ndots 1
+      # each is looked up as given first. With the kubelet's default of 5 the
+      # search-domain forms go first, and the egress policy refuses those
+      # (policies/check-egress.yaml).
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
   # On GitHub each of the four jobs takes under 10 seconds. This bound is
   # generous, not a target; the measured runtime is recorded on VFL-125.
   timeouts:

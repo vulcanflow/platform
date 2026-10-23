@@ -1,0 +1,59 @@
+# One vf-ci-supersede PipelineRun per `synchronize` delivery, from the
+# pull-request-supersede trigger (event-listener.yaml). It cancels the
+# pull request's unfinished checks for the head that the push replaced
+# (supersede-pipeline.yaml). It is its own PipelineRun, so its outcome never
+# changes the delivery's two check runs.
+#
+# Labels as in pull-request-template.yaml, except vulcanflow.io/github-head-sha:
+# the run is not a check of any commit, so nothing takes it for a verdict, and
+# it never matches its own selector. Its vulcanflow.io/github-delivery label
+# also tells the step when the delivery first arrived.
+#
+# Its pod mounts the vf-ci-supersede token (rbac.yaml), the only token with a
+# grant that a run pod in vf-ci holds. The check pods mount no token. The
+# vf-ci-noop pods mount the namespace's default account, which nothing here
+# grants anything. The pod runs none of the revision's code. It has no
+# workspace and no nodeSelector, as in noop-pipeline.yaml: the image index
+# covers amd64 and arm64. Its egress is limited to the Kubernetes API server
+# (../policies/check-egress.yaml).
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: vf-pull-request-supersede
+  namespace: vf-ci
+  labels:
+    app.kubernetes.io/part-of: vf-ci
+spec:
+  params:
+    - name: event-type
+    - name: delivery-id
+    - name: pr-number
+    - name: before
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        generateName: vf-ci-supersede-
+        namespace: vf-ci
+        labels:
+          app.kubernetes.io/part-of: vf-ci
+          vulcanflow.io/github-event: $(tt.params.event-type)
+          vulcanflow.io/github-delivery: $(tt.params.delivery-id)
+          vulcanflow.io/github-pr: $(tt.params.pr-number)
+      spec:
+        pipelineRef:
+          name: vf-ci-supersede
+        params:
+          - name: pr-number
+            value: $(tt.params.pr-number)
+          - name: before
+            value: $(tt.params.before)
+          - name: delivery-id
+            value: $(tt.params.delivery-id)
+        taskRunTemplate:
+          serviceAccountName: vf-ci-supersede
+          podTemplate:
+            # The ServiceAccount turns automount off; this pod turns it on.
+            automountServiceAccountToken: true
+        timeouts:
+          pipeline: 5m
