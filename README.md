@@ -190,6 +190,16 @@ the script carries on. Do not declare the variable with `local` or `export` on
 the same line either: `local vf_env="$(…)"` returns the status of `local`, which
 is 0.
 
+`just check`, `build`, `test-unit`, `test-integration`, `wasm`, `wasm-release`
+and `check-cross` refuse that case on their own as well: each first runs
+`ci/toolchain-provenance.sh`, which stops unless the `cargo` and `rustc` on
+`PATH` report the channel in `rust-toolchain.toml` and, when `VF_TOOLCHAIN_DIR`
+is set, resolve in the bootstrap's `$CARGO_HOME/bin`. So `VF_TOOLCHAIN_DIR` in
+the environment does more than choose the prefix: it tells those recipes that
+the bootstrap's environment is in force. A shell that exports it without having
+evaluated that environment is refused even if its own `cargo` is the pinned
+rustup one; either evaluate the bootstrap's output or unset it.
+
 ```
 just            # list recipes
 just check      # fmt, clippy -D warnings, cargo deny, cargo audit
