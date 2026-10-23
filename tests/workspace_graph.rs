@@ -793,9 +793,17 @@ fn kube_features_match_a5() {
     // Decision 4 (VFL-9 comment `39d52469`, §A5 revision 4): disabling kube's
     // default features drops its own defaults (`client`, `rustls-tls`,
     // `ring`), so the ratified deviation names `client` and `ring` explicitly
-    // alongside §A5's own list.
+    // alongside §A5's own list. That deviation is only live if kube's default
+    // features are actually off; otherwise the entry carries both the
+    // explicit list and kube's own defaults, defeating the single-ring-
+    // provider intent `aws_lc_rs_does_not_resolve` below checks for.
     let cargo_toml = read_platform_file("Cargo.toml");
     let entry = extract_workspace_dependency_entry(&cargo_toml, "kube");
+    assert!(
+        entry.contains("default-features = false"),
+        "§A5 (ratified, revision 4): kube must set `default-features = false`, \
+         found: {entry}"
+    );
     for feature in ["client", "ring"] {
         assert!(
             entry.contains(&format!("\"{feature}\"")),
