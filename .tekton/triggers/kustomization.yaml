@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - noop-pipeline.yaml
+  - supersede-pipeline.yaml
+  - trigger-bindings.yaml
+  - trigger-template.yaml
+  - pull-request-template.yaml
+  - supersede-template.yaml
+  - event-listener.yaml
+  - route.yaml

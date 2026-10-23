@@ -1,0 +1,19 @@
+# Nightly, pinned separately from the workspace's stable `1.99.0` pin
+# (rust-toolchain.toml at the repo root) — cargo-fuzz needs nightly's
+# `-Z build-std` to rebuild std with sanitizer instrumentation, which the
+# `rust-src` component below supplies. This file applies only under fuzz/
+# (VFL-145, T2 addendum to C2 / VFL-15): the root pin is production-lane and
+# is not touched here, and this file is test-lane (`ci/lane-gate.sh:38`
+# classifies `fuzz/*` as TEST) and is not Kelly's / C2's to create.
+#
+# Targets: both Linux GNU architectures, for the same reason the root pin
+# lists both explicitly — architecture agnosticism (README.md, "Architecture
+# agnostic") must not depend on which machine happened to generate the lock.
+[toolchain]
+channel = "nightly-2026-09-01"
+components = ["rust-src"]
+targets = [
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+]
+profile = "minimal"

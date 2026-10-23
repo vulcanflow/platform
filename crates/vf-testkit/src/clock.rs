@@ -10,14 +10,14 @@
 //! cannot express any of those, and `tokio::time::sleep` in a test trades one
 //! flake for another. So the clock moves, but only when a test moves it.
 //!
-//! # Why the port implementation is empty
+//! # The port implementation
 //!
-//! `vf_core::ports::Clock` has no methods yet — §A6.1 fixes the trait names at
-//! task F1 and leaves each port's signatures to the task that owns it, which
-//! for `Clock` is C1. The `impl` below is therefore empty on purpose: it
-//! records that this type is the test adapter for that row, and gains the
-//! method bodies when C1 declares them. The inherent API on this page is the
-//! part a test drives and is not C1's to change.
+//! §A6.1 fixes the trait names at task F1 and leaves each port's signatures to
+//! the task that owns it, which for `Clock` is C1. The `impl` below forwards
+//! the one method C1 declared, `now`, to the inherent method of the same name,
+//! so the instant the code under test reads through `Arc<dyn Clock>` is the
+//! one the test set. The inherent API on this page is the part a test drives
+//! and is not C1's to change.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -106,9 +106,13 @@ impl DeterministicClock {
     }
 }
 
-/// Test adapter for the §A6.1 `Clock` row. Empty until task C1 declares the
-/// trait's methods; see the module header.
-impl vf_core::ports::Clock for DeterministicClock {}
+/// Test adapter for the §A6.1 `Clock` row; see the module header.
+impl vf_core::ports::Clock for DeterministicClock {
+    /// The instant a test last left this clock at: [`DeterministicClock::now`].
+    fn now(&self) -> DateTime<Utc> {
+        DeterministicClock::now(self)
+    }
+}
 
 /// Locks `m`, recovering from poisoning instead of panicking.
 ///

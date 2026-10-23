@@ -7,6 +7,9 @@
 //! scope matching (§5.3), the state enums and transition functions (§6.3,
 //! §8.2, §15.1, §17.3), the role x action policy (§4.2), the Problem type
 //! catalogue (§13.3), the event shapes (§A3.3) and the port traits (§A6.1).
+//! The two exceptions are the system adapters §A6.1 places here,
+//! `ports::SystemClock` and `ports::SystemIdGen`, which read the wall clock and
+//! the OS random source; nothing else in the crate calls them.
 //!
 //! The crate depends on no I/O crate — no tokio, sqlx, reqwest or kube. That
 //! rule is one of the two in §A1.4 that `deny.toml` cannot express as a ban, so
@@ -14,5 +17,9 @@
 //! workspace test pack T9. `deny.toml` enforces the rest of §A1.4, including
 //! which crates may depend on this one.
 
+pub mod events;
+pub mod ids;
 pub mod ports;
+pub mod problem;
 pub mod scope;
+pub mod state;

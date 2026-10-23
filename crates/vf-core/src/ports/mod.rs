@@ -13,16 +13,18 @@
 //! F1 published the trait names only; §A6.1 fixes no method signatures, and
 //! each method arrives with the task that owns its port. Task F3 fills in
 //! [`ArtifactStore`] and [`WakeBus`] (see the [`artifact`] and [`wake`]
-//! submodules); the traits still listed inline below are empty until their own
-//! task lands (C1 for [`Clock`] and [`IdGen`], G3 for [`ChallengeProbe`], O1
-//! for [`ScanRuntime`], O2 for [`TenantProvisioner`], A1 for
-//! [`TokenVerifier`]). The `Send + Sync + 'static` bounds are part of the
-//! §A6.1 contract, because every port is held behind `Arc<dyn Port>`.
+//! submodules) and task C1 fills in [`Clock`] and [`IdGen`] below; the other
+//! traits listed inline are empty until their own task lands (G3 for
+//! [`ChallengeProbe`], O1 for [`ScanRuntime`], O2 for [`TenantProvisioner`],
+//! A1 for [`TokenVerifier`]). The `Send + Sync + 'static` bounds are part of
+//! the §A6.1 contract, because every port is held behind `Arc<dyn Port>`.
 //!
 //! # Why the port methods are not `async fn`
 //!
-//! Every method returns [`PortFuture`], a boxed future, rather than being an
-//! `async fn` in a trait. Two reasons, both structural:
+//! Every asynchronous method returns [`PortFuture`], a boxed future, rather
+//! than being an `async fn` in a trait. ([`Clock::now`] and
+//! [`IdGen::new_uuid`] are synchronous: neither waits on I/O.) Two reasons,
+//! both structural:
 //!
 //! 1. A port is always held as `Arc<dyn Port>` (§A6.1). An `async fn` in a
 //!    trait is not dyn-compatible without the same boxing written at every
@@ -43,8 +45,8 @@ pub use artifact::{
     PutReceipt, Sha256Digest, TenantArtifactStore,
 };
 pub use wake::{
-    BucketKey, MAX_WAKE_NAME_BYTES, MAX_WAKE_PAYLOAD_BYTES, Permit, TokenRate, Topic, WakeBus,
-    WakeBusError, WakeMessage, WakeStream, WakeSubscription,
+    BucketKey, MAX_WAKE_NAME_BYTES, MAX_WAKE_PAYLOAD_BYTES, Permit, TenantWakeBus, TokenRate,
+    Topic, WakeBus, WakeBusError, WakeMessage, WakeStream, WakeSubscription, tenant_wake_namespace,
 };
 
 /// The return type of every asynchronous port method.
@@ -64,8 +66,9 @@ pub type PortFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait ScanRuntime: Send + Sync + 'static {}
 
 /// Tenant provisioning. Real: Kubernetes namespace plus schema plus bucket
-/// prefix. Local and test: schema, prefix and bus namespace, Kubernetes steps
-/// skipped. Implemented in `vf-operator` (task O2).
+/// prefix. Local and test: schema, prefix and bus namespace
+/// ([`tenant_wake_namespace`]), Kubernetes steps skipped. Implemented in
+/// `vf-operator` (task O2).
 pub trait TenantProvisioner: Send + Sync + 'static {}
 
 /// Track A challenge verification. Real: `hickory-resolver` and `reqwest`
@@ -81,11 +84,80 @@ pub trait TokenVerifier: Send + Sync + 'static {}
 
 /// Wall-clock time. Real and local: the system clock. Test: deterministic.
 /// Implemented in `vf-core` (task C1).
-pub trait Clock: Send + Sync + 'static {}
+///
+/// Every timestamp the platform persists or publishes comes from here, so a
+/// test can drive the temporal rules — the 90-day control validity and 14-day
+/// grace of §5.2, the seven-day challenge expiry, the 15-minute SSE replay
+/// window and the outbox lease of §A3.3 — without sleeping. No other `vf-core`
+/// function reads the clock itself; the caller passes the instant in.
+///
+/// The real and local implementation is [`SystemClock`]. The deterministic
+/// test double lives in `vf-testkit` (§A1.3, task F2), which is a
+/// dev-dependency only and so cannot be selected by a shipped binary.
+pub trait Clock: Send + Sync + 'static {
+    /// The current instant, in UTC.
+    ///
+    /// UTC always. §A4 stores `timestamptz` throughout and §16 renders a
+    /// tenant's local time at the presentation layer, so no local offset
+    /// crosses this boundary.
+    ///
+    /// Implementations are not required to be strictly monotonic: durable
+    /// ordering is the `seq` column of §A3.3, never a timestamp comparison.
+    fn now(&self) -> chrono::DateTime<chrono::Utc>;
+}
 
 /// Identifier generation (UUID v7). Real and local: the system CSPRNG. Test:
 /// deterministic. Implemented in `vf-core` (task C1).
-pub trait IdGen: Send + Sync + 'static {}
+///
+/// The only sanctioned source of a new identity (§A3.1). The newtypes in
+/// [`crate::ids`] deliberately have no `Default` and no random `new()`, so code
+/// that mints an identity must hold one of these — which is what lets a test
+/// fix the identifiers a run produces.
+///
+/// v7 specifically, because §A3.1 relies on identities being time-ordered: a v7
+/// primary key keeps the §A4 indexes append-mostly, and it makes the keyset
+/// pagination of §A3.8 (`(observed_at desc, id desc)`) order consistently with
+/// insertion.
+///
+/// The real and local implementation is [`SystemIdGen`]. The deterministic
+/// test double lives in `vf-testkit` (§A1.3, task F2).
+pub trait IdGen: Send + Sync + 'static {
+    /// A fresh UUID v7.
+    ///
+    /// Callers wrap the value in the newtype for the identity being minted, for
+    /// example `TargetId::from_uuid(id_gen.new_uuid())`. The port is untyped on
+    /// purpose: one method per newtype would be thirty-odd methods that all do
+    /// the same thing, and the §6.2 type safety is already carried by the
+    /// newtype at the call site.
+    fn new_uuid(&self) -> uuid::Uuid;
+}
+
+/// The real and local [`Clock`]: the operating system's wall clock (§A6.1).
+///
+/// The one place in `vf-core` that reads the time. It is a system call, not an
+/// I/O crate, so it does not breach the §A1.4 rule `just graph-rules` enforces.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now()
+    }
+}
+
+/// The real and local [`IdGen`]: UUID v7 from the system clock and the
+/// operating system's CSPRNG (§A6.1).
+///
+/// `uuid` guarantees that the values one process generates this way are ordered
+/// by creation, which is the property §A3.1 wants from v7.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SystemIdGen;
+
+impl IdGen for SystemIdGen {
+    fn new_uuid(&self) -> uuid::Uuid {
+        uuid::Uuid::now_v7()
+    }
+}
 
 /// Outbound mail. M4; real: an SMTP provider, local: Mailpit. No task yet.
 pub trait Mailer: Send + Sync + 'static {}
